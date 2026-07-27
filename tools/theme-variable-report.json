@@ -1,4 +1,11 @@
 {
+  "summary": {
+    "unusedCount": 78,
+    "usedCount": 49,
+    "missingCount": 0,
+    "definedCount": 127,
+    "skippedFiles": 0
+  },
   "used": [
     "--accent-primary",
     "--accent-primary-soft",
@@ -50,8 +57,6 @@
     "--text-warning",
     "--topbar-bg"
   ],
-  "missing": null,
-  "skippedFiles": [],
   "defined": [
     "--accent-primary",
     "--accent-primary-soft",
@@ -181,13 +186,7 @@
     "--topbar-text",
     "--topbar-text-muted"
   ],
-  "summary": {
-    "missingCount": 0,
-    "skippedFiles": 0,
-    "usedCount": 49,
-    "definedCount": 127,
-    "unusedCount": 78
-  },
+  "missing": null,
   "unused": [
     "--accent-secondary-soft",
     "--bg-gradient-app",
@@ -267,5 +266,6 @@
     "--topbar-border-bottom",
     "--topbar-text",
     "--topbar-text-muted"
-  ]
+  ],
+  "skippedFiles": []
 }
