@@ -1,11 +1,27 @@
-.vs/
-.vscode/
-Thumbs.db
-.DS_Store
-tools/preview/
-tools/preview_migration/
-*.bak
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.env
+
+# Node / frontend
 node_modules/
 dist/
 build/
+
+# Logs and runtime
 *.log
+dev_server.log
+dev_backend.log
+dev_server.smoke.log
+
+# OS and editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Docker
+*.tar
