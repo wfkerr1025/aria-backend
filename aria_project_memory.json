@@ -1,0 +1,26 @@
+{
+  "General": {
+    "topics": [],
+    "intents": [],
+    "notes": [
+      "Show me all files in the backend directory",
+      "\u201cModify backend/autonomous_evolution.py by adding from backend.intent_to_patch import IntentToPatchEngine at the top, adding self.intent_engine = IntentToPatchEngine(aria_interface) inside __init__, and inside evaluate_and_apply before scanners insert: intent_packet = self.intent_engine.generate(self.interface.last_instruction) and append it to proposals.\u201d",
+      "Generate the patch for that modificatio",
+      "\u201cRegenerate the patch, but target class AutonomousEvolutionEngine instead of AutonomousEvolution.\u201d",
+      "List all backend files you have registered.\n\nList the path to the backend directory",
+      "give me the file directory path to /backend",
+      "ARIA, show me an example of a valid file creation envelope you accep",
+      "{\n  \"result\": null,\n  \"log\": [\n    {\n      \"info\": \"Processing action 'help'\",\n      \"payload\": {},\n      \"meta\": {}\n    },\n    {\n      \"error\": \"Unknown action 'help'\"\n    }\n  ]\n}",
+      "Hello ARia",
+      "Hello ARia",
+      "What are you doing",
+      "Hello Aria",
+      "hello Aria",
+      "how are you",
+      "Create a new file called notes.txt and write hello inside it.",
+      "hello?",
+      "hello"
+    ],
+    "goals": []
+  }
+}

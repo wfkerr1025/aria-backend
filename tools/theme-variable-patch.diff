@@ -1,0 +1,19 @@
+diff --git "a/D:\\Users\\William\\ARIA-Lite Development\\ARIA-Lite\\tools\\preview\\variables.orig.css" "b/D:\\Users\\William\\ARIA-Lite Development\\ARIA-Lite\\tools\\preview\\variables.css"
+index ba16d53..aeecb91 100644
+--- "a/D:\\Users\\William\\ARIA-Lite Development\\ARIA-Lite\\tools\\preview\\variables.orig.css"	
++++ "b/D:\\Users\\William\\ARIA-Lite Development\\ARIA-Lite\\tools\\preview\\variables.css"	
+@@ -202,3 +202,14 @@
+   --space-xl: 22px;
+ }
+ 
++
++/* AUTO-ALIASES ADDED TO RECONCILE MISSING VARIABLES */
++--accent-soft: var(--accent-primary-soft);
++--bg-sidebar: var(--sidebar-bg);
++--bg-toolbar: var(--chat-toolbar-bg);
++--bg-topbar: var(--topbar-bg);
++--danger-bg: rgba(255, 79, 79, 0.08);
++--danger-border: var(--border-error);
++--danger-text: var(--text-error);
++--scrollbar-thumb: rgba(255, 255, 255, 0.08);
++--scrollbar-track: rgba(0, 0, 0, 0.12);

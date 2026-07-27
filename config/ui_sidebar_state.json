@@ -1,0 +1,11 @@
+{
+  "ui": {
+    "features": {
+      "navigation": true,
+      "chats": true,
+      "plugins": false,
+      "quickrun": false,
+      "status": false
+    }
+  }
+}

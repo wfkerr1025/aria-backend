@@ -1,0 +1,42 @@
+COMMAND_REGISTRY = {
+    "unity": [
+        "unity_list_projects(root)",
+        "unity_scan_project(project_path)",
+        "unity_generate_script(class_name)",
+        "unity_validate_script(script)"
+    ],
+
+    "unreal": [
+        "unreal_scan_project(project_path)",
+        "unreal_list_blueprints(project_path)"
+    ],
+
+    "blender": [
+        "blender_list_scripts(root)",
+        "blender_generate_operator(name)"
+    ],
+
+    "wordpress": [
+        "wordpress_generate_plugin(name)"
+    ],
+
+    "fileops": [
+        "read_file(path)",
+        "write_file(path, content)",
+        "list_directory(path)",
+        "search_project(root, pattern)"
+    ],
+
+    "scriptops": [
+        "validate_script_generic(content)"
+    ],
+
+    "chat": [
+        "summarize_text(text)",
+        "ask_aria(prompt)"
+    ],
+
+    "diagnostics": [
+        "diagnostics()"
+    ]
+}

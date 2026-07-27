@@ -1,0 +1,136 @@
+/* -------------------------------------------------------
+   PLUGINS PANEL (Unified ARIA Add‑Ons Panel)
+   ------------------------------------------------------- */
+
+#plugins-panel {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 56px);
+  background: var(--);
+  border-radius: var(--panel-radius);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--shadow-panel);
+  padding: var(--panel-padding);
+  overflow: hidden;
+}
+
+/* -------------------------------------------------------
+   PANEL HEADER (Unified ARIA Header)
+   ------------------------------------------------------- */
+
+.plugins-header {
+  padding: var(--);
+  background: var(--);
+  border-radius: var(--);
+  border: 1px solid var(--);
+  box-shadow: var(--shadow-header);
+  margin-bottom: var(--space-lg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.plugins-title {
+  font-size: var(--);
+  font-weight: var(--);
+  color: var(--);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+}
+
+/* -------------------------------------------------------
+   SECTION TITLE (Muted ARIA Typography)
+   ------------------------------------------------------- */
+
+.plugins-section-title {
+  font-size: var(--);
+  color: var(--);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: var(--space-sm);
+  margin-top: var(--space-md);
+}
+
+/* -------------------------------------------------------
+   PLUGINS CONTENT AREA (Inset ARIA Panel)
+   ------------------------------------------------------- */
+
+.plugins-content {
+  flex: 1;
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-inset);
+  padding: var(--space-md);
+}
+
+/* -------------------------------------------------------
+   PLUGIN ITEM (ARIA List Geometry)
+   ------------------------------------------------------- */
+
+.plugin-item {
+  padding: var(--item-padding);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--item-border);
+  border-radius: var(--item-radius);
+  margin-bottom: var(--space-sm);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.plugin-item:hover {
+  background: var(--);
+}
+
+.plugin-item.active {
+  background: var(--);
+  border-color: var(--);
+}
+
+/* -------------------------------------------------------
+   PLUGIN LABELS
+   ------------------------------------------------------- */
+
+.plugin-label {
+  font-size: var(--);
+  color: var(--);
+  margin-bottom: var(--space-xs);
+}
+
+.plugin-name {
+  font-size: var(--);
+  color: var(--);
+  font-weight: var(--);
+}
+
+.plugin-version {
+  font-size: var(--);
+  color: var(--);
+}
+
+/* -------------------------------------------------------
+   PLUGIN ACTIONS (ARIA Button Geometry)
+   ------------------------------------------------------- */
+
+.plugin-actions {
+  display: flex;
+  gap: var(--space-md);
+}
+
+.plugin-btn {
+  background: var(--btn-bg);
+  border: 1px solid var(--);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  color: var(--);
+  cursor: pointer;
+  box-shadow: var(--shadow-button);
+  font-size: var(--);
+}
+
+.plugin-btn:hover {
+  background: var(--);
+  box-shadow: var(--);
+}

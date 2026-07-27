@@ -1,0 +1,16 @@
+{
+  "ui": {
+    "main_window": {
+      "size": { "width": 1280, "height": 820 },
+      "position": { "x": 487, "y": 177 },
+      "default_tab": "health",
+      "theme_mode": "match_aria"
+    },
+    "diagnostics_window": {
+      "size": { "width": 954, "height": 1000 },
+      "position": { "x": 775, "y": 4 },
+      "default_tab": "health",
+      "theme_mode": "match_aria"
+    }
+  }
+}

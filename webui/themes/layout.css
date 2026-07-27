@@ -1,0 +1,126 @@
+/* -------------------------------------------------------
+   GLOBAL LAYOUT (ARIA Lite Geometry)
+   ------------------------------------------------------- */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--);
+  color: var(--);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow: hidden;
+}
+
+/* ROOT APP CONTAINER */
+#app-container {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background: var(--);
+}
+
+/* -------------------------------------------------------
+   SIDEBAR
+   ------------------------------------------------------- */
+
+#sidebar {
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-base);
+}
+
+/* -------------------------------------------------------
+   CONTENT AREA
+   ------------------------------------------------------- */
+
+#content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--);
+}
+
+/* -------------------------------------------------------
+   TOPBAR
+   ------------------------------------------------------- */
+
+#topbar {
+  height: 48px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-md);
+  background: var(--bg-topbar);
+  border-bottom: 1px solid var(--border-base);
+}
+
+/* -------------------------------------------------------
+   PANEL CONTAINER
+   ------------------------------------------------------- */
+
+#panel-container {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  position: relative;
+  padding: var(--space-lg);
+  padding-top: var(--space-md);
+  box-sizing: border-box;
+}
+
+/* -------------------------------------------------------
+   PANEL BASE CLASS
+   ------------------------------------------------------- */
+
+.panel {
+  height: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  display: block;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* -------------------------------------------------------
+   SCROLLBARS (Custom UI Style)
+   ------------------------------------------------------- */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--radius-sm);
+}
+
+/* -------------------------------------------------------
+   LINKS
+   ------------------------------------------------------- */
+
+a {
+  color: var(--accent-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}

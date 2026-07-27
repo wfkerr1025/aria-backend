@@ -1,0 +1,11 @@
+{
+    "name": "WordPress",
+    "menu_tabs": [
+        {
+            "label": "WordPress Tools",
+            "commands": [
+                { "id": "wordpress.test", "name": "Run WordPress Test" }
+            ]
+        }
+    ]
+}

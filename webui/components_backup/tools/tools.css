@@ -1,0 +1,128 @@
+/* -------------------------------------------------------
+   TOOLS PANEL (Unified ARIA Tools Panel)
+   ------------------------------------------------------- */
+
+#tools-panel {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 56px);
+  background: var(--);
+  border-radius: var(--panel-radius);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--shadow-panel);
+  padding: var(--panel-padding);
+  overflow: hidden;
+}
+
+/* -------------------------------------------------------
+   PANEL HEADER (Unified ARIA Header)
+   ------------------------------------------------------- */
+
+.tools-header {
+  padding: var(--);
+  background: var(--);
+  border-radius: var(--);
+  border: 1px solid var(--);
+  box-shadow: var(--shadow-header);
+  margin-bottom: var(--space-lg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tools-title {
+  font-size: var(--);
+  font-weight: var(--);
+  color: var(--);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+}
+
+/* -------------------------------------------------------
+   SECTION TITLE (Muted ARIA Typography)
+   ------------------------------------------------------- */
+
+.tools-section-title {
+  font-size: var(--);
+  color: var(--);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: var(--space-sm);
+  margin-top: var(--space-md);
+}
+
+/* -------------------------------------------------------
+   TOOLS CONTENT AREA (Inset ARIA Panel)
+   ------------------------------------------------------- */
+
+.tools-content {
+  flex: 1;
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-inset);
+  padding: var(--space-md);
+}
+
+/* -------------------------------------------------------
+   TOOL ITEM (ARIA List Geometry)
+   ------------------------------------------------------- */
+
+.tool-item {
+  padding: var(--item-padding);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--item-border);
+  border-radius: var(--item-radius);
+  margin-bottom: var(--space-sm);
+  cursor: pointer;
+}
+
+.tool-item:hover {
+  background: var(--);
+}
+
+.tool-item.active {
+  background: var(--);
+  border-color: var(--);
+}
+
+/* -------------------------------------------------------
+   TOOL LABELS
+   ------------------------------------------------------- */
+
+.tool-label {
+  font-size: var(--);
+  color: var(--);
+  margin-bottom: var(--space-xs);
+}
+
+.tool-value {
+  font-size: var(--);
+  color: var(--);
+}
+
+/* -------------------------------------------------------
+   TOOL ACTIONS (ARIA Button Geometry)
+   ------------------------------------------------------- */
+
+.tools-actions {
+  display: flex;
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+}
+
+.tools-btn {
+  background: var(--btn-bg);
+  border: 1px solid var(--);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  color: var(--);
+  cursor: pointer;
+  box-shadow: var(--shadow-button);
+  font-size: var(--);
+}
+
+.tools-btn:hover {
+  background: var(--);
+  box-shadow: var(--);
+}

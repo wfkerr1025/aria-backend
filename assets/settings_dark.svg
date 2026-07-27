@@ -1,0 +1,50 @@
+<svg width="256" height="256" viewBox="0 0 256 256"
+     xmlns="http://www.w3.org/2000/svg" fill="none">
+
+  <!-- Outer gear shape -->
+  <path d="M128 88
+           L140 88
+           L148 72
+           L164 80
+           L160 96
+           L172 108
+           L188 104
+           L196 120
+           L184 132
+           L184 148
+           L196 160
+           L188 176
+           L172 172
+           L160 184
+           L164 200
+           L148 208
+           L140 192
+           L128 192
+           L116 208
+           L100 200
+           L104 184
+           L92 172
+           L76 176
+           L68 160
+           L80 148
+           L80 132
+           L68 120
+           L76 104
+           L92 108
+           L104 96
+           L100 80
+           L116 72
+           Z"
+        stroke="#FFFFFF"
+        stroke-width="2.0"
+        stroke-linecap="square"
+        stroke-linejoin="miter"/>
+
+  <!-- Inner circle -->
+  <circle cx="128" cy="128" r="24"
+          stroke="#FFFFFF"
+          stroke-width="2.0"
+          stroke-linecap="square"
+          stroke-linejoin="miter"/>
+
+</svg>

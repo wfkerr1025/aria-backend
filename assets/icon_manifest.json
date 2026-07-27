@@ -1,0 +1,52 @@
+{
+  "icons": {
+    "run": {
+      "light": "run.png",
+      "dark": "run_dark.png"
+    },
+    "stop": {
+      "light": "stop.png",
+      "dark": "stop_dark.png"
+    },
+    "browse": {
+      "light": "browse.png",
+      "dark": "browse_dark.png"
+    },
+    "select_project": {
+      "light": "select_project.png",
+      "dark": "select_project_dark.png"
+    },
+    "settings": {
+      "light": "settings.png",
+      "dark": "settings_dark.png"
+    },
+    "folder": {
+      "light": "folder.png",
+      "dark": "folder_dark.png"
+    },
+    "unity": {
+      "light": "unity.png",
+      "dark": "unity_dark.png"
+    },
+    "refresh": {
+      "light": "refresh.png",
+      "dark": "refresh_dark.png"
+    },
+    "info": {
+      "light": "info.png",
+      "dark": "info_dark.png"
+    },
+    "warning": {
+      "light": "warning.png",
+      "dark": "warning_dark.png"
+    },
+    "error": {
+      "light": "error.png",
+      "dark": "error_dark.png"
+    },
+    "success": {
+      "light": "success.png",
+      "dark": "success_dark.png"
+    }
+  }
+}

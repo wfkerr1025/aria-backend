@@ -1,0 +1,21 @@
+{
+  "name": "Unity",
+  "version": "0.1.0",
+  "author": "William",
+  "description": "Unity integration tools for ARIA Lite.",
+  "menu_tabs": [
+    {
+      "label": "Unity",
+      "commands": [
+        {
+          "name": "Open Project Folder",
+          "id": "unity.open_project"
+        },
+        {
+          "name": "Build Project",
+          "id": "unity.build_project"
+        }
+      ]
+    }
+  ]
+}

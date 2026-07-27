@@ -1,0 +1,11 @@
+{
+    "name": "Unreal",
+    "menu_tabs": [
+        {
+            "label": "Unreal Tools",
+            "commands": [
+                { "id": "unreal.test", "name": "Run Unreal Test" }
+            ]
+        }
+    ]
+}

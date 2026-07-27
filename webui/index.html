@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ARIA Lite</title>
+
+  <!-- Markdown + Sanitizer (LOCAL, CSP-SAFE) -->
+  <script src="libs/purify.min.js"></script>
+  <script src="libs/marked.min.js"></script>
+
+  <!-- GLOBAL VARIABLES -->
+  <link rel="stylesheet" href="themes/variables.css" />
+
+  <!-- BASE + ACCENT THEMES -->
+  <link id="aria-base-theme" rel="stylesheet" href="themes/base/charcoal.css" />
+  <link id="aria-accent-theme" rel="stylesheet" href="themes/accents/teal.css" />
+
+  <!-- GLOBAL LAYOUT -->
+  <link rel="stylesheet" href="themes/layout.css" />
+
+  <!-- COMPONENT CSS -->
+  <link rel="stylesheet" href="components/topbar/topbar.css" />
+  <link rel="stylesheet" href="components/sidebar/sidebar.css" />
+  <link rel="stylesheet" href="components/chat/chat.css" />
+  <link rel="stylesheet" href="components/panels/panels.css" />
+  <link rel="stylesheet" href="components/buttons/buttons.css" />
+  <link rel="stylesheet" href="components/input/input.css" />
+  <link rel="stylesheet" href="components/diagnostics/diagnostics.css" />
+  <link rel="stylesheet" href="components/tools/tools.css" />
+  <link rel="stylesheet" href="components/plugins/plugins.css" />
+  <link rel="stylesheet" href="components/fileops/fileops.css" />
+
+  <!-- THEME LOADER -->
+  <script type="module" src="core/theme-loader.js"></script>
+
+  <!-- MAIN APP SCRIPT -->
+  <script type="module" src="core/app.js"></script>
+</head>
+
+<body>
+
+  <!-- FULL-WIDTH TOPBAR -->
+  <header id="topbar">
+    <div class="topbar-left">
+      <span class="topbar-title">ARIA Lite</span>
+
+      <div class="topbar-actions">
+        <button class="topbar-btn">Settings</button>
+        <button class="topbar-btn">Help</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN APP CONTAINER -->
+  <div id="app-container">
+
+    <!-- SIDEBAR -->
+    <aside id="sidebar">
+      <div class="sidebar-section-label">Core</div>
+
+      <button class="sidebar-btn" data-panel="diagnostics">
+        <span class="sidebar-btn-icon">🩺</span>
+        <span>Diagnostics</span>
+      </button>
+
+      <button class="sidebar-btn" data-panel="tools">
+        <span class="sidebar-btn-icon">🛠️</span>
+        <span>Tools</span>
+      </button>
+
+      <button class="sidebar-btn" data-panel="plugins">
+        <span class="sidebar-btn-icon">🔌</span>
+        <span>Plugins</span>
+      </button>
+
+      <button class="sidebar-btn" data-panel="fileops">
+        <span class="sidebar-btn-icon">📁</span>
+        <span>File Ops</span>
+      </button>
+
+      <div class="sidebar-divider"></div>
+
+      <div class="sidebar-section-label">Chat</div>
+
+      <button class="sidebar-btn active" data-panel="chat">
+        <span class="sidebar-btn-icon">💬</span>
+        <span>Chat</span>
+      </button>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <div id="content">
+      <main id="panel-container"></main>
+    </div>
+
+  </div>
+
+</body>
+</html>

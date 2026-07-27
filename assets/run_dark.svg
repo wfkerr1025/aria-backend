@@ -1,0 +1,11 @@
+<svg width="256" height="256" viewBox="0 0 256 256"
+     xmlns="http://www.w3.org/2000/svg" fill="none">
+
+  <!-- Run triangle -->
+  <path d="M104 80 L176 128 L104 176 Z"
+        stroke="#FFFFFF"
+        stroke-width="2.0"
+        stroke-linecap="square"
+        stroke-linejoin="miter"/>
+
+</svg>

@@ -1,0 +1,75 @@
+/* Light mode */
+.theme-light .icon-run {
+    -unity-background-image: url("run.svg");
+}
+.theme-light .icon-stop {
+    -unity-background-image: url("stop.svg");
+}
+.theme-light .icon-browse {
+    -unity-background-image: url("browse.svg");
+}
+.theme-light .icon-select-project {
+    -unity-background-image: url("select_project.svg");
+}
+.theme-light .icon-settings {
+    -unity-background-image: url("settings.svg");
+}
+.theme-light .icon-folder {
+    -unity-background-image: url("folder.svg");
+}
+.theme-light .icon-unity {
+    -unity-background-image: url("unity.svg");
+}
+.theme-light .icon-refresh {
+    -unity-background-image: url("refresh.svg");
+}
+.theme-light .icon-info {
+    -unity-background-image: url("info.svg");
+}
+.theme-light .icon-warning {
+    -unity-background-image: url("warning.svg");
+}
+.theme-light .icon-error {
+    -unity-background-image: url("error.svg");
+}
+.theme-light .icon-success {
+    -unity-background-image: url("success.svg");
+}
+
+/* Dark mode */
+.theme-dark .icon-run {
+    -unity-background-image: url("run_dark.svg");
+}
+.theme-dark .icon-stop {
+    -unity-background-image: url("stop_dark.svg");
+}
+.theme-dark .icon-browse {
+    -unity-background-image: url("browse_dark.svg");
+}
+.theme-dark .icon-select-project {
+    -unity-background-image: url("select_project_dark.svg");
+}
+.theme-dark .icon-settings {
+    -unity-background-image: url("settings_dark.svg");
+}
+.theme-dark .icon-folder {
+    -unity-background-image: url("folder_dark.svg");
+}
+.theme-dark .icon-unity {
+    -unity-background-image: url("unity_dark.svg");
+}
+.theme-dark .icon-refresh {
+    -unity-background-image: url("refresh_dark.svg");
+}
+.theme-dark .icon-info {
+    -unity-background-image: url("info_dark.svg");
+}
+.theme-dark .icon-warning {
+    -unity-background-image: url("warning_dark.svg");
+}
+.theme-dark .icon-error {
+    -unity-background-image: url("error_dark.svg");
+}
+.theme-dark .icon-success {
+    -unity-background-image: url("success_dark.svg");
+}

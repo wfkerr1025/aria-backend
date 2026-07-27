@@ -1,0 +1,11 @@
+{
+    "name": "Blender",
+    "menu_tabs": [
+        {
+            "label": "Blender Tools",
+            "commands": [
+                { "id": "blender.test", "name": "Run Blender Test" }
+            ]
+        }
+    ]
+}

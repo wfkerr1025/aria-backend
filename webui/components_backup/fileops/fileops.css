@@ -1,0 +1,130 @@
+/* -------------------------------------------------------
+   FILEOPS PANEL (Unified ARIA System Panel)
+   ------------------------------------------------------- */
+
+#fileops-panel {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 56px);
+  background: var(--);
+  border-radius: var(--panel-radius);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--shadow-panel);
+  padding: var(--panel-padding);
+  overflow: hidden;
+}
+
+/* -------------------------------------------------------
+   PANEL HEADER (Unified ARIA Header)
+   ------------------------------------------------------- */
+
+.fileops-header {
+  padding: var(--);
+  background: var(--);
+  border-radius: var(--);
+  border: 1px solid var(--);
+  box-shadow: var(--shadow-header);
+  margin-bottom: var(--space-lg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.fileops-title {
+  font-size: var(--);
+  font-weight: var(--);
+  color: var(--);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+}
+
+/* -------------------------------------------------------
+   SECTION TITLE (Muted ARIA Typography)
+   ------------------------------------------------------- */
+
+.fileops-section-title {
+  font-size: var(--);
+  color: var(--);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: var(--space-sm);
+  margin-top: var(--space-md);
+}
+
+/* -------------------------------------------------------
+   FILEOPS CONTENT AREA (Inset ARIA Panel)
+   ------------------------------------------------------- */
+
+.fileops-content {
+  flex: 1;
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-inset);
+  padding: var(--space-md);
+}
+
+/* -------------------------------------------------------
+   FILE ITEM (ARIA List Geometry)
+   ------------------------------------------------------- */
+
+.file-item {
+  padding: var(--item-padding);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--item-border);
+  border-radius: var(--item-radius);
+  margin-bottom: var(--space-sm);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.file-item:hover {
+  background: var(--);
+}
+
+.file-item.active {
+  background: var(--);
+  border-color: var(--);
+}
+
+/* -------------------------------------------------------
+   FILE LABELS
+   ------------------------------------------------------- */
+
+.file-name {
+  font-size: var(--);
+  color: var(--);
+  font-weight: var(--);
+}
+
+.file-size {
+  font-size: var(--);
+  color: var(--);
+}
+
+/* -------------------------------------------------------
+   FILE ACTIONS (ARIA Button Geometry)
+   ------------------------------------------------------- */
+
+.file-actions {
+  display: flex;
+  gap: var(--space-md);
+}
+
+.file-btn {
+  background: var(--btn-bg);
+  border: 1px solid var(--);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  color: var(--);
+  cursor: pointer;
+  box-shadow: var(--shadow-button);
+  font-size: var(--);
+}
+
+.file-btn:hover {
+  background: var(--);
+  box-shadow: var(--);
+}

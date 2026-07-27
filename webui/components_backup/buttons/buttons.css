@@ -1,0 +1,75 @@
+/* -------------------------------------------------------
+   BUTTON BASE
+   ------------------------------------------------------- */
+
+.btn {
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  font-size: var(--);
+  font-weight: var(--);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* -------------------------------------------------------
+   PRIMARY BUTTON
+   ------------------------------------------------------- */
+
+.btn-primary {
+  background: var(--btn-bg);
+  border: 1px solid var(--);
+  color: var(--);
+  box-shadow: var(--shadow-button);
+}
+
+.btn-primary:hover {
+  background: var(--);
+  box-shadow: var(--);
+}
+
+/* -------------------------------------------------------
+   SECONDARY BUTTON
+   ------------------------------------------------------- */
+
+.btn-secondary {
+  background: transparent;
+  border: 1px solid var(--);
+  color: var(--);
+}
+
+.btn-secondary:hover {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+/* -------------------------------------------------------
+   GHOST BUTTON
+   ------------------------------------------------------- */
+
+.btn-ghost {
+  background: transparent;
+  border: none;
+  color: var(--);
+}
+
+.btn-ghost:hover {
+  color: var(--accent-primary);
+}
+
+/* -------------------------------------------------------
+   DESTRUCTIVE BUTTON
+   ------------------------------------------------------- */
+
+.btn-danger {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
+}
+
+.btn-danger:hover {
+  background: var(--);
+  border-color: var(--);
+}
