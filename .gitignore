@@ -1,0 +1,11 @@
+.vs/
+.vscode/
+Thumbs.db
+.DS_Store
+tools/preview/
+tools/preview_migration/
+*.bak
+node_modules/
+dist/
+build/
+*.log
