@@ -22,6 +22,14 @@ dev_server.smoke.log
 Thumbs.db
 .vscode/
 .idea/
+.vs/
 
 # Docker
 *.tar
+
+# ARIA Lite
+.aria_cache/
+logs/
+tmp/
+workspace/projects/
+dashboard_test.bin

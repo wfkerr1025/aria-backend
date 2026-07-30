@@ -1,14 +1,19 @@
-:root {
+/* webui/themes/accents/red.css
+   ARIA LITE — Accent Theme: Red
+   Overrides only accent tokens.
+*/
+
+[data-accent="red"] {
   /* -------------------------------------------------------
      RED ACCENT — ACCENT COLORS
      ------------------------------------------------------- */
-  --accent-primary: #ff5c5c;
+  --accent-primary: #ff5c5c;                 /* main red */
   --accent-soft: rgba(255, 92, 92, 0.12);
 
   /* -------------------------------------------------------
-     RED ACCENT — HOVER / INTERACTION
+     RED ACCENT — INTERACTION
      ------------------------------------------------------- */
-  --: #ff6f6f;
+  --accent-primary-hover: #ff6f6f;           /* lighter hover tone */
 
   /* -------------------------------------------------------
      RED ACCENT — BORDERS

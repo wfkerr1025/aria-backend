@@ -1,3 +1,8 @@
+/* ==========================================================
+   ARIA LITE — INPUT COMPONENT (REFINED)
+   Uses semantic tokens only. No hard-coded colors.
+   ========================================================== */
+
 /* -------------------------------------------------------
    INPUT BASE
    ------------------------------------------------------- */
@@ -9,9 +14,10 @@
   border: 1px solid var(--input-border);
   border-radius: var(--radius-sm);
   color: var(--input-text);
-  font-size: var(--);
+  font-size: var(--font-size-md);
   box-shadow: var(--shadow-inset);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color var(--motion-duration-sm) var(--motion-easing),
+              box-shadow var(--motion-duration-sm) var(--motion-easing);
 }
 
 .input::placeholder {
@@ -23,13 +29,13 @@
    ------------------------------------------------------- */
 
 .input:hover {
-  border-color: var(--accent-primary);
+  border-color: var(--input-border-hover);
 }
 
 .input:focus {
   outline: none;
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 0 2px var(--accent-soft);
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 2px var(--accent-primary-soft);
 }
 
 /* -------------------------------------------------------
@@ -54,17 +60,18 @@
   border: 1px solid var(--input-border);
   border-radius: var(--radius-sm);
   color: var(--input-text);
-  font-size: var(--);
+  font-size: var(--font-size-md);
   box-shadow: var(--shadow-inset);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color var(--motion-duration-sm) var(--motion-easing),
+              box-shadow var(--motion-duration-sm) var(--motion-easing);
 }
 
 .select:hover {
-  border-color: var(--accent-primary);
+  border-color: var(--input-border-hover);
 }
 
 .select:focus {
   outline: none;
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 0 2px var(--accent-soft);
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 2px var(--accent-primary-soft);
 }

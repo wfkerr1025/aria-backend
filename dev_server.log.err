@@ -1,0 +1,27 @@
+2026-07-27 01:16:48,794 INFO Starting secure_server with document root: D:\Users\William\ARIA-Lite Development\ARIA-Lite\webui
+2026-07-27 01:16:48,831 INFO Listening on http://0.0.0.0:3000
+2026-07-27 01:16:50,975 INFO 127.0.0.1 - - "GET /healthz HTTP/1.1" 200 -
+2026-07-27 01:17:18,954 INFO 127.0.0.1 - - "GET / HTTP/1.1" 200 -
+2026-07-27 01:17:19,177 INFO 127.0.0.1 - - "GET /themes/variables.css HTTP/1.1" 200 -
+2026-07-27 01:17:19,307 INFO 127.0.0.1 - - "GET /themes/base/charcoal.css HTTP/1.1" 200 -
+2026-07-27 01:17:19,309 INFO 127.0.0.1 - - "GET /themes/accents/teal.css HTTP/1.1" 200 -
+2026-07-27 01:17:19,311 INFO 127.0.0.1 - - "GET /themes/layout.css HTTP/1.1" 200 -
+2026-07-27 01:17:19,312 INFO 127.0.0.1 - - "GET /components/topbar/topbar.css HTTP/1.1" 200 -
+2026-07-27 01:17:19,313 INFO 127.0.0.1 - - "GET /components/sidebar/sidebar.css HTTP/1.1" 200 -
+2026-07-27 01:17:19,486 INFO 127.0.0.1 - - "GET /components/chat/chat.css HTTP/1.1" 200 -
+2026-07-27 01:17:19,624 INFO 127.0.0.1 - - "GET /components/panels/panels.css HTTP/1.1" 200 -
+2026-07-27 01:17:19,625 INFO 127.0.0.1 - - "GET /components/buttons/buttons.css HTTP/1.1" 200 -
+2026-07-27 01:17:19,626 INFO 127.0.0.1 - - "GET /components/input/input.css HTTP/1.1" 200 -
+2026-07-27 01:17:19,628 INFO 127.0.0.1 - - "GET /components/diagnostics/diagnostics.css HTTP/1.1" 200 -
+2026-07-27 01:17:19,629 INFO 127.0.0.1 - - "GET /components/tools/tools.css HTTP/1.1" 200 -
+2026-07-27 01:17:19,804 INFO 127.0.0.1 - - "GET /components/plugins/plugins.css HTTP/1.1" 200 -
+2026-07-27 01:17:19,936 INFO 127.0.0.1 - - "GET /components/fileops/fileops.css HTTP/1.1" 200 -
+2026-07-27 01:17:19,937 INFO 127.0.0.1 - - "GET /lib/dompurify.min.js HTTP/1.1" 200 -
+2026-07-27 01:17:19,940 INFO 127.0.0.1 - - "GET /lib/marked.min.js HTTP/1.1" 200 -
+2026-07-27 01:17:19,942 INFO 127.0.0.1 - - "GET /core/theme-loader.js HTTP/1.1" 200 -
+2026-07-27 01:17:19,943 INFO 127.0.0.1 - - "GET /core/app.js HTTP/1.1" 200 -
+2026-07-27 01:17:20,259 INFO 127.0.0.1 - - "GET /core/bridge.js HTTP/1.1" 200 -
+2026-07-27 01:17:20,261 INFO 127.0.0.1 - - "GET /core/router.js HTTP/1.1" 200 -
+2026-07-27 01:17:20,262 INFO 127.0.0.1 - - "GET /components/sidebar/sidebar.js HTTP/1.1" 200 -
+2026-07-27 01:17:20,506 INFO 127.0.0.1 - - "GET /components/chat/chat.html HTTP/1.1" 200 -
+2026-07-27 01:17:20,574 INFO 127.0.0.1 - - "GET /favicon.ico HTTP/1.1" 200 -

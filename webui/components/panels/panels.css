@@ -1,9 +1,14 @@
+/* ==========================================================
+   ARIA LITE — PANEL COMPONENT (PREMIUM ENHANCED)
+   Uses semantic tokens only. No hard-coded colors.
+   ========================================================== */
+
 /* -------------------------------------------------------
-   PANEL BASE (Unified ARIA Panel Geometry)
+   PANEL BASE
    ------------------------------------------------------- */
 
 .panel {
-  background: var(--);
+  background: var(--panel-bg);
   border-radius: var(--panel-radius);
   border: 1px solid var(--panel-border);
   box-shadow: var(--shadow-panel);
@@ -11,6 +16,8 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--font-family-ui);
 }
 
 /* -------------------------------------------------------
@@ -18,10 +25,10 @@
    ------------------------------------------------------- */
 
 .panel-header {
-  padding: var(--);
-  background: var(--);
-  border-radius: var(--);
-  border: 1px solid var(--);
+  padding: var(--space-md);
+  background: var(--panel-bg-alt);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--panel-border);
   box-shadow: var(--shadow-header);
   margin-bottom: var(--space-lg);
   display: flex;
@@ -30,9 +37,9 @@
 }
 
 .panel-title {
-  font-size: var(--);
-  font-weight: var(--);
-  color: var(--);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
   text-shadow: 0 1px 2px rgba(0,0,0,0.4);
 }
 
@@ -43,9 +50,53 @@
 .panel-content {
   flex: 1;
   overflow-y: auto;
-  background: var(--);
-  border: 1px solid var(--);
+  background: var(--panel-bg-alt);
+  border: 1px solid var(--panel-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-inset);
   padding: var(--space-md);
+  color: var(--text-primary);
+}
+
+/* -------------------------------------------------------
+   PANEL TABS (CHAT MENU / NEW CHAT)
+   ------------------------------------------------------- */
+
+.panel-tabs {
+  display: flex;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+/* -------------------------------------------------------
+   UNIVERSAL TAB BUTTON STYLING
+   (Covers ALL injected tab types: button, .panel-tab, .tab-btn)
+   ------------------------------------------------------- */
+
+.panel-tabs button,
+.panel-tabs .panel-tab,
+.panel-tabs .tab-btn {
+  background: transparent !important;
+  border: none !important;
+  color: var(--sidebar-text-muted);
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: color var(--motion-duration-sm) var(--motion-easing);
+}
+
+/* Hover highlight (teal/cyan) */
+.panel-tabs button:hover,
+.panel-tabs .panel-tab:hover,
+.panel-tabs .tab-btn:hover {
+  color: var(--accent-primary);
+}
+
+/* Active tab */
+.panel-tabs button.active,
+.panel-tabs .panel-tab.active,
+.panel-tabs .tab-btn.active {
+  color: var(--accent-primary);
+  font-weight: var(--font-weight-medium);
 }

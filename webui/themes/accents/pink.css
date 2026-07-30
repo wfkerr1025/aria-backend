@@ -1,14 +1,19 @@
-:root {
+/* webui/themes/accents/pink.css
+   ARIA LITE — Accent Theme: Pink
+   Overrides only accent tokens.
+*/
+
+[data-accent="pink"] {
   /* -------------------------------------------------------
      PINK ACCENT — ACCENT COLORS
      ------------------------------------------------------- */
-  --accent-primary: #ff7acb;
+  --accent-primary: #ff7acb;                 /* main pink */
   --accent-soft: rgba(255, 122, 203, 0.12);
 
   /* -------------------------------------------------------
-     PINK ACCENT — HOVER / INTERACTION
+     PINK ACCENT — INTERACTION
      ------------------------------------------------------- */
-  --: #ff8ad2;
+  --accent-primary-hover: #ff8ad2;           /* lighter hover tone */
 
   /* -------------------------------------------------------
      PINK ACCENT — BORDERS

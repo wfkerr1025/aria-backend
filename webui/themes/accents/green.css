@@ -1,17 +1,22 @@
-:root {
+/* webui/themes/accents/green.css
+   ARIA LITE — Accent Theme: Green
+   Overrides only accent tokens.
+*/
+
+[data-accent="green"] {
   /* -------------------------------------------------------
-     CHARCOAL GREEN ACCENT — ACCENT COLORS
+     GREEN ACCENT — ACCENT COLORS
      ------------------------------------------------------- */
-  --accent-primary: #7ed957;
+  --accent-primary: #7ed957;                 /* main green */
   --accent-soft: rgba(126, 217, 87, 0.12);
 
   /* -------------------------------------------------------
-     CHARCOAL GREEN ACCENT — HOVER / INTERACTION
+     GREEN ACCENT — INTERACTION
      ------------------------------------------------------- */
-  --: #8ae36a;
+  --accent-primary-hover: #8ae36a;           /* lighter hover tone */
 
   /* -------------------------------------------------------
-     CHARCOAL GREEN ACCENT — BORDERS
+     GREEN ACCENT — BORDERS
      ------------------------------------------------------- */
   --border-accent: rgba(126, 217, 87, 0.4);
 }

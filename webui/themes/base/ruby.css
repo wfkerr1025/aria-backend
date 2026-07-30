@@ -1,24 +1,38 @@
-:root {
+/* webui/themes/ruby.css
+   ARIA LITE — Ruby Theme
+   Deep red palette with soft warm highlights.
+   Fully compatible with variables.css and standard naming.
+*/
+
+[data-theme="ruby"] {
   /* -------------------------------------------------------
      RUBY — BACKGROUNDS
      ------------------------------------------------------- */
-  --: #2b0000;
-  --: #3a0000;
-  --: #4a0000;
+  --bg-ruby-900: #2b0000;
+  --bg-ruby-800: #3a0000;
+  --bg-ruby-700: #4a0000;
+  --bg-ruby-600: #5c0a0a;
+  --bg-ruby-500: #6e0f0f;
 
-  --: #5c0a0a;
-  --: #6e0f0f;
+  /* Unified ARIA background tokens */
+  --bg-app: var(--bg-ruby-900);
+  --bg-app-alt: var(--bg-ruby-800);
+  --bg-surface: var(--bg-ruby-700);
+  --bg-surface-soft: var(--bg-ruby-600);
+  --bg-surface-softer: var(--bg-ruby-500);
 
   /* -------------------------------------------------------
      RUBY — TEXT
      ------------------------------------------------------- */
-  --: #fff5f5;
-  --: #f2dcdc;
-  --: #d9baba;
+  --text-primary: #fff5f5;
+  --text-secondary: #f2dcdc;
+  --text-muted: #d9baba;
+  --text-inverse: #ffffff;
 
   /* -------------------------------------------------------
      RUBY — BORDERS
      ------------------------------------------------------- */
+  --border-hairline: rgba(255, 50, 50, 0.15);
   --border-base: rgba(255, 50, 50, 0.25);
   --border-strong: rgba(255, 50, 50, 0.45);
 
@@ -28,6 +42,46 @@
   --shadow-panel: 0 10px 30px rgba(0, 0, 0, 0.45);
   --shadow-header: 0 6px 18px rgba(0, 0, 0, 0.55);
   --shadow-button: 0 2px 6px rgba(0, 0, 0, 0.4);
-  --: 0 3px 10px rgba(0, 0, 0, 0.55);
+  --shadow-heavy: 0 3px 10px rgba(0, 0, 0, 0.55);
   --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+
+  /* -------------------------------------------------------
+     PANEL GEOMETRY
+     ------------------------------------------------------- */
+  --panel-radius: var(--radius-md);
+  --panel-border: var(--border-base);
+  --panel-padding: 20px;
+
+  /* -------------------------------------------------------
+     ITEM GEOMETRY
+     ------------------------------------------------------- */
+  --item-padding: 12px;
+  --item-border: var(--border-base);
+  --item-radius: var(--radius-sm);
+  --item-bg: rgba(255, 50, 50, 0.05);
+  --item-bg-hover: rgba(255, 50, 50, 0.08);
+  --item-bg-selected: rgba(255, 50, 50, 0.12);
+
+  /* -------------------------------------------------------
+     INPUTS
+     ------------------------------------------------------- */
+  --input-bg: var(--bg-surface-soft);
+  --input-border: var(--border-base);
+  --input-text: var(--text-primary);
+  --input-placeholder: var(--text-muted);
+
+  /* -------------------------------------------------------
+     BUTTONS
+     ------------------------------------------------------- */
+  --btn-bg: #4a0000;
+  --btn-bg-hover: #5c0a0a;
+  --btn-bg-active: #6e0f0f;
+  --btn-text: var(--text-primary);
+  --btn-border: var(--border-base);
+
+  /* -------------------------------------------------------
+     ACCENT (Overridden by accent themes)
+     ------------------------------------------------------- */
+  --accent-primary: #ff3232;
+  --accent-soft: rgba(255, 50, 50, 0.15);
 }

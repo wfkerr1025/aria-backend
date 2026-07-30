@@ -1,17 +1,22 @@
-:root {
+/* webui/themes/accents/bluegrey.css
+   ARIA LITE — Accent Theme: BlueGrey
+   Overrides only accent tokens.
+*/
+
+[data-accent="bluegrey"] {
   /* -------------------------------------------------------
-     CHARCOAL ACCENT — ACCENT COLORS
+     BLUEGREY ACCENT — ACCENT COLORS
      ------------------------------------------------------- */
-  --accent-primary: #8fa6c3;
+  --accent-primary: #8fa6c3;            /* main bluegrey */
   --accent-soft: rgba(143, 166, 195, 0.12);
 
   /* -------------------------------------------------------
-     CHARCOAL ACCENT — HOVER / INTERACTION
+     BLUEGREY ACCENT — INTERACTION
      ------------------------------------------------------- */
-  --: #9bb2cf;
+  --accent-primary-hover: #9bb2cf;     /* lighter hover tone */
 
   /* -------------------------------------------------------
-     CHARCOAL ACCENT — BORDERS
+     BLUEGREY ACCENT — BORDERS
      ------------------------------------------------------- */
   --border-accent: rgba(143, 166, 195, 0.4);
 }

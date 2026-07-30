@@ -1,28 +1,35 @@
+/* ==========================================================
+   ARIA LITE — TOOLS PANEL (REFINED)
+   Uses semantic tokens only. No hard-coded colors.
+   ========================================================== */
+
 /* -------------------------------------------------------
-   TOOLS PANEL (Unified ARIA Tools Panel)
+   PANEL CONTAINER
    ------------------------------------------------------- */
 
 #tools-panel {
   display: flex;
   flex-direction: column;
   height: calc(100vh - 56px);
-  background: var(--);
+  background: var(--panel-bg);
   border-radius: var(--panel-radius);
   border: 1px solid var(--panel-border);
   box-shadow: var(--shadow-panel);
   padding: var(--panel-padding);
   overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--font-family-ui);
 }
 
 /* -------------------------------------------------------
-   PANEL HEADER (Unified ARIA Header)
+   PANEL HEADER
    ------------------------------------------------------- */
 
 .tools-header {
-  padding: var(--);
-  background: var(--);
-  border-radius: var(--);
-  border: 1px solid var(--);
+  padding: var(--space-md);
+  background: var(--panel-bg-alt);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--panel-border);
   box-shadow: var(--shadow-header);
   margin-bottom: var(--space-lg);
   display: flex;
@@ -31,19 +38,19 @@
 }
 
 .tools-title {
-  font-size: var(--);
-  font-weight: var(--);
-  color: var(--);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
   text-shadow: 0 1px 2px rgba(0,0,0,0.4);
 }
 
 /* -------------------------------------------------------
-   SECTION TITLE (Muted ARIA Typography)
+   SECTION TITLE
    ------------------------------------------------------- */
 
 .tools-section-title {
-  font-size: var(--);
-  color: var(--);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: var(--space-sm);
@@ -51,39 +58,40 @@
 }
 
 /* -------------------------------------------------------
-   TOOLS CONTENT AREA (Inset ARIA Panel)
+   CONTENT AREA
    ------------------------------------------------------- */
 
 .tools-content {
   flex: 1;
   overflow-y: auto;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--);
+  background: var(--panel-bg-alt);
+  border: 1px solid var(--panel-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-inset);
   padding: var(--space-md);
 }
 
 /* -------------------------------------------------------
-   TOOL ITEM (ARIA List Geometry)
+   TOOL ITEM
    ------------------------------------------------------- */
 
 .tool-item {
-  padding: var(--item-padding);
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--item-border);
-  border-radius: var(--item-radius);
+  padding: var(--space-md);
+  background: var(--panel-bg-alt);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
   margin-bottom: var(--space-sm);
   cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .tool-item:hover {
-  background: var(--);
+  background: var(--panel-bg-hover);
 }
 
 .tool-item.active {
-  background: var(--);
-  border-color: var(--);
+  background: var(--accent-primary-soft);
+  border-color: var(--accent-primary);
 }
 
 /* -------------------------------------------------------
@@ -91,18 +99,18 @@
    ------------------------------------------------------- */
 
 .tool-label {
-  font-size: var(--);
-  color: var(--);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
   margin-bottom: var(--space-xs);
 }
 
 .tool-value {
-  font-size: var(--);
-  color: var(--);
+  font-size: var(--font-size-md);
+  color: var(--text-primary);
 }
 
 /* -------------------------------------------------------
-   TOOL ACTIONS (ARIA Button Geometry)
+   TOOL ACTIONS
    ------------------------------------------------------- */
 
 .tools-actions {
@@ -111,18 +119,30 @@
   margin-top: var(--space-md);
 }
 
+/* -------------------------------------------------------
+   TOOLS BUTTONS (UPDATED FOR MENUBAR TOKENS)
+   ------------------------------------------------------- */
+
 .tools-btn {
-  background: var(--btn-bg);
-  border: 1px solid var(--);
+  background: var(--menubar-button-bg);
+  border: 1px solid var(--menubar-button-border);
   border-radius: var(--radius-md);
   padding: var(--space-sm) var(--space-md);
-  color: var(--);
+  color: var(--menubar-button-text);
   cursor: pointer;
   box-shadow: var(--shadow-button);
-  font-size: var(--);
+  font-size: var(--font-size-md);
+  transition: background var(--motion-duration-sm) var(--motion-easing),
+              color var(--motion-duration-sm) var(--motion-easing),
+              border-color var(--motion-duration-sm) var(--motion-easing);
 }
 
 .tools-btn:hover {
-  background: var(--);
-  box-shadow: var(--);
+  background: var(--menubar-button-bg-hover);
+  color: var(--menubar-button-text-hover);
+  box-shadow: var(--shadow-button);
+}
+
+.tools-btn:active {
+  background: var(--menubar-button-bg-active);
 }

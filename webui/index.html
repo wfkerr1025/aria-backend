@@ -4,21 +4,36 @@
   <meta charset="UTF-8" />
   <title>ARIA Lite</title>
 
-  <!-- Markdown + Sanitizer (LOCAL, CSP-SAFE) -->
+  <!-- ======================================================
+       CORE LIBRARIES (LOCAL, CSP-SAFE)
+       ====================================================== -->
   <script src="lib/dompurify.min.js"></script>
   <script src="lib/marked.min.js"></script>
 
-  <!-- GLOBAL VARIABLES -->
+  <!-- ======================================================
+       GLOBAL DESIGN SYSTEM (RAW TOKENS + SEMANTIC DEFAULTS)
+       ====================================================== -->
   <link rel="stylesheet" href="themes/variables.css" />
 
-  <!-- BASE + ACCENT THEMES -->
+  <!-- ======================================================
+       GLOBAL LAYOUT (STRUCTURE, SPACING, SEMANTIC USAGE)
+       ====================================================== -->
+  <link rel="stylesheet" href="themes/layout.css" />
+
+  <!-- ======================================================
+       THEMES (BASE + ACCENT)
+       ====================================================== -->
   <link id="aria-base-theme" rel="stylesheet" href="themes/base/charcoal.css" />
   <link id="aria-accent-theme" rel="stylesheet" href="themes/accents/teal.css" />
 
-  <!-- GLOBAL LAYOUT -->
-  <link rel="stylesheet" href="themes/layout.css" />
+  <!-- ======================================================
+       CHAT SUBSYSTEM THEME (NEW — MUST LOAD AFTER THEMES)
+       ====================================================== -->
+  <link rel="stylesheet" href="themes/chat/chat-theme.css" />
 
-  <!-- COMPONENT CSS -->
+  <!-- ======================================================
+       COMPONENT CSS (USES SEMANTIC + THEME + CHAT TOKENS)
+       ====================================================== -->
   <link rel="stylesheet" href="components/topbar/topbar.css" />
   <link rel="stylesheet" href="components/sidebar/sidebar.css" />
   <link rel="stylesheet" href="components/chat/chat.css" />
@@ -30,16 +45,18 @@
   <link rel="stylesheet" href="components/plugins/plugins.css" />
   <link rel="stylesheet" href="components/fileops/fileops.css" />
 
-  <!-- THEME LOADER -->
+  <!-- ======================================================
+       APPLICATION SCRIPTS
+       ====================================================== -->
   <script type="module" src="core/theme-loader.js"></script>
-
-  <!-- MAIN APP SCRIPT -->
   <script type="module" src="core/app.js"></script>
 </head>
 
 <body>
 
-  <!-- FULL-WIDTH TOPBAR -->
+  <!-- ======================================================
+       TOPBAR
+       ====================================================== -->
   <header id="topbar">
     <div class="topbar-left">
       <span class="topbar-title">ARIA Lite</span>
@@ -51,11 +68,16 @@
     </div>
   </header>
 
-  <!-- MAIN APP CONTAINER -->
+  <!-- ======================================================
+       MAIN APP CONTAINER
+       ====================================================== -->
   <div id="app-container">
 
-    <!-- SIDEBAR -->
+    <!-- ====================================================
+         SIDEBAR
+         ==================================================== -->
     <aside id="sidebar">
+
       <div class="sidebar-section-label">Core</div>
 
       <button class="sidebar-btn" data-panel="diagnostics">
@@ -86,9 +108,12 @@
         <span class="sidebar-btn-icon">💬</span>
         <span>Chat</span>
       </button>
+
     </aside>
 
-    <!-- MAIN CONTENT -->
+    <!-- ====================================================
+         MAIN CONTENT AREA
+         ==================================================== -->
     <div id="content">
       <main id="panel-container"></main>
     </div>

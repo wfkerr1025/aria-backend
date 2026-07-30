@@ -1,17 +1,22 @@
-:root {
+/* webui/themes/accents/orange.css
+   ARIA LITE — Accent Theme: Orange
+   Overrides only accent tokens.
+*/
+
+[data-accent="orange"] {
   /* -------------------------------------------------------
-     CHARCOAL ORANGE ACCENT — ACCENT COLORS
+     ORANGE ACCENT — ACCENT COLORS
      ------------------------------------------------------- */
-  --accent-primary: #ff9f43;
+  --accent-primary: #ff9f43;                 /* main orange */
   --accent-soft: rgba(255, 159, 67, 0.12);
 
   /* -------------------------------------------------------
-     CHARCOAL ORANGE ACCENT — HOVER / INTERACTION
+     ORANGE ACCENT — INTERACTION
      ------------------------------------------------------- */
-  --: #ffae61;
+  --accent-primary-hover: #ffae61;           /* lighter hover tone */
 
   /* -------------------------------------------------------
-     CHARCOAL ORANGE ACCENT — BORDERS
+     ORANGE ACCENT — BORDERS
      ------------------------------------------------------- */
   --border-accent: rgba(255, 159, 67, 0.4);
 }

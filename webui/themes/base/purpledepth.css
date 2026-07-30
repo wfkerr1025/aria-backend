@@ -1,24 +1,38 @@
-:root {
+/* webui/themes/purpledepth.css
+   ARIA LITE — PurpleDepth Theme
+   Deep violet palette with soft lavender text.
+   Fully compatible with variables.css and standard naming.
+*/
+
+[data-theme="purpledepth"] {
   /* -------------------------------------------------------
      PURPLEDEPTH — BACKGROUNDS
      ------------------------------------------------------- */
-  --: #12001a;
-  --: #1a0024;
-  --: #24002e;
+  --bg-purpledepth-900: #12001a;
+  --bg-purpledepth-800: #1a0024;
+  --bg-purpledepth-700: #24002e;
+  --bg-purpledepth-600: #2e0a3a;
+  --bg-purpledepth-500: #3a0f47;
 
-  --: #2e0a3a;
-  --: #3a0f47;
+  /* Unified ARIA background tokens */
+  --bg-app: var(--bg-purpledepth-900);
+  --bg-app-alt: var(--bg-purpledepth-800);
+  --bg-surface: var(--bg-purpledepth-700);
+  --bg-surface-soft: var(--bg-purpledepth-600);
+  --bg-surface-softer: var(--bg-purpledepth-500);
 
   /* -------------------------------------------------------
      PURPLEDEPTH — TEXT
      ------------------------------------------------------- */
-  --: #f7eaff;
-  --: #e8d4f7;
-  --: #d1b8e3;
+  --text-primary: #f7eaff;
+  --text-secondary: #e8d4f7;
+  --text-muted: #d1b8e3;
+  --text-inverse: #ffffff;
 
   /* -------------------------------------------------------
      PURPLEDEPTH — BORDERS
      ------------------------------------------------------- */
+  --border-hairline: rgba(179, 140, 255, 0.15);
   --border-base: rgba(179, 140, 255, 0.25);
   --border-strong: rgba(179, 140, 255, 0.45);
 
@@ -28,6 +42,46 @@
   --shadow-panel: 0 10px 30px rgba(0, 0, 0, 0.45);
   --shadow-header: 0 6px 18px rgba(0, 0, 0, 0.55);
   --shadow-button: 0 2px 6px rgba(0, 0, 0, 0.4);
-  --: 0 3px 10px rgba(0, 0, 0, 0.55);
+  --shadow-heavy: 0 3px 10px rgba(0, 0, 0, 0.55);
   --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+
+  /* -------------------------------------------------------
+     PANEL GEOMETRY
+     ------------------------------------------------------- */
+  --panel-radius: var(--radius-md);
+  --panel-border: var(--border-base);
+  --panel-padding: 20px;
+
+  /* -------------------------------------------------------
+     ITEM GEOMETRY
+     ------------------------------------------------------- */
+  --item-padding: 12px;
+  --item-border: var(--border-base);
+  --item-radius: var(--radius-sm);
+  --item-bg: rgba(179, 140, 255, 0.05);
+  --item-bg-hover: rgba(179, 140, 255, 0.08);
+  --item-bg-selected: rgba(179, 140, 255, 0.12);
+
+  /* -------------------------------------------------------
+     INPUTS
+     ------------------------------------------------------- */
+  --input-bg: var(--bg-surface-soft);
+  --input-border: var(--border-base);
+  --input-text: var(--text-primary);
+  --input-placeholder: var(--text-muted);
+
+  /* -------------------------------------------------------
+     BUTTONS
+     ------------------------------------------------------- */
+  --btn-bg: #24002e;
+  --btn-bg-hover: #2e0a3a;
+  --btn-bg-active: #3a0f47;
+  --btn-text: var(--text-primary);
+  --btn-border: var(--border-base);
+
+  /* -------------------------------------------------------
+     ACCENT (Overridden by accent themes)
+     ------------------------------------------------------- */
+  --accent-primary: #b38cff;
+  --accent-soft: rgba(179, 140, 255, 0.15);
 }

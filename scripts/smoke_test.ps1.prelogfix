@@ -1,0 +1,58 @@
+param(
+  [int]$Port = 3000,
+  [int]$TimeoutSeconds = 10
+)
+
+$repo = Split-Path -Parent $PSScriptRoot
+$webui = Join-Path $repo "webui"
+$log = Join-Path $repo "dev_server.smoke.log"
+
+# Start server in background
+$startInfo = @{
+  FilePath = "python"
+  ArgumentList = "-u", "secure_server.py"
+  WorkingDirectory = $webui
+  RedirectStandardOutput = $logPath
+  RedirectStandardError = ($logPath + ".err")
+  NoNewWindow = $true
+}
+$proc = Start-Process @startInfo -PassThru
+
+# Wait for health endpoint
+$deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+$ok = $false
+while ((Get-Date) -lt $deadline) {
+  try {
+    $r = Invoke-WebRequest -Uri "http://localhost:$Port/healthz" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+    if ($r.StatusCode -eq 200) { $ok = $true; break }
+  } catch {}
+  Start-Sleep -Milliseconds 300
+}
+
+if (-not $ok) {
+  Write-Host "Server did not become healthy within $TimeoutSeconds seconds"
+  if ($proc -and -not $proc.HasExited) { $proc.Kill() }
+  exit 2
+}
+
+# Check assets
+$assets = @("/lib/marked.min.js","/lib/dompurify.min.js","/")
+foreach ($a in $assets) {
+  try {
+    $r = Invoke-WebRequest -Uri "http://localhost:$Port$a" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+    if ($r.StatusCode -ne 200) {
+      Write-Host "Asset $a returned $($r.StatusCode)"
+      if ($proc -and -not $proc.HasExited) { $proc.Kill() }
+      exit 3
+    }
+  } catch {
+    Write-Host "Failed to fetch $a : $_"
+    if ($proc -and -not $proc.HasExited) { $proc.Kill() }
+    exit 4
+  }
+}
+
+# Clean up
+if ($proc -and -not $proc.HasExited) { $proc.Kill() }
+Write-Host "Smoke test passed"
+exit 0

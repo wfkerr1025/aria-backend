@@ -1,0 +1,204 @@
+/* -------------------------------------------------------
+   ARIA LITE — MASTER THEME VARIABLE MAP
+   Every changeable element gets a real name.
+   ------------------------------------------------------- */
+
+:root {
+  /* -------------------------------------------------------
+     GLOBAL BACKGROUNDS
+     ------------------------------------------------------- */
+  --bg-app: #171a21;
+  --bg-app-alt: #1b1e26;
+  --bg-surface: #2a2e38;
+
+  --bg-surface-soft: #1f232c;
+  --bg-surface-softer: #2b303b;
+
+  --bg-gradient-app: linear-gradient(to bottom, #171a21, #1b1e26);
+  --bg-gradient-surface: linear-gradient(to bottom, #1b1e26, #2a2e38);
+  --bg-gradient-invert: linear-gradient(to bottom, #2a2e38, #1b1e26);
+
+  /* -------------------------------------------------------
+     ACCENTS
+     ------------------------------------------------------- */
+  --accent-primary: #66c0f4;
+  --accent-primary-soft: rgba(102, 192, 244, 0.12);
+  --accent-secondary: #e39ff6;
+  --accent-secondary-soft: rgba(227, 159, 246, 0.12);
+
+  /* -------------------------------------------------------
+     TEXT COLORS
+     ------------------------------------------------------- */
+  --text-primary: #c7d5e0;
+  --text-secondary: #8f98a0;
+  --text-muted: #6f7a85;
+
+  --text-success: #4caf50;
+  --text-warning: #ffcc33;
+  --text-error: #ff4f4f;
+  --text-inverse: #ffffff;
+
+  --text-hover-primary: #00c8ff;
+  --text-hover-secondary: #8f98a0;
+  --text-hover-accent: #66c0f4;
+  --text-hover-warning: #ffcc33;
+  --text-hover-error: #ff4f4f;
+
+  /* -------------------------------------------------------
+     BORDERS
+     ------------------------------------------------------- */
+  --border-hairline: rgba(255, 255, 255, 0.06);
+  --border-base: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.18);
+
+  --border-accent: #66c0f4;
+  --border-warning: #ffcc33;
+  --border-error: #ff4f4f;
+
+  /* -------------------------------------------------------
+     PANELS (Generic containers)
+     ------------------------------------------------------- */
+  --panel-bg: var(--bg-surface-soft);
+  --panel-bg-alt: rgba(255, 255, 255, 0.03);
+  --panel-bg-hover: var(--bg-surface-softer);
+
+  --panel-border: var(--border-base);
+  --panel-radius: 6px;
+  --panel-padding: 16px;
+  --panel-gap: 8px;
+
+  /* -------------------------------------------------------
+     ITEMS (Rows, list entries, cards)
+     ------------------------------------------------------- */
+  --item-bg: rgba(255, 255, 255, 0.04);
+  --item-bg-accent: rgba(102, 192, 244, 0.12);
+  --item-bg-hover: var(--bg-surface-softer);
+
+  --item-border: var(--border-base);
+  --item-radius: 4px;
+  --item-padding: 8px 10px;
+
+  /* -------------------------------------------------------
+     SIDEBAR
+     ------------------------------------------------------- */
+  --sidebar-bg: var(--bg-app);
+  --sidebar-bg-hover: var(--bg-surface-soft);
+  --sidebar-bg-active: var(--bg-surface-softer);
+
+  --sidebar-text: var(--text-primary);
+  --sidebar-text-muted: var(--text-secondary);
+  --sidebar-text-active: var(--accent-primary);
+
+  --sidebar-border: var(--border-hairline);
+  --sidebar-divider: var(--border-base);
+
+  /* -------------------------------------------------------
+     TOPBAR
+     ------------------------------------------------------- */
+  --topbar-bg: transparent;
+  --topbar-bg-hover: var(--bg-surface-soft);
+
+  --topbar-text: var(--text-primary);
+  --topbar-text-muted: var(--text-secondary);
+
+  --topbar-border-bottom: var(--border-hairline);
+
+  /* -------------------------------------------------------
+     BUTTONS
+     ------------------------------------------------------- */
+  --btn-bg: #2b303b;
+  --btn-bg-hover: #343a46;
+  --btn-bg-active: #3c4250;
+
+  --btn-text: var(--text-primary);
+  --btn-text-hover: var(--text-inverse);
+  --btn-text-muted: var(--text-secondary);
+
+  --btn-border: var(--border-base);
+  --btn-border-hover: var(--border-hairline);
+  --btn-border-active: var(--accent-primary);
+
+  --btn-radius: 4px;
+  --btn-padding: 8px 12px;
+
+  /* -------------------------------------------------------
+     INPUTS
+     ------------------------------------------------------- */
+  --input-bg: var(--bg-surface-soft);
+  --input-bg-alt: #343a46;
+
+  --input-text: var(--text-primary);
+  --input-placeholder: var(--text-secondary);
+
+  --input-border: var(--border-base);
+  --input-border-hover: var(--border-hairline);
+  --input-border-focus: var(--accent-primary);
+
+  --input-radius: 4px;
+  --input-padding: 6px 10px;
+
+  /* -------------------------------------------------------
+     CHAT (Transcript + input bar)
+     ------------------------------------------------------- */
+  --chat-bg: var(--bg-app-alt);
+  --chat-bg-inner: var(--bg-surface-soft);
+
+  --chat-text: var(--text-primary);
+  --chat-text-muted: var(--text-secondary);
+
+  --chat-border: var(--border-base);
+  --chat-radius: var(--panel-radius);
+  --chat-padding: var(--panel-padding);
+
+  --chat-toolbar-bg: rgba(255, 255, 255, 0.04);
+  --chat-toolbar-border: var(--border-hairline);
+  --chat-toolbar-text: var(--text-primary);
+
+  --chat-user-label: var(--accent-secondary);
+  --chat-aria-label: var(--accent-primary);
+
+  /* -------------------------------------------------------
+     SHADOWS
+     ------------------------------------------------------- */
+  --shadow-panel: 0 10px 30px rgba(0, 0, 0, 0.6);
+  --shadow-header: 0 6px 18px rgba(0, 0, 0, 0.7);
+  --shadow-button: 0 2px 6px rgba(0, 0, 0, 0.6);
+  --shadow-heavy: 0 3px 10px rgba(0, 0, 0, 0.8);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  /* -------------------------------------------------------
+     TYPOGRAPHY
+     ------------------------------------------------------- */
+  --font-ui: "Segoe UI", "Inter", sans-serif;
+  --font-mono: "Consolas", "Fira Code", monospace;
+
+  --font-size-xs: 11px;
+  --font-size-sm: 13px;
+  --font-size-md: 16px;
+  --font-size-lg: 18px;
+
+  --font-size-label-xs: 11px;
+  --font-size-label-sm: 13px;
+  --font-size-label-md: 14px;
+  --font-size-label-lg: 16px;
+  --font-size-label-xl: 18px;
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-bold: 600;
+
+  /* -------------------------------------------------------
+     RADII & SPACING
+     ------------------------------------------------------- */
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  --space-xs: 4px;
+  --space-sm: 6px;
+  --space-md: 10px;
+  --space-lg: 16px;
+  --space-xl: 22px;
+}
+

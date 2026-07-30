@@ -1,14 +1,19 @@
-:root {
+/* webui/themes/accents/silver.css
+   ARIA LITE — Accent Theme: Silver
+   Overrides only accent tokens.
+*/
+
+[data-accent="silver"] {
   /* -------------------------------------------------------
      SILVER ACCENT — ACCENT COLORS
      ------------------------------------------------------- */
-  --accent-primary: #c7c7c7;
+  --accent-primary: #c7c7c7;                 /* main silver */
   --accent-soft: rgba(199, 199, 199, 0.12);
 
   /* -------------------------------------------------------
-     SILVER ACCENT — HOVER / INTERACTION
+     SILVER ACCENT — INTERACTION
      ------------------------------------------------------- */
-  --: #d3d3d3;
+  --accent-primary-hover: #d3d3d3;           /* lighter hover tone */
 
   /* -------------------------------------------------------
      SILVER ACCENT — BORDERS

@@ -1,14 +1,19 @@
-:root {
+/* webui/themes/accents/purple.css
+   ARIA LITE — Accent Theme: Purple
+   Overrides only accent tokens.
+*/
+
+[data-accent="purple"] {
   /* -------------------------------------------------------
      PURPLE ACCENT — ACCENT COLORS
      ------------------------------------------------------- */
-  --accent-primary: #b38cff;
+  --accent-primary: #b38cff;                 /* main purple */
   --accent-soft: rgba(179, 140, 255, 0.12);
 
   /* -------------------------------------------------------
-     PURPLE ACCENT — HOVER / INTERACTION
+     PURPLE ACCENT — INTERACTION
      ------------------------------------------------------- */
-  --: #c29cff;
+  --accent-primary-hover: #c29cff;           /* lighter hover tone */
 
   /* -------------------------------------------------------
      PURPLE ACCENT — BORDERS

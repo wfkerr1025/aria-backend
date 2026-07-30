@@ -1,14 +1,19 @@
-:root {
+/* webui/themes/accents/blue.css
+   ARIA LITE — Accent Theme: Blue
+   Overrides only accent tokens.
+*/
+
+[data-accent="blue"] {
   /* -------------------------------------------------------
      BLUE ACCENT — ACCENT COLORS
      ------------------------------------------------------- */
-  --accent-primary: #66c0f4;
+  --accent-primary: #66c0f4;                 /* main blue */
   --accent-soft: rgba(102, 192, 244, 0.12);
 
   /* -------------------------------------------------------
-     BLUE ACCENT — HOVER / INTERACTION
+     BLUE ACCENT — INTERACTION
      ------------------------------------------------------- */
-  --: #7cc9f7;
+  --accent-primary-hover: #7cc9f7;           /* lighter hover tone */
 
   /* -------------------------------------------------------
      BLUE ACCENT — BORDERS

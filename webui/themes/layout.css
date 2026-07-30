@@ -1,14 +1,15 @@
 /* -------------------------------------------------------
    GLOBAL LAYOUT (ARIA Lite Geometry)
+   Professional Steam‑Grade Tokenized Layout
    ------------------------------------------------------- */
 
 html, body {
   margin: 0;
   padding: 0;
   height: 100%;
-  background: var(--);
-  color: var(--);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-family-ui);
   overflow: hidden;
 }
 
@@ -18,7 +19,7 @@ html, body {
   height: 100vh;
   width: 100vw;
   overflow: hidden;
-  background: var(--);
+  background: var(--bg-app);
 }
 
 /* -------------------------------------------------------
@@ -32,8 +33,10 @@ html, body {
   flex-direction: column;
   overflow-y: auto;
   overflow-x: hidden;
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--border-base);
+
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+  border-right: 1px solid var(--sidebar-border);
 }
 
 /* -------------------------------------------------------
@@ -45,7 +48,9 @@ html, body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--);
+
+  background: var(--bg-app-alt);
+  color: var(--text-primary);
 }
 
 /* -------------------------------------------------------
@@ -58,9 +63,11 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+
   padding: 0 var(--space-md);
-  background: var(--bg-topbar);
-  border-bottom: 1px solid var(--border-base);
+  background: var(--topbar-bg);
+  color: var(--topbar-text);
+  border-bottom: 1px solid var(--topbar-border-bottom);
 }
 
 /* -------------------------------------------------------
@@ -72,9 +79,17 @@ html, body {
   overflow-y: auto;
   overflow-x: hidden;
   position: relative;
-  padding: var(--space-lg);
+
+  padding: var(--panel-padding);
   padding-top: var(--space-md);
+
+  /* ⭐ FINAL FIX: Adds space below sticky InputBar */
+  padding-bottom: 64px;
+
   box-sizing: border-box;
+
+  background: var(--panel-bg);
+  color: var(--text-primary);
 }
 
 /* -------------------------------------------------------
@@ -85,9 +100,15 @@ html, body {
   height: 100%;
   width: 100%;
   box-sizing: border-box;
+
   display: block;
   overflow-y: auto;
   overflow-x: hidden;
+
+  background: var(--panel-bg-alt);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius);
+  color: var(--text-primary);
 }
 
 /* -------------------------------------------------------

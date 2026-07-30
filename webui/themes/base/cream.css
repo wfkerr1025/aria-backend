@@ -1,24 +1,38 @@
-:root {
+/* webui/themes/cream.css
+   ARIA LITE — Cream Theme
+   Soft light theme with warm backgrounds and charcoal text.
+   Fully compatible with variables.css and standard naming.
+*/
+
+[data-theme="cream"] {
   /* -------------------------------------------------------
      CREAM — BACKGROUNDS
      ------------------------------------------------------- */
-  --: #f7f3e9;
-  --: #f0eadc;
-  --: #e8e1d0;
+  --bg-cream-900: #f7f3e9;
+  --bg-cream-800: #f0eadc;
+  --bg-cream-700: #e8e1d0;
+  --bg-cream-600: #ffffff;
+  --bg-cream-500: #f2ebdd;
 
-  --: #ffffff;
-  --: #f2ebdd;
+  /* Unified ARIA background tokens */
+  --bg-app: var(--bg-cream-900);
+  --bg-app-alt: var(--bg-cream-800);
+  --bg-surface: var(--bg-cream-700);
+  --bg-surface-soft: var(--bg-cream-500);
+  --bg-surface-softer: var(--bg-cream-600);
 
   /* -------------------------------------------------------
      CREAM — TEXT
      ------------------------------------------------------- */
-  --: #1a1a1a;
-  --: #4a4a4a;
-  --: #6a6a6a;
+  --text-primary: #1a1a1a;
+  --text-secondary: #4a4a4a;
+  --text-muted: #6a6a6a;
+  --text-inverse: #ffffff;
 
   /* -------------------------------------------------------
      CREAM — BORDERS
      ------------------------------------------------------- */
+  --border-hairline: rgba(0, 0, 0, 0.04);
   --border-base: rgba(0, 0, 0, 0.08);
   --border-strong: rgba(0, 0, 0, 0.16);
 
@@ -28,6 +42,46 @@
   --shadow-panel: 0 10px 30px rgba(0, 0, 0, 0.15);
   --shadow-header: 0 6px 18px rgba(0, 0, 0, 0.2);
   --shadow-button: 0 2px 6px rgba(0, 0, 0, 0.15);
-  --: 0 3px 10px rgba(0, 0, 0, 0.25);
+  --shadow-heavy: 0 3px 10px rgba(0, 0, 0, 0.25);
   --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+
+  /* -------------------------------------------------------
+     PANEL GEOMETRY (inherits from base)
+     ------------------------------------------------------- */
+  --panel-radius: var(--radius-md);
+  --panel-border: var(--border-base);
+  --panel-padding: 20px;
+
+  /* -------------------------------------------------------
+     ITEM GEOMETRY
+     ------------------------------------------------------- */
+  --item-padding: 12px;
+  --item-border: var(--border-base);
+  --item-radius: var(--radius-sm);
+  --item-bg: rgba(0, 0, 0, 0.02);
+  --item-bg-hover: rgba(0, 0, 0, 0.05);
+  --item-bg-selected: rgba(0, 0, 0, 0.08);
+
+  /* -------------------------------------------------------
+     INPUTS
+     ------------------------------------------------------- */
+  --input-bg: var(--bg-surface-soft);
+  --input-border: var(--border-base);
+  --input-text: var(--text-primary);
+  --input-placeholder: var(--text-muted);
+
+  /* -------------------------------------------------------
+     BUTTONS
+     ------------------------------------------------------- */
+  --btn-bg: #e8e1d0;
+  --btn-bg-hover: #f0eadc;
+  --btn-bg-active: #d9d2c2;
+  --btn-text: var(--text-primary);
+  --btn-border: var(--border-base);
+
+  /* -------------------------------------------------------
+     ACCENT (Overridden by accent themes)
+     ------------------------------------------------------- */
+  --accent-primary: #d28b26;
+  --accent-soft: rgba(210, 139, 38, 0.15);
 }

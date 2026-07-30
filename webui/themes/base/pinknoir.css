@@ -1,24 +1,38 @@
-:root {
+/* webui/themes/pinknoir.css
+   ARIA LITE — PinkNoir Theme
+   Dark noir palette with soft pink highlights.
+   Fully compatible with variables.css and standard naming.
+*/
+
+[data-theme="pinknoir"] {
   /* -------------------------------------------------------
      PINKNOIR — BACKGROUNDS
      ------------------------------------------------------- */
-  --: #0d0d0f;
-  --: #141416;
-  --: #1c1c1f;
+  --bg-pinknoir-900: #0d0d0f;
+  --bg-pinknoir-800: #141416;
+  --bg-pinknoir-700: #1c1c1f;
+  --bg-pinknoir-600: #222225;
+  --bg-pinknoir-500: #2c2c30;
 
-  --: #222225;
-  --: #2c2c30;
+  /* Unified ARIA background tokens */
+  --bg-app: var(--bg-pinknoir-900);
+  --bg-app-alt: var(--bg-pinknoir-800);
+  --bg-surface: var(--bg-pinknoir-700);
+  --bg-surface-soft: var(--bg-pinknoir-600);
+  --bg-surface-softer: var(--bg-pinknoir-500);
 
   /* -------------------------------------------------------
      PINKNOIR — TEXT
      ------------------------------------------------------- */
-  --: #ffe6f5;
-  --: #f2cfe8;
-  --: #d9b8d3;
+  --text-primary: #ffe6f5;
+  --text-secondary: #f2cfe8;
+  --text-muted: #d9b8d3;
+  --text-inverse: #ffffff;
 
   /* -------------------------------------------------------
      PINKNOIR — BORDERS
      ------------------------------------------------------- */
+  --border-hairline: rgba(255, 122, 203, 0.15);
   --border-base: rgba(255, 122, 203, 0.25);
   --border-strong: rgba(255, 122, 203, 0.45);
 
@@ -28,6 +42,46 @@
   --shadow-panel: 0 10px 30px rgba(0, 0, 0, 0.45);
   --shadow-header: 0 6px 18px rgba(0, 0, 0, 0.55);
   --shadow-button: 0 2px 6px rgba(0, 0, 0, 0.4);
-  --: 0 3px 10px rgba(0, 0, 0, 0.55);
+  --shadow-heavy: 0 3px 10px rgba(0, 0, 0, 0.55);
   --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+
+  /* -------------------------------------------------------
+     PANEL GEOMETRY
+     ------------------------------------------------------- */
+  --panel-radius: var(--radius-md);
+  --panel-border: var(--border-base);
+  --panel-padding: 20px;
+
+  /* -------------------------------------------------------
+     ITEM GEOMETRY
+     ------------------------------------------------------- */
+  --item-padding: 12px;
+  --item-border: var(--border-base);
+  --item-radius: var(--radius-sm);
+  --item-bg: rgba(255, 122, 203, 0.05);
+  --item-bg-hover: rgba(255, 122, 203, 0.08);
+  --item-bg-selected: rgba(255, 122, 203, 0.12);
+
+  /* -------------------------------------------------------
+     INPUTS
+     ------------------------------------------------------- */
+  --input-bg: var(--bg-surface-soft);
+  --input-border: var(--border-base);
+  --input-text: var(--text-primary);
+  --input-placeholder: var(--text-muted);
+
+  /* -------------------------------------------------------
+     BUTTONS
+     ------------------------------------------------------- */
+  --btn-bg: #1c1c1f;
+  --btn-bg-hover: #222225;
+  --btn-bg-active: #2c2c30;
+  --btn-text: var(--text-primary);
+  --btn-border: var(--border-base);
+
+  /* -------------------------------------------------------
+     ACCENT (Overridden by accent themes)
+     ------------------------------------------------------- */
+  --accent-primary: #ff7acb;
+  --accent-soft: rgba(255, 122, 203, 0.15);
 }

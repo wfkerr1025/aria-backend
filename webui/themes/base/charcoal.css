@@ -1,92 +1,159 @@
-:root {
-  /* -------------------------------------------------------
-     CHARCOAL — BACKGROUNDS (Your originals mapped correctly)
-     ------------------------------------------------------- */
-  --: #0f0f11;
-  --: #1a1a1d;
-  --: #232326;
+/* ==========================================================
+   ARIA LITE — CHARCOAL BASE THEME (APPLIED)
+   ========================================================== */
 
-  --: #2c2c30;
-  --: #35353a;
+[data-theme="charcoal"] {
 
-  /* Unified ARIA background tokens */
-  --: var(--);
-  --: var(--);
-  --: var(--);
+  /* --------------------------------------------------------
+     APP SHELL
+     -------------------------------------------------------- */
+  --bg-app: #0f0f11;
+  --bg-app-alt: #1a1a1d;
 
-  --bg-surface: var(--);
-  --: var(--);
+  /* --------------------------------------------------------
+     SURFACES
+     -------------------------------------------------------- */
+  --bg-surface: #232326;
+  --bg-surface-soft: #2c2c30;
+  --bg-surface-softer: #35353a;
 
-  --: var(--);
+  /* --------------------------------------------------------
+     TEXT
+     -------------------------------------------------------- */
+  --text-primary: #f5f5f5;
+  --text-secondary: #d0d0d0;
+  --text-muted: #a0a0a0;
+  --text-inverse: #ffffff;
 
-  /* -------------------------------------------------------
-     CHARCOAL — TEXT (Your originals mapped correctly)
-     ------------------------------------------------------- */
-  --: #f5f5f5;
-  --: #d0d0d0;
-  --: #a0a0a0;
+  /* --------------------------------------------------------
+     ACCENTS
+     -------------------------------------------------------- */
+  --accent-primary: #4dd0e1;
+  --accent-primary-soft: rgba(77, 208, 225, 0.15);
+  --accent-secondary: #e39ff6;
+  --accent-secondary-soft: rgba(227, 159, 246, 0.12);
 
-  /* -------------------------------------------------------
-     CHARCOAL — BORDERS (Your originals mapped correctly)
-     ------------------------------------------------------- */
+  /* --------------------------------------------------------
+     BORDERS
+     -------------------------------------------------------- */
+  --border-hairline: rgba(255, 255, 255, 0.06);
   --border-base: rgba(255, 255, 255, 0.08);
-  --: rgba(255, 255, 255, 0.06);
-  --: rgba(255, 255, 255, 0.16);
+  --border-strong: rgba(255, 255, 255, 0.16);
 
-  /* -------------------------------------------------------
-     CHARCOAL — SHADOWS (Your originals mapped correctly)
-     ------------------------------------------------------- */
+  /* --------------------------------------------------------
+     PANELS
+     -------------------------------------------------------- */
+  --panel-bg: var(--bg-surface-soft);
+  --panel-bg-alt: rgba(255, 255, 255, 0.03);
+  --panel-bg-hover: var(--bg-surface-softer);
+  --panel-border: var(--border-base);
+  --panel-radius: var(--radius-md);
+  --panel-padding: 20px;
+
+  /* --------------------------------------------------------
+     SIDEBAR
+     -------------------------------------------------------- */
+  --sidebar-bg: var(--bg-surface);
+  --sidebar-bg-hover: var(--bg-surface-soft);
+  --sidebar-bg-active: var(--bg-surface-softer);
+  --sidebar-text: var(--text-primary);
+  --sidebar-text-muted: var(--text-secondary);
+  --sidebar-text-active: var(--accent-primary);
+  --sidebar-border: var(--border-hairline);
+  --sidebar-divider: var(--border-base);
+
+  /* --------------------------------------------------------
+     TOPBAR
+     -------------------------------------------------------- */
+  --topbar-bg: var(--bg-surface-soft);
+  --topbar-bg-hover: var(--bg-surface-softer);
+  --topbar-text: var(--text-primary);
+  --topbar-text-muted: var(--text-secondary);
+  --topbar-border-bottom: var(--border-hairline);
+
+  /* --------------------------------------------------------
+     TOOLBAR
+     -------------------------------------------------------- */
+  --toolbar-bg: rgba(255, 255, 255, 0.04);
+  --toolbar-border: var(--border-hairline);
+  --toolbar-text: var(--text-primary);
+
+  /* --------------------------------------------------------
+     BUTTONS — GLOBAL DEFAULTS
+     -------------------------------------------------------- */
+  --button-bg: #2f3139;
+  --button-bg-hover: #3a3d46;
+  --button-bg-active: #454852;
+  --button-text: var(--text-primary);
+  --button-text-hover: var(--text-inverse);
+  --button-text-muted: var(--text-secondary);
+  --button-border: var(--border-base);
+
+  /* --------------------------------------------------------
+     BUTTONS — MENUBAR
+     -------------------------------------------------------- */
+  --menubar-button-bg: #2f3139;
+  --menubar-button-bg-hover: #3a3d46;
+  --menubar-button-bg-active: #454852;
+  --menubar-button-text: #ffffff;
+  --menubar-button-text-hover: #ffffff;
+  --menubar-button-border: rgba(255, 255, 255, 0.08);
+
+  /* --------------------------------------------------------
+     BUTTONS — CHAT TOOLBAR
+     -------------------------------------------------------- */
+  --chat-toolbar-button-bg: #3a3d46;
+  --chat-toolbar-button-bg-hover: #454852;
+  --chat-toolbar-button-bg-active: #50535e;
+  --chat-toolbar-button-text: #ffffff;
+  --chat-toolbar-button-text-hover: #ffffff;
+  --chat-toolbar-button-border: rgba(255, 255, 255, 0.08);
+
+  /* --------------------------------------------------------
+     BUTTONS — SIDEBAR
+     -------------------------------------------------------- */
+  --sidebar-button-bg: #1b1e26;
+  --sidebar-button-bg-hover: #232732;
+  --sidebar-button-bg-active: #2b303b;
+  --sidebar-button-text: #c7d5e0;
+  --sidebar-button-text-hover: #66c0f4;
+  --sidebar-button-border: rgba(255, 255, 255, 0.06);
+
+  /* --------------------------------------------------------
+     INPUTS
+     -------------------------------------------------------- */
+  --input-bg: var(--bg-surface-soft);
+  --input-bg-alt: #343a46;
+  --input-text: var(--text-primary);
+  --input-placeholder: var(--text-muted);
+  --input-border: var(--border-base);
+  --input-border-hover: var(--border-hairline);
+  --input-border-focus: var(--accent-primary);
+
+  /* --------------------------------------------------------
+     CHAT (NO CHAT COLOR TOKENS HERE)
+     -------------------------------------------------------- */
+  --chat-bg: var(--bg-app-alt);
+  --chat-bg-inner: var(--bg-app-alt);
+  --chat-text: var(--text-primary);
+  --chat-text-muted: var(--text-secondary);
+  --chat-border: var(--panel-border);
+  --chat-radius: var(--panel-radius);
+  --chat-padding: var(--panel-padding);
+
+  /* --------------------------------------------------------
+     SHADOWS
+     -------------------------------------------------------- */
   --shadow-panel: 0 10px 30px rgba(0, 0, 0, 0.45);
   --shadow-header: 0 6px 18px rgba(0, 0, 0, 0.55);
   --shadow-button: 0 2px 6px rgba(0, 0, 0, 0.4);
-  --: 0 3px 10px rgba(0, 0, 0, 0.55);
+  --shadow-heavy: 0 3px 10px rgba(0, 0, 0, 0.55);
   --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 
-  /* -------------------------------------------------------
-     RADIUS
-     ------------------------------------------------------- */
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-
-  /* -------------------------------------------------------
-     PANEL GEOMETRY
-     ------------------------------------------------------- */
-  --panel-radius: var(--radius-md);
-  --panel-border: var(--border-base);
-  --panel-padding: 20px;
-
-  --: var(--radius-md);
-  --: var(--);
-  --: 16px;
-
-  /* -------------------------------------------------------
-     ITEM GEOMETRY
-     ------------------------------------------------------- */
-  --item-padding: 12px;
-  --item-border: var(--);
-  --item-radius: var(--radius-sm);
-  --: rgba(255,255,255,0.04);
-  --: rgba(255,255,255,0.08);
-  --: var(--);
-
-  /* -------------------------------------------------------
-     INPUTS
-     ------------------------------------------------------- */
-  --input-bg: var(--);
-  --input-border: var(--border-base);
-  --input-text: var(--);
-  --input-placeholder: var(--);
-
-  /* -------------------------------------------------------
-     BUTTONS
-     ------------------------------------------------------- */
-  --btn-bg: #2f3139;
-  --: #3a3d46;
-
-  /* -------------------------------------------------------
-     ACCENT (Overridden by accent themes)
-     ------------------------------------------------------- */
-  --accent-primary: #4dd0e1;
-  --accent-soft: rgba(77, 208, 225, 0.15);
+  /* --------------------------------------------------------
+     SEMANTIC DANGER
+     -------------------------------------------------------- */
+  --danger-text: var(--color-error);
+  --danger-border: rgba(255, 79, 79, 0.35);
+  --danger-bg: rgba(255, 79, 79, 0.08);
 }

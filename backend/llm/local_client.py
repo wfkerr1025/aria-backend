@@ -1,10 +1,11 @@
-# backend/llm/local_client.py
-
 from __future__ import annotations
 from typing import Dict, Any, Optional
 import requests
 import json
 from backend.llm.llm_client_base import LLMClientBase
+
+# Import the tool‑use system prompt from llm_engine
+from backend.llm.constants import ARIA_TOOL_USE_SYSTEM_PROMPT
 
 
 class LocalLLMClient(LLMClientBase):
@@ -29,6 +30,23 @@ class LocalLLMClient(LLMClientBase):
         # LM Studio uses OpenAI-compatible API routes
         self.endpoint = f"{self.base_url}/v1/chat/completions"
 
+    # ------------------------------------------------------------
+    # Availability check
+    # ------------------------------------------------------------
+    def is_available(self) -> bool:
+        """
+        Returns True if LM Studio is running and responding.
+        Uses a lightweight /v1/models ping.
+        """
+        try:
+            resp = requests.get(f"{self.base_url}/v1/models", timeout=2)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------
+    # Generate
+    # ------------------------------------------------------------
     def generate(self, prompt: str, context: Dict[str, Any] | None = None) -> str:
         """
         Sends a chat completion request to LM Studio.
@@ -38,7 +56,7 @@ class LocalLLMClient(LLMClientBase):
         messages = [
             {
                 "role": "system",
-                "content": "You are ARIA Lite's local co-developer. Be helpful, concise, and technically accurate.",
+                "content": ARIA_TOOL_USE_SYSTEM_PROMPT,
             },
             {
                 "role": "user",

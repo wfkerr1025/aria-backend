@@ -1,0 +1,43 @@
+/* ==========================================================
+   ARIA LITE — CHAT THEME TOKENS
+   ----------------------------------------------------------
+   Purpose:
+   - Defines chat-specific color roles
+   - Independent of global theme colors
+   - Independent of charcoal/light/dark themes
+   - User preferences override these tokens at runtime
+   ========================================================== */
+
+:root {
+  /* ========================================================
+     CHAT NAME COLORS (DEFAULTS)
+     --------------------------------------------------------
+     ARIA  → Secondary accent (purple)
+     USER  → Primary accent (teal)
+     --------------------------------------------------------
+     These defaults remain stable across all themes unless
+     explicitly overridden by user preferences.
+     ======================================================== */
+
+  --chat-aria-label: var(--accent-secondary);
+  --chat-user-label: var(--accent-primary);
+
+  /* ========================================================
+     FUTURE-PROOF EXTENSION POINTS
+     --------------------------------------------------------
+     These are placeholders for future chat features:
+     - role badges
+     - system messages
+     - plugin messages
+     - error messages
+     - timestamps
+     - chat reactions
+     --------------------------------------------------------
+     Keeping them here ensures chat remains a clean,
+     isolated subsystem.
+     ======================================================== */
+
+  --chat-system-label: var(--text-secondary);
+  --chat-error-label: var(--color-error);
+  --chat-timestamp: var(--text-muted);
+}

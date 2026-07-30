@@ -4,22 +4,20 @@ import os
 import time
 import subprocess
 
-# ============================================================
-# ENGINE IMPORTS
-# ============================================================
+# Engines and routers
 from backend.file_ops import FileOps
 from backend.context_engine import ContextEngine
 from backend.patch_engine import PatchEngine
-
 from backend.fs_engine import FSEngine
 from backend.metadata_engine import MetadataEngine
 from backend.binary_engine import BinaryEngine
 from backend.transaction_engine import TransactionEngine
 from backend.security_engine import SecurityEngine
+from backend.llm.llm_engine import llm_engine
+from backend.llm.intent_engine import intent_engine
+from bridge.command_router import bridge_router
 
-# ============================================================
-# ENGINE INSTANTIATION
-# ============================================================
+# Instantiate engines
 file_ops = FileOps()
 context_engine = ContextEngine()
 patch_engine = PatchEngine()
@@ -29,11 +27,11 @@ binary_engine = BinaryEngine()
 transaction_engine = TransactionEngine()
 security_engine = SecurityEngine(workspace_root="./workspace")
 
-# ============================================================
-# HELPERS
-# ============================================================
+
+# Utility helpers
 def _normalize(envelope: Dict[str, Any] | None) -> Dict[str, Any]:
     return envelope or {}
+
 
 def _error(operation: str, detail: str) -> Dict[str, Any]:
     return {
@@ -42,6 +40,7 @@ def _error(operation: str, detail: str) -> Dict[str, Any]:
         "detail": detail,
         "timestamp": time.time(),
     }
+
 
 def _ok(operation: str, extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
     payload = {
@@ -53,9 +52,8 @@ def _ok(operation: str, extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
         payload.update(extra)
     return payload
 
-# ============================================================
-# PYTHON TEST RUNNERS
-# ============================================================
+
+# Test runners
 def _run_test_file(filename: str) -> Dict[str, Any]:
     try:
         test_path = os.path.join("backend", "tests", filename)
@@ -70,6 +68,7 @@ def _run_test_file(filename: str) -> Dict[str, Any]:
         }
     except Exception as e:
         return _error("python_test", str(e))
+
 
 def _run_all_tests() -> Dict[str, Any]:
     try:
@@ -88,15 +87,77 @@ def _run_all_tests() -> Dict[str, Any]:
     except Exception as e:
         return _error("run_all_python_tests", str(e))
 
-# ============================================================
-# TASK HANDLERS
-# ============================================================
 
+# Tool dispatcher
+def handle_tool(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        result = process_envelope(envelope)
+
+        bridge_router.send_packet({
+            "type": "tool_result",
+            "tool": envelope.get("task"),
+            "result": result,
+        })
+
+        return _ok("tool", {"result": result})
+
+    except Exception as e:
+        return _error("tool", str(e))
+
+
+# Chat handler
 def handle_chat(envelope: Dict[str, Any]) -> Dict[str, Any]:
     return _ok("chat", {
         "reply": f"CHAT ROUTER RECEIVED: {envelope.get('content', '')}"
     })
 
+
+# Intent‑aware LLM handler
+def handle_llm(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Unified LLM entry point for ARIA Lite.
+
+    Flow:
+      1. Use intent_engine to interpret natural language into a tool envelope.
+      2. If a tool task is detected → run handle_tool().
+      3. Otherwise → fall back to llm_engine for assistant‑mode behavior.
+      4. Still supports wrapped tool_request and raw JSON tool calls from LLM.
+    """
+    prompt = envelope.get("prompt") or envelope.get("content")
+    context = envelope.get("context", {})
+
+    if not prompt:
+        return _error("llm", "Missing 'prompt' or 'content'")
+
+    try:
+        # 1. Try semantic intent → tool envelope
+        intent_result = intent_engine.interpret(prompt)
+
+        if isinstance(intent_result, dict) and intent_result.get("task"):
+            return handle_tool(intent_result)
+
+        # 2. Fall back to normal LLM behavior
+        result = llm_engine.generate(prompt, context)
+        content = result.get("content", {})
+
+        # Wrapped tool_request (legacy/tool_router style)
+        if isinstance(content, dict) and content.get("type") == "tool_request":
+            tool_envelope = content.get("content", {})
+            if isinstance(tool_envelope, dict) and tool_envelope.get("task"):
+                return handle_tool(tool_envelope)
+
+        # Raw JSON tool call (direct TOOL MODE)
+        if isinstance(content, dict) and content.get("task"):
+            return handle_tool(content)
+
+        # Assistant message
+        return _ok("llm", {"result": result})
+
+    except Exception as e:
+        return _error("llm", str(e))
+
+
+# File operations
 def handle_file_ops(envelope: Dict[str, Any]) -> Dict[str, Any]:
     op = envelope.get("operation")
     path = envelope.get("path")
@@ -119,13 +180,15 @@ def handle_file_ops(envelope: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         return _error("file_ops", str(e))
 
+
+# Context engine
 def handle_context(envelope: Dict[str, Any]) -> Dict[str, Any]:
     data = envelope.get("data", {}) or {}
     text = data.get("text", "")
     mode = data.get("mode", "all")
 
     try:
-        result = {}
+        result: Dict[str, Any] = {}
 
         if mode in ("entities", "all"):
             result["entities"] = context_engine.extract_entities(text)
@@ -140,12 +203,16 @@ def handle_context(envelope: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         return _error("context", str(e))
 
+
+# Patch engine
 def handle_patch(envelope: Dict[str, Any]) -> Dict[str, Any]:
     try:
         return patch_engine.apply_patch(envelope)
     except Exception as e:
         return _error("patch", str(e))
 
+
+# Filesystem engine
 def handle_fs(envelope: Dict[str, Any]) -> Dict[str, Any]:
     op = envelope.get("operation")
     src = envelope.get("src")
@@ -170,6 +237,8 @@ def handle_fs(envelope: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         return _error("fs", str(e))
 
+
+# Metadata engine
 def handle_metadata(envelope: Dict[str, Any]) -> Dict[str, Any]:
     op = envelope.get("operation")
     path = envelope.get("path")
@@ -189,6 +258,8 @@ def handle_metadata(envelope: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         return _error("metadata", str(e))
 
+
+# Binary engine
 def handle_binary(envelope: Dict[str, Any]) -> Dict[str, Any]:
     op = envelope.get("operation")
     path = envelope.get("path")
@@ -207,6 +278,8 @@ def handle_binary(envelope: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         return _error("binary", str(e))
 
+
+# Transaction engine
 def handle_transaction(envelope: Dict[str, Any]) -> Dict[str, Any]:
     op = envelope.get("operation")
     path = envelope.get("path")
@@ -225,6 +298,8 @@ def handle_transaction(envelope: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         return _error("transaction", str(e))
 
+
+# Security engine
 def handle_security(envelope: Dict[str, Any]) -> Dict[str, Any]:
     op = envelope.get("operation")
     path = envelope.get("path")
@@ -247,11 +322,13 @@ def handle_security(envelope: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         return _error("security", str(e))
 
-# ============================================================
-# UNIVERSAL DISPATCHER
-# ============================================================
+
+# Task map
 TASK_MAP = {
     "chat": handle_chat,
+    "llm": handle_llm,
+    "tool": handle_tool,
+
     "file_ops": handle_file_ops,
     "context": handle_context,
     "patch": handle_patch,
@@ -278,6 +355,8 @@ TASK_MAP = {
     }),
 }
 
+
+# Envelope dispatcher
 def process_envelope(envelope: Dict[str, Any] | None) -> Dict[str, Any]:
     envelope = _normalize(envelope)
     task = envelope.get("task") or envelope.get("action")
@@ -291,9 +370,8 @@ def process_envelope(envelope: Dict[str, Any] | None) -> Dict[str, Any]:
 
     return handler(envelope)
 
-# ============================================================
-# REST-LIKE ENDPOINT COMPATIBILITY
-# ============================================================
+
+# Endpoint router
 def send_to(endpoint: str, envelope: Dict[str, Any] | None) -> Dict[str, Any]:
     endpoint = endpoint.lstrip("/")
 

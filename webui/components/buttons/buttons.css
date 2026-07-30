@@ -1,43 +1,52 @@
-/* -------------------------------------------------------
+/* ==========================================================
    BUTTON BASE
-   ------------------------------------------------------- */
+   ========================================================== */
 
 .btn {
   padding: var(--space-sm) var(--space-md);
   border-radius: var(--radius-md);
-  font-size: var(--);
-  font-weight: var(--);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: var(--space-xs);
-  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: background var(--motion-duration-sm) var(--motion-easing),
+              border-color var(--motion-duration-sm) var(--motion-easing),
+              box-shadow var(--motion-duration-sm) var(--motion-easing);
 }
 
-/* -------------------------------------------------------
-   PRIMARY BUTTON
-   ------------------------------------------------------- */
+
+/* ==========================================================
+   PRIMARY BUTTON (GLOBAL DEFAULT)
+   ========================================================== */
 
 .btn-primary {
-  background: var(--btn-bg);
-  border: 1px solid var(--);
-  color: var(--);
+  background: var(--button-bg);
+  border: 1px solid var(--button-border);
+  color: var(--button-text);
   box-shadow: var(--shadow-button);
 }
 
 .btn-primary:hover {
-  background: var(--);
-  box-shadow: var(--);
+  background: var(--button-bg-hover);
+  color: var(--button-text-hover);
+  box-shadow: var(--shadow-button);
 }
 
-/* -------------------------------------------------------
+.btn-primary:active {
+  background: var(--button-bg-active);
+}
+
+
+/* ==========================================================
    SECONDARY BUTTON
-   ------------------------------------------------------- */
+   ========================================================== */
 
 .btn-secondary {
   background: transparent;
-  border: 1px solid var(--);
-  color: var(--);
+  border: 1px solid var(--button-border);
+  color: var(--button-text-muted);
 }
 
 .btn-secondary:hover {
@@ -45,23 +54,25 @@
   color: var(--accent-primary);
 }
 
-/* -------------------------------------------------------
+
+/* ==========================================================
    GHOST BUTTON
-   ------------------------------------------------------- */
+   ========================================================== */
 
 .btn-ghost {
   background: transparent;
   border: none;
-  color: var(--);
+  color: var(--button-text-muted);
 }
 
 .btn-ghost:hover {
   color: var(--accent-primary);
 }
 
-/* -------------------------------------------------------
+
+/* ==========================================================
    DESTRUCTIVE BUTTON
-   ------------------------------------------------------- */
+   ========================================================== */
 
 .btn-danger {
   background: var(--danger-bg);
@@ -70,6 +81,67 @@
 }
 
 .btn-danger:hover {
-  background: var(--);
-  border-color: var(--);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+
+
+/* ==========================================================
+   MENUBAR BUTTONS
+   ========================================================== */
+
+.menubar-btn {
+  background: var(--menubar-button-bg);
+  border: 1px solid var(--menubar-button-border);
+  color: var(--menubar-button-text);
+}
+
+.menubar-btn:hover {
+  background: var(--menubar-button-bg-hover);
+  color: var(--menubar-button-text-hover);
+}
+
+.menubar-btn:active {
+  background: var(--menubar-button-bg-active);
+}
+
+
+/* ==========================================================
+   CHAT TOOLBAR BUTTONS
+   ========================================================== */
+
+.chat-toolbar-btn {
+  background: var(--chat-toolbar-button-bg);
+  border: 1px solid var(--chat-toolbar-button-border);
+  color: var(--chat-toolbar-button-text);
+}
+
+.chat-toolbar-btn:hover {
+  background: var(--chat-toolbar-button-bg-hover);
+  color: var(--chat-toolbar-button-text-hover);
+}
+
+.chat-toolbar-btn:active {
+  background: var(--chat-toolbar-button-bg-active);
+}
+
+
+/* ==========================================================
+   SIDEBAR BUTTONS
+   ========================================================== */
+
+.sidebar-btn {
+  background: var(--sidebar-button-bg);
+  border: 1px solid var(--sidebar-button-border);
+  color: var(--sidebar-button-text);
+}
+
+.sidebar-btn:hover {
+  background: var(--sidebar-button-bg-hover);
+  color: var(--sidebar-button-text-hover);
+}
+
+.sidebar-btn:active {
+  background: var(--sidebar-button-bg-active);
 }

@@ -1,28 +1,35 @@
+/* ==========================================================
+   ARIA LITE — DIAGNOSTICS PANEL (REFINED)
+   Uses semantic tokens only. No hard-coded colors.
+   ========================================================== */
+
 /* -------------------------------------------------------
-   DIAGNOSTICS PANEL (Unified ARIA System Panel)
+   PANEL CONTAINER
    ------------------------------------------------------- */
 
 #diagnostics-panel {
   display: flex;
   flex-direction: column;
   height: calc(100vh - 56px);
-  background: var(--);
+  background: var(--panel-bg);
   border-radius: var(--panel-radius);
   border: 1px solid var(--panel-border);
   box-shadow: var(--shadow-panel);
   padding: var(--panel-padding);
   overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--font-family-ui);
 }
 
 /* -------------------------------------------------------
-   PANEL HEADER (Unified ARIA Header)
+   PANEL HEADER
    ------------------------------------------------------- */
 
 .diagnostics-header {
-  padding: var(--);
-  background: var(--);
-  border-radius: var(--);
-  border: 1px solid var(--);
+  padding: var(--space-md);
+  background: var(--panel-bg-alt);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--panel-border);
   box-shadow: var(--shadow-header);
   margin-bottom: var(--space-lg);
   display: flex;
@@ -31,19 +38,19 @@
 }
 
 .diagnostics-title {
-  font-size: var(--);
-  font-weight: var(--);
-  color: var(--);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
   text-shadow: 0 1px 2px rgba(0,0,0,0.4);
 }
 
 /* -------------------------------------------------------
-   SECTION TITLE (Muted ARIA Typography)
+   SECTION TITLE
    ------------------------------------------------------- */
 
 .diagnostics-section-title {
-  font-size: var(--);
-  color: var(--);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: var(--space-sm);
@@ -51,72 +58,82 @@
 }
 
 /* -------------------------------------------------------
-   DIAGNOSTICS CONTENT AREA (Inset ARIA Panel)
+   CONTENT AREA
    ------------------------------------------------------- */
 
 .diagnostics-content {
   flex: 1;
   overflow-y: auto;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--);
+  background: var(--panel-bg-alt);
+  border: 1px solid var(--panel-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-inset);
   padding: var(--space-md);
 }
 
 /* -------------------------------------------------------
-   DIAGNOSTICS ITEM (ARIA List Geometry)
+   DIAGNOSTICS ITEM
    ------------------------------------------------------- */
 
 .diagnostics-item {
-  padding: var(--item-padding);
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--item-border);
-  border-radius: var(--item-radius);
+  padding: var(--space-md);
+  background: var(--panel-bg-alt);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
   margin-bottom: var(--space-sm);
+  transition: background var(--motion-duration-sm) var(--motion-easing),
+              border-color var(--motion-duration-sm) var(--motion-easing);
 }
 
 .diagnostics-item:hover {
-  background: var(--);
+  background: var(--panel-bg-hover);
 }
 
 .diagnostics-item.active {
-  background: var(--);
-  border-color: var(--);
+  background: var(--accent-primary-soft);
+  border-color: var(--accent-primary);
 }
 
 /* -------------------------------------------------------
-   DIAGNOSTICS LABELS
+   LABELS
    ------------------------------------------------------- */
 
 .diagnostics-label {
-  font-size: var(--);
-  color: var(--);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
   margin-bottom: var(--space-xs);
 }
 
 .diagnostics-value {
-  font-size: var(--);
-  color: var(--);
+  font-size: var(--font-size-md);
+  color: var(--text-primary);
 }
 
 /* -------------------------------------------------------
-   DIAGNOSTICS BUTTONS (ARIA Button Geometry)
+   BUTTONS (UPDATED FOR GLOBAL BUTTON TOKENS)
    ------------------------------------------------------- */
 
 .diagnostics-btn {
-  background: var(--btn-bg);
-  border: 1px solid var(--);
+  background: var(--button-bg);
+  border: 1px solid var(--button-border);
   border-radius: var(--radius-md);
   padding: var(--space-sm) var(--space-md);
-  color: var(--);
+  color: var(--button-text);
   cursor: pointer;
   box-shadow: var(--shadow-button);
-  font-size: var(--);
+  font-size: var(--font-size-md);
   margin-top: var(--space-md);
+  transition: background var(--motion-duration-sm) var(--motion-easing),
+              color var(--motion-duration-sm) var(--motion-easing),
+              border-color var(--motion-duration-sm) var(--motion-easing);
 }
 
 .diagnostics-btn:hover {
-  background: var(--);
-  box-shadow: var(--);
+  background: var(--button-bg-hover);
+  color: var(--button-text-hover);
+  box-shadow: var(--shadow-button);
+}
+
+.diagnostics-btn:active {
+  background: var(--button-bg-active);
 }

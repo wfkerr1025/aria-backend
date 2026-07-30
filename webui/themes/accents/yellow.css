@@ -1,14 +1,19 @@
-:root {
+/* webui/themes/accents/yellow.css
+   ARIA LITE — Accent Theme: Yellow
+   Overrides only accent tokens.
+*/
+
+[data-accent="yellow"] {
   /* -------------------------------------------------------
      YELLOW ACCENT — ACCENT COLORS
      ------------------------------------------------------- */
-  --accent-primary: #ffd447;
+  --accent-primary: #ffd447;                 /* main yellow */
   --accent-soft: rgba(255, 212, 71, 0.12);
 
   /* -------------------------------------------------------
-     YELLOW ACCENT — HOVER / INTERACTION
+     YELLOW ACCENT — INTERACTION
      ------------------------------------------------------- */
-  --: #ffdf6a;
+  --accent-primary-hover: #ffdf6a;           /* lighter hover tone */
 
   /* -------------------------------------------------------
      YELLOW ACCENT — BORDERS

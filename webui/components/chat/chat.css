@@ -1,30 +1,10 @@
-/* -------------------------------------------------------
-   GLOBAL CUSTOMIZATION VARIABLES
-   ------------------------------------------------------- */
-
-:root {
-  /* Name Colors */
-  --: #e39ff6;   /* soft pink/purple */
-  --: #4dd0e1;   /* teal/cyan */
-
-  /* Chat Window Background (softer, less eye strain) */
-  --: #1f2127;
-
-  /* Font Sizes */
-  --: 12px;
-  --: 15px;
-  --: 18px;
-
-  /* Font Colors */
-  --: #e0e0e0;
-  --: #b0b0b0;
-
-  /* Font Family */
-  --: "Inter", "Segoe UI", sans-serif;
-}
+/* ==========================================================
+   ARIA LITE — CHAT COMPONENT (PREMIUM ENHANCED + FIXED)
+   Uses semantic tokens only. No hard-coded colors.
+   ========================================================== */
 
 /* -------------------------------------------------------
-   CHAT VIEW — Scrollable Window + Fixed Input Bar
+   CHAT VIEW (SCROLL CONTAINER — FIXED)
    ------------------------------------------------------- */
 
 #chat-view {
@@ -34,9 +14,23 @@
   width: 100%;
   padding: var(--space-lg);
   box-sizing: border-box;
-  overflow: hidden;
-  font-family: var(--);
+  overflow-y: auto;
+  font-family: var(--font-family-ui);
 }
+
+/* -------------------------------------------------------
+   CHAT PANEL
+   ------------------------------------------------------- */
+
+#chat-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* -------------------------------------------------------
+   CHAT PANEL INNER
+   ------------------------------------------------------- */
 
 #chat-panel-inner {
   display: flex;
@@ -46,33 +40,29 @@
 }
 
 /* -------------------------------------------------------
-   CHAT HISTORY — Transcript Style
+   CHAT HISTORY (SUNKEN / EMBEDDED PANEL)
    ------------------------------------------------------- */
 
 #chat-history {
   flex: 1;
-  flex-shrink: 1;
   overflow-y: auto;
-  background: var(--);
+  background: var(--bg-surface);
   border-radius: var(--radius-md);
-
-  /* Sunken / Recessed Panel */
   border: 1px solid var(--border-base);
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow:
-    inset 0 2px 4px rgba(0, 0, 0, 0.45),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.06);
-
+    inset 0 2px 4px rgba(0,0,0,0.45),
+    inset 0 -2px 4px rgba(0,0,0,0.35),
+    0 1px 2px rgba(0,0,0,0.25);
   padding: var(--space-md);
   margin-bottom: var(--space-md);
   display: flex;
   flex-direction: column;
   gap: var(--space-lg);
-  font-family: var(--);
+  color: var(--chat-text);
 }
 
 /* -------------------------------------------------------
-   MESSAGE GROUP (Timestamp + Sender + Lines)
+   MESSAGE GROUP
    ------------------------------------------------------- */
 
 .message-group {
@@ -82,124 +72,150 @@
 }
 
 .message-header {
-  font-size: var(--);
+  font-size: var(--font-size-sm);
   opacity: 0.7;
-  color: var(--);
+  color: var(--chat-text-muted);
 }
 
-.message-group.aria .message-header {
-  text-align: left;
-}
-
+/* ⭐ Right-align timestamps for user messages */
 .message-group.user .message-header {
   text-align: right;
 }
 
 .message-sender {
-  font-size: var(--);
-  font-weight: var(--);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
   margin-bottom: var(--space-xs);
-  font-family: var(--);
 }
 
+/* ⭐ Correct sender color mapping */
 .message-sender.aria {
-  color: var(--);
+  color: var(--chat-aria-label); /* ARIA = purple */
   text-align: left;
 }
 
 .message-sender.user {
-  color: var(--);
+  color: var(--chat-user-label); /* User = teal */
   text-align: right;
 }
 
 /* -------------------------------------------------------
-   MESSAGE LINES — No Bubble Background
+   MESSAGE LINES
    ------------------------------------------------------- */
 
 .message-line {
-  font-size: var(--);
-  color: var(--);
+  font-size: var(--font-size-md);
   line-height: 1.5;
   white-space: pre-wrap;
   word-wrap: break-word;
-  font-family: var(--);
 }
 
+/* ⭐ Apply sender colors to message text */
 .message-line.aria {
   text-align: left;
+  color: var(--chat-aria-label); /* ARIA = purple */
 }
 
 .message-line.user {
   text-align: right;
+  color: var(--chat-user-label); /* User = teal */
 }
 
 /* -------------------------------------------------------
-   INPUT BAR — Fixed at Bottom
+   INPUT BAR (STICKY + TACTILE — FIXED)
    ------------------------------------------------------- */
 
 #chat-input-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
   flex-shrink: 0;
   display: flex;
-  align-items: flex-end;
-  background: var(--);
+
+  /* ⭐ Center send button vertically */
+  align-items: center;
+
+  background: var(--bg-surface-soft);
   border-radius: var(--radius-md);
-
   border: 1px solid var(--border-base);
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow:
-    inset 0 2px 4px rgba(0, 0, 0, 0.45),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.06);
-
+    inset 0 1px 3px rgba(0,0,0,0.35),
+    0 1px 2px rgba(0,0,0,0.25);
   padding: var(--space-sm) var(--space-md);
   box-sizing: border-box;
-  font-family: var(--);
+
+  /* ⭐ Lift off bottom for breathing room */
+  margin-bottom: var(--space-md);
 }
+
+/* -------------------------------------------------------
+   TEXTAREA (MATCH CHAT HISTORY PANEL — FIXED)
+   ------------------------------------------------------- */
 
 #chat-input {
   flex: 1;
-  background: transparent;
-  border: none;
-  color: var(--);
-  font-size: var(--);
+
+  /* ⭐ MATCHES CHAT HISTORY EXACTLY */
+  background: var(--bg-surface);
+
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  color: var(--chat-text);
+  font-size: var(--font-size-md);
   outline: none;
   resize: none;
   overflow-y: auto;
   min-height: 32px;
   max-height: 200px;
-  font-family: var(--);
-}
-
-#chat-send-btn {
-  background: var(--btn-bg);
-  border: 1px solid var(--border-base);
-  border-radius: var(--radius-md);
-  padding: var(--space-sm) var(--space-md);
-  color: var(--);
-  cursor: pointer;
-  margin-left: var(--space-sm);
-  font-family: var(--);
-}
-
-#chat-send-btn:hover {
-  background: var(--);
+  padding: var(--space-sm);
 }
 
 /* -------------------------------------------------------
-   CHAT TOOLBAR
+   SEND BUTTON (GLOBAL BUTTON TOKENS)
+   ------------------------------------------------------- */
+
+#chat-send-btn {
+  background: var(--button-bg);
+  border: 1px solid var(--button-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  color: var(--button-text);
+  cursor: pointer;
+  margin-left: var(--space-sm);
+  transition: background var(--motion-duration-sm) var(--motion-easing),
+              color var(--motion-duration-sm) var(--motion-easing),
+              border-color var(--motion-duration-sm) var(--motion-easing);
+}
+
+#chat-send-btn:hover {
+  background: var(--button-bg-hover);
+  color: var(--button-text-hover);
+}
+
+#chat-send-btn:active {
+  background: var(--button-bg-active);
+}
+
+/* -------------------------------------------------------
+   CHAT TOOLBAR (PREMIUM GRADIENT + DEPTH)
    ------------------------------------------------------- */
 
 #chat-toolbar {
   display: flex;
-  justify-content: flex-start;
   align-items: center;
-  background: var(--bg-toolbar);
+
+  background: linear-gradient(
+    to bottom,
+    rgba(255,255,255,0.06),
+    rgba(0,0,0,0.25)
+  );
+
   padding: var(--space-sm) var(--space-md);
   border-radius: var(--radius-md);
-
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--toolbar-border);
   box-shadow:
-    inset 0 2px 4px rgba(0, 0, 0, 0.45),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    0 2px 4px rgba(0,0,0,0.35);
 }
 
 .chat-toolbar-actions {
@@ -207,18 +223,92 @@
   gap: var(--space-md);
 }
 
-.chat-toolbar-btn {
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--);
-  font-size: var(--);
+/* -------------------------------------------------------
+   CHAT TOOLBAR BUTTONS (FLAT + TEAL HOVER — FINAL FIX)
+   ------------------------------------------------------- */
+
+#chat-toolbar .chat-toolbar-btn {
+  background: transparent !important;
+  border: none !important;
+  color: var(--sidebar-text-muted) !important;
+  font-size: var(--font-size-sm);
   padding: 4px 8px;
   cursor: pointer;
   border-radius: var(--radius-sm);
-  transition: background 0.15s, border-color 0.15s;
+  transition: color var(--motion-duration-sm) var(--motion-easing);
 }
 
-.chat-toolbar-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.12);
+#chat-toolbar .chat-toolbar-btn:hover {
+  color: var(--accent-primary) !important;
+}
+
+#chat-toolbar .chat-toolbar-btn:active {
+  color: var(--accent-primary) !important;
+  opacity: 0.85;
+}
+
+/* ==========================================================
+   TOOL RESULT BLOCKS — AGENT TOOL OUTPUT (SEMANTIC TOKENS)
+   ========================================================== */
+
+.message-group.tool {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+
+  background: var(--bg-surface-soft);
+  border-left: 4px solid var(--accent-success);
+  border-radius: var(--radius-md);
+
+  padding: var(--space-md);
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.25),
+    0 1px 2px rgba(0,0,0,0.25);
+
+  font-family: var(--font-family-mono);
+  color: var(--chat-text);
+}
+
+/* Timestamp */
+.message-header.tool {
+  font-size: var(--font-size-sm);
+  opacity: 0.7;
+  color: var(--chat-text-muted);
+}
+
+/* Sender label */
+.message-sender.tool {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  color: var(--accent-success);
+}
+
+/* Tool message line */
+.message-line.tool {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-size: var(--font-size-md);
+  line-height: 1.5;
+}
+
+/* Tool header (e.g., "Tool executed: file_ops") */
+.tool-header {
+  font-weight: var(--font-weight-bold);
+  margin-bottom: var(--space-sm);
+  color: var(--accent-success);
+}
+
+/* Tool body (JSON, patches, diffs, file contents) */
+.tool-body {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+
+  padding: var(--space-sm);
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+
+  overflow-x: auto;
+  max-height: 400px;
 }

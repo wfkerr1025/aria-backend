@@ -1,24 +1,38 @@
-:root {
+/* webui/themes/crimson.css
+   ARIA LITE — Crimson Theme
+   Dark red variant with warm highlights and charcoal shadows.
+   Fully compatible with variables.css and standard naming.
+*/
+
+[data-theme="crimson"] {
   /* -------------------------------------------------------
      CRIMSON — BACKGROUNDS
      ------------------------------------------------------- */
-  --: #1a0a0a;
-  --: #240f0f;
-  --: #301414;
+  --bg-crimson-900: #1a0a0a;
+  --bg-crimson-800: #240f0f;
+  --bg-crimson-700: #301414;
+  --bg-crimson-600: #3a1a1a;
+  --bg-crimson-500: #4a1f1f;
 
-  --: #3a1a1a;
-  --: #4a1f1f;
+  /* Unified ARIA background tokens */
+  --bg-app: var(--bg-crimson-900);
+  --bg-app-alt: var(--bg-crimson-800);
+  --bg-surface: var(--bg-crimson-700);
+  --bg-surface-soft: var(--bg-crimson-600);
+  --bg-surface-softer: var(--bg-crimson-500);
 
   /* -------------------------------------------------------
      CRIMSON — TEXT
      ------------------------------------------------------- */
-  --: #f5eaea;
-  --: #d9cfcf;
-  --: #b8a9a9;
+  --text-primary: #f5eaea;
+  --text-secondary: #d9cfcf;
+  --text-muted: #b8a9a9;
+  --text-inverse: #ffffff;
 
   /* -------------------------------------------------------
      CRIMSON — BORDERS
      ------------------------------------------------------- */
+  --border-hairline: rgba(255, 80, 80, 0.15);
   --border-base: rgba(255, 80, 80, 0.25);
   --border-strong: rgba(255, 80, 80, 0.45);
 
@@ -28,6 +42,46 @@
   --shadow-panel: 0 10px 30px rgba(0, 0, 0, 0.45);
   --shadow-header: 0 6px 18px rgba(0, 0, 0, 0.55);
   --shadow-button: 0 2px 6px rgba(0, 0, 0, 0.4);
-  --: 0 3px 10px rgba(0, 0, 0, 0.55);
+  --shadow-heavy: 0 3px 10px rgba(0, 0, 0, 0.55);
   --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+
+  /* -------------------------------------------------------
+     PANEL GEOMETRY
+     ------------------------------------------------------- */
+  --panel-radius: var(--radius-md);
+  --panel-border: var(--border-base);
+  --panel-padding: 20px;
+
+  /* -------------------------------------------------------
+     ITEM GEOMETRY
+     ------------------------------------------------------- */
+  --item-padding: 12px;
+  --item-border: var(--border-base);
+  --item-radius: var(--radius-sm);
+  --item-bg: rgba(255, 80, 80, 0.05);
+  --item-bg-hover: rgba(255, 80, 80, 0.08);
+  --item-bg-selected: rgba(255, 80, 80, 0.12);
+
+  /* -------------------------------------------------------
+     INPUTS
+     ------------------------------------------------------- */
+  --input-bg: var(--bg-surface-soft);
+  --input-border: var(--border-base);
+  --input-text: var(--text-primary);
+  --input-placeholder: var(--text-muted);
+
+  /* -------------------------------------------------------
+     BUTTONS
+     ------------------------------------------------------- */
+  --btn-bg: #3a1a1a;
+  --btn-bg-hover: #4a1f1f;
+  --btn-bg-active: #5a2424;
+  --btn-text: var(--text-primary);
+  --btn-border: var(--border-base);
+
+  /* -------------------------------------------------------
+     ACCENT (Overridden by accent themes)
+     ------------------------------------------------------- */
+  --accent-primary: #ff5050;
+  --accent-soft: rgba(255, 80, 80, 0.15);
 }
