@@ -67,3 +67,97 @@ class UnityAPI:
         if not self.active_project:
             return "No active project."
         return create_scene(self.active_project, name)
+
+
+# ============================================================
+# STEP 3 — IPC ENTRY POINT
+# ============================================================
+def run(command: str, **kwargs):
+    """
+    Unified IPC entry point for the Unity module.
+
+    Supported commands:
+      - "list_projects"
+      - "set_project"
+      - "version"
+      - "scenes"
+      - "build_settings"
+      - "create_script"
+      - "create_scene"
+    """
+
+    try:
+        # Lazy import to avoid circular dependency
+        from backend.app import app_instance
+        unity = app_instance.unity
+
+        if command == "list_projects":
+            return {
+                "status": "ok",
+                "operation": "unity.list_projects",
+                "projects": unity.list_projects()
+            }
+
+        if command == "set_project":
+            path = kwargs.get("path")
+            result = unity.set_active_project(path)
+            return {
+                "status": "ok",
+                "operation": "unity.set_project",
+                "result": result,
+                "active_project": unity.active_project
+            }
+
+        if command == "version":
+            return {
+                "status": "ok",
+                "operation": "unity.version",
+                "version": unity.version()
+            }
+
+        if command == "scenes":
+            return {
+                "status": "ok",
+                "operation": "unity.scenes",
+                "scenes": unity.scenes()
+            }
+
+        if command == "build_settings":
+            return {
+                "status": "ok",
+                "operation": "unity.build_settings",
+                "settings": unity.build_settings()
+            }
+
+        if command == "create_script":
+            name = kwargs.get("name")
+            result = unity.create_script(name)
+            return {
+                "status": "ok",
+                "operation": "unity.create_script",
+                "name": name,
+                "result": result
+            }
+
+        if command == "create_scene":
+            name = kwargs.get("name")
+            result = unity.create_scene(name)
+            return {
+                "status": "ok",
+                "operation": "unity.create_scene",
+                "name": name,
+                "result": result
+            }
+
+        return {
+            "status": "error",
+            "operation": "unity",
+            "detail": f"Unknown command '{command}'"
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "operation": "unity",
+            "detail": str(e)
+        }

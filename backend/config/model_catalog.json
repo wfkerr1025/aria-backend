@@ -1,0 +1,55 @@
+{
+  "_comment": "Catalog of local models NOT bundled with ARIA Lite and not yet downloadable through it -- see backend/core/model_manager.py's install_model() docstring: this repo has no download/network layer yet. Each entry's downloadUrl is intentionally null; fill in a real source (e.g. a HuggingFace GGUF repo) before surfacing a real 'Get model' link in the UI. Surfaced read-only via backend/core/model_catalog.py in the webui Models page's 'Available' grid, gated by backend.core.pc_capability_tier so an entry above the current PC tier renders disabled with the actual reason.",
+  "entries": [
+    {
+      "id": "catalog-20b",
+      "name": "20B-class model (unspecified)",
+      "sizeClass": "20B",
+      "requiredTier": 4,
+      "downloadUrl": null,
+      "fileSizeGB": null,
+      "minVramGB": 0,
+      "compatibilityWarning": "Runs CPU-only but is impractically slow without a GPU; Tier 4+ (a discrete GPU) is recommended."
+    },
+    {
+      "id": "catalog-30b",
+      "name": "30B-class model (unspecified)",
+      "sizeClass": "30B",
+      "requiredTier": 4,
+      "downloadUrl": null,
+      "fileSizeGB": null,
+      "minVramGB": 0,
+      "compatibilityWarning": "Runs CPU-only but is impractically slow without a GPU; Tier 4+ (a discrete GPU) is recommended."
+    },
+    {
+      "id": "catalog-70b",
+      "name": "70B-class model (unspecified)",
+      "sizeClass": "70B",
+      "requiredTier": 5,
+      "downloadUrl": null,
+      "fileSizeGB": null,
+      "minVramGB": 12,
+      "compatibilityWarning": "Requires a GPU with at least 12GB VRAM for usable performance; CPU-only is not recommended at this size."
+    },
+    {
+      "id": "catalog-120b",
+      "name": "120B-class model (unspecified)",
+      "sizeClass": "120B",
+      "requiredTier": 6,
+      "downloadUrl": null,
+      "fileSizeGB": null,
+      "minVramGB": 24,
+      "compatibilityWarning": "Requires a high-end GPU with at least 24GB VRAM; not recommended without one."
+    },
+    {
+      "id": "catalog-140b",
+      "name": "140B-class model (unspecified)",
+      "sizeClass": "140B",
+      "requiredTier": 6,
+      "downloadUrl": null,
+      "fileSizeGB": null,
+      "minVramGB": 24,
+      "compatibilityWarning": "Requires a high-end GPU with at least 24GB VRAM; not recommended without one."
+    }
+  ]
+}

@@ -1,3 +1,10 @@
+
+
+
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 def resolve_project_name_from_context(context_snapshot):
     """
     Unified project name resolver for ARIA Lite.
@@ -5,17 +12,11 @@ def resolve_project_name_from_context(context_snapshot):
     to project names. Returns a structured result dictionary.
     """
 
-    # ContextEngine snapshot structure:
-    # {
-    #   "context": {
-    #       "entities": { entity_id: { ... } },
-    #       ...
-    #   },
-    #   "turn": <int>
-    # }
+    logger.debug(f"resolve_project_name_from_context() → {context_snapshot}")
 
     context = context_snapshot.get("context")
     if not context:
+        logger.debug("No active context → defaulting to General")
         return {
             "status": "ok",
             "operation": "resolve_project_name",
@@ -28,21 +29,19 @@ def resolve_project_name_from_context(context_snapshot):
 
     # Extract topics from multiple entity types
     for ent_id, ent_data in entities.items():
+        logger.debug(f"Scanning entity → {ent_id}: {ent_data}")
 
-        # Explicit topic entity
         if ent_data.get("type") == "topic":
             topics.append(ent_data.get("topic"))
 
-        # ARIAKeyword → treat as topic
         if ent_data.get("type") == "ARIAKeyword":
             topics.append(ent_data.get("value"))
 
-        # Named entities (e.g., Unity, Blender)
         if ent_data.get("type") == "Name":
             topics.append(ent_data.get("value").lower())
 
-    # Normalize
     topics = [t.lower() for t in topics]
+    logger.debug(f"Normalized topics → {topics}")
 
     # Mapping
     if "aria" in topics:
@@ -57,6 +56,8 @@ def resolve_project_name_from_context(context_snapshot):
         project = "WordPress Site"
     else:
         project = "General"
+
+    logger.debug(f"Resolved project → {project}")
 
     return {
         "status": "ok",

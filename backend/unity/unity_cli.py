@@ -16,6 +16,10 @@ from backend.unity.unity_ops import (
     unity_create_scriptableobject,
 )
 
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 ACTIVE_UNITY_PROJECT_FILE = ".aria_active_unity_project.json"
 
 
@@ -27,7 +31,7 @@ def save_active_unity_project(project):
         with open(ACTIVE_UNITY_PROJECT_FILE, "w", encoding="utf-8") as f:
             json.dump(project, f, indent=2)
     except Exception:
-        print(f"{TAG_ERROR} Failed to save active Unity project.")
+        logger.exception(f"{TAG_ERROR} Failed to save active Unity project.")
 
 
 def load_active_unity_project():
@@ -37,7 +41,7 @@ def load_active_unity_project():
         with open(ACTIVE_UNITY_PROJECT_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        print(f"{TAG_ERROR} Failed to load active Unity project.")
+        logger.exception(f"{TAG_ERROR} Failed to load active Unity project.")
         return None
 
 
@@ -57,7 +61,7 @@ def handle_unity(args, config):
     """
 
     if not args:
-        print(f"{TAG_UNITY} Commands: list, select, scenes, assets, build, create")
+        logger.info(f"{TAG_UNITY} Commands: list, select, scenes, assets, build, create")
         return
 
     sub = args[0].lower()
@@ -72,7 +76,7 @@ def handle_unity(args, config):
     if sub == "list":
         projects = find_unity_projects(search_entire_pc=search_entire_pc)
         for p in projects:
-            print(f"{TAG_FOUND} {p['name']} ({p['path']})")
+            logger.info(f"{TAG_FOUND} {p['name']} ({p['path']})")
         return
 
     # ---------------------------------------------------------
@@ -82,26 +86,26 @@ def handle_unity(args, config):
         projects = find_unity_projects(search_entire_pc=search_entire_pc)
 
         if not projects:
-            print(f"{TAG_ERROR} No Unity projects found.")
+            logger.warning(f"{TAG_ERROR} No Unity projects found.")
             return
 
         for i, p in enumerate(projects):
-            print(f"[{i}] {p['name']} ({p['path']})")
+            logger.info(f"[{i}] {p['name']} ({p['path']})")
 
         try:
             choice = int(input("Select project index: "))
             project = projects[choice]
             save_active_unity_project(project)
-            print(f"{TAG_UNITY} Active project set to {project['name']}")
+            logger.info(f"{TAG_UNITY} Active project set to {project['name']}")
         except Exception:
-            print(f"{TAG_ERROR} Invalid selection.")
+            logger.exception(f"{TAG_ERROR} Invalid selection.")
         return
 
     # ---------------------------------------------------------
     # REQUIRE ACTIVE PROJECT
     # ---------------------------------------------------------
     if not active:
-        print(f"{TAG_ERROR} No active project. Run: aria unity select")
+        logger.warning(f"{TAG_ERROR} No active project. Run: aria unity select")
         return
 
     project_path = active["path"]
@@ -112,7 +116,7 @@ def handle_unity(args, config):
     if sub == "scenes":
         summary = summarize_unity_project(project_path)
         for s in summary["scenes"]:
-            print(f"{TAG_INFO} {s['name']} ({s['path']})")
+            logger.info(f"{TAG_INFO} {s['name']} ({s['path']})")
         return
 
     # ---------------------------------------------------------
@@ -121,9 +125,9 @@ def handle_unity(args, config):
     if sub == "assets":
         summary = summarize_unity_project(project_path)
         for kind, items in summary["assets"].items():
-            print(f"{TAG_INFO} [{kind}]")
+            logger.info(f"{TAG_INFO} [{kind}]")
             for a in items[:20]:
-                print(f" - {a['name']}")
+                logger.info(f" - {a['name']}")
         return
 
     # ---------------------------------------------------------
@@ -132,7 +136,7 @@ def handle_unity(args, config):
     if sub == "build":
         summary = summarize_unity_project(project_path)
         for b in summary["build_scenes"]:
-            print(f"{TAG_INFO} {b['path']} [{b['enabled']}]")
+            logger.info(f"{TAG_INFO} {b['path']} [{b['enabled']}]")
         return
 
     # ---------------------------------------------------------
@@ -140,7 +144,7 @@ def handle_unity(args, config):
     # ---------------------------------------------------------
     if sub == "create":
         if len(args) < 3:
-            print(f"{TAG_ERROR} Usage: aria unity create <script|scene|prefab|so> <name>")
+            logger.warning(f"{TAG_ERROR} Usage: aria unity create <script|scene|prefab|so> <name>")
             return
 
         create_type = args[1].lower()
@@ -155,10 +159,10 @@ def handle_unity(args, config):
         elif create_type == "so":
             unity_create_scriptableobject(project_path, name)
         else:
-            print(f"{TAG_ERROR} Unknown create type.")
+            logger.warning(f"{TAG_ERROR} Unknown create type.")
         return
 
     # ---------------------------------------------------------
     # UNKNOWN COMMAND
     # ---------------------------------------------------------
-    print(f"{TAG_ERROR} Unknown command.")
+    logger.warning(f"{TAG_ERROR} Unknown command.")

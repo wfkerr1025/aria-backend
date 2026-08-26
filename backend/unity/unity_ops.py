@@ -6,6 +6,10 @@ from pathlib import Path
 
 from utils.theme_tags import TAG_UNITY, TAG_SCAN, TAG_FOUND, TAG_ERROR
 
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 UNITY_SIGNATURE_DIRS = ["Assets", "ProjectSettings", "Packages"]
 PROJECT_VERSION_FILE = "ProjectSettings/ProjectVersion.txt"
 EDITOR_BUILD_SETTINGS_FILE = "ProjectSettings/EditorBuildSettings.asset"
@@ -159,7 +163,7 @@ def find_unity_projects(search_entire_pc=True, search_roots=None, progress_callb
             p = Path(dirpath)
             if is_unity_project(p):
                 if progress_callback is None:
-                    print(f"{TAG_FOUND} Unity project: {p.name} ({p})")
+                    logger.info(f"{TAG_FOUND} Unity project: {p.name} ({p})")
                 projects.append({"name": p.name, "path": str(p)})
 
     if progress_callback is None:
@@ -433,4 +437,4 @@ class UnityTools:
         Called when user clicks Unity in the Plugins menu.
         Hook this into your UI or ChatManager as needed.
         """
-        print(f"{TAG_UNITY} Unity plugin activated.")
+        logger.info(f"{TAG_UNITY} Unity plugin activated.")

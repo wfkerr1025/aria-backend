@@ -1,3 +1,12 @@
+from __future__ import annotations
+from typing import Dict, Any, List
+import time
+
+
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 class DebugEngine:
     """
     Unified debug/logging engine for ARIA Lite.
@@ -7,12 +16,15 @@ class DebugEngine:
     """
 
     def __init__(self):
+        logger.debug("Initializing DebugEngine")
         self.logs: List[Dict[str, Any]] = []
 
     # ---------------------------------------------------------
     # LOG ENTRY
     # ---------------------------------------------------------
     def log(self, level: str, message: str, data: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        logger.debug(f"log() → level={level}, message={message}, data={data}")
+
         entry = {
             "timestamp": time.time(),
             "level": level,
@@ -31,6 +43,8 @@ class DebugEngine:
     # GET LOGS
     # ---------------------------------------------------------
     def get_logs(self, limit: int = 100) -> Dict[str, Any]:
+        logger.debug(f"get_logs() → limit={limit}")
+
         return {
             "status": "ok",
             "logs": self.logs[-limit:]
@@ -40,6 +54,8 @@ class DebugEngine:
     # CLEAR LOGS
     # ---------------------------------------------------------
     def clear_logs(self) -> Dict[str, Any]:
+        logger.debug("clear_logs()")
+
         self.logs.clear()
         return {
             "status": "ok",
@@ -50,16 +66,7 @@ class DebugEngine:
     # PACKET HANDLER
     # ---------------------------------------------------------
     def handle_debug(self, envelope: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Envelope format:
-        {
-          "task": "debug",
-          "operation": "log" | "get" | "clear",
-          "level": "info" | "warn" | "error",
-          "message": "text",
-          "data": {...}
-        }
-        """
+        logger.debug(f"handle_debug() → envelope={envelope}")
 
         op = envelope.get("operation")
 
@@ -77,6 +84,8 @@ class DebugEngine:
 
         if op == "clear":
             return self.clear_logs()
+
+        logger.debug(f"Unknown debug operation → {op}")
 
         return {
             "status": "error",

@@ -4,6 +4,10 @@ import time
 import traceback
 import os
 
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 
 class BackendContractViolation(Exception):
     """Raised when a backend module violates the ARIA Lite backend contract."""
@@ -15,14 +19,16 @@ class BackendContractViolation(Exception):
 # ============================================================
 
 def _log_backend_contract_error(module_name: str, message: str, tb: str | None = None):
-    print("\n" + "=" * 60)
-    print("[ARIA Backend Contract Violation]")
-    print(f"Module: {module_name}")
-    print(f" - {message}")
+    logger.error(f"ERROR in {module_name}: {message}")
+
+    logger.error("\n" + "=" * 60)
+    logger.error("[ARIA Backend Contract Violation]")
+    logger.error(f"Module: {module_name}")
+    logger.error(f" - {message}")
     if tb:
-        print(tb)
-    print("[Resolution Required]")
-    print("=" * 60 + "\n")
+        logger.error(tb)
+    logger.error("[Resolution Required]")
+    logger.error("=" * 60 + "\n")
 
     os.makedirs("logs", exist_ok=True)
     with open("logs/backend_contract_errors.log", "a", encoding="utf-8") as f:
@@ -32,13 +38,15 @@ def _log_backend_contract_error(module_name: str, message: str, tb: str | None =
 
 
 def _log_backend_autocorrection(module_name: str, messages: list[str]):
-    print("\n" + "=" * 60)
-    print("[ARIA Backend Auto-Correction]")
-    print(f"Module: {module_name}")
+    logger.debug(f"AUTOCORRECT {module_name}: {messages}")
+
+    logger.info("\n" + "=" * 60)
+    logger.info("[ARIA Backend Auto-Correction]")
+    logger.info(f"Module: {module_name}")
     for msg in messages:
-        print(f" - {msg}")
-    print("[Module successfully adapted]")
-    print("=" * 60 + "\n")
+        logger.info(f" - {msg}")
+    logger.info("[Module successfully adapted]")
+    logger.info("=" * 60 + "\n")
 
     os.makedirs("logs", exist_ok=True)
     with open("logs/backend_contract_errors.log", "a", encoding="utf-8") as f:
@@ -52,21 +60,15 @@ def _log_backend_autocorrection(module_name: str, messages: list[str]):
 # ============================================================
 
 def verify_backend_module(app, module, module_name: str) -> bool:
-    """
-    Verify that a backend module satisfies the ARIA Lite backend contract.
+    logger.debug(f"verify_backend_module() → {module_name}")
 
-    Contract (if module declares it):
-        - REQUIRES: list of required attributes on app or module
-        - FORBIDDEN: list of forbidden attributes on module
-
-    If REQUIRES/FORBIDDEN are not declared, module is considered legacy and passes.
-    """
     try:
         requires = getattr(module, "REQUIRES", None)
         forbidden = getattr(module, "FORBIDDEN", None)
 
         # No explicit contract → treat as legacy, allow
         if requires is None and forbidden is None:
+            logger.debug(f"{module_name} is legacy → allowed")
             return True
 
         ok = True
@@ -90,6 +92,7 @@ def verify_backend_module(app, module, module_name: str) -> bool:
 
         if not ok:
             _log_backend_contract_error(module_name, "; ".join(messages))
+
         return ok
 
     except Exception as e:
@@ -103,14 +106,8 @@ def verify_backend_module(app, module, module_name: str) -> bool:
 # ============================================================
 
 def adapt_backend_module(app, module, module_name: str):
-    """
-    Attempt to auto-correct a backend module that violates the backend contract.
+    logger.debug(f"adapt_backend_module() → {module_name}")
 
-    Strategy:
-        - Inject default REQUIRES/FORBIDDEN if missing
-        - Remove forbidden attributes from module
-        - Attach required attributes from app if possible
-    """
     messages: list[str] = []
 
     try:

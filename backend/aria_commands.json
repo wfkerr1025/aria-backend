@@ -1,3 +1,7 @@
+from backend.core.logger import log
+
+log("CommandRegistry", "Loading unified command registry")
+
 COMMAND_REGISTRY = {
     "unity": [
         "unity_list_projects(root)",
@@ -40,3 +44,5 @@ COMMAND_REGISTRY = {
         "diagnostics()"
     ]
 }
+
+log("CommandRegistry", f"Loaded {sum(len(v) for v in COMMAND_REGISTRY.values())} commands")

@@ -1,0 +1,272 @@
+"""ARIA Lite Phase 9.2 - the handlers behind read_file, edit_file and run_tests.
+
+The first tools in this codebase that touch the user's disk. Everything here
+is written around one fact about where they run: tool_registry executes
+handlers through run_in_sandbox, and that sandbox is a worker thread in this
+same process. It enforces a wall-clock timeout and watches memory. It does
+not isolate the filesystem, and an `open(path, "w")` inside it writes to the
+real disk exactly as it would anywhere else.
+
+So the containment is here, and it is the point of the module:
+
+    Every path is resolved and checked against a workspace root before it
+    is opened. Resolution happens first, so "../../.ssh/id_rsa" and a
+    symlink pointing outside are both rejected by the same check rather
+    than by a string test that either could defeat.
+
+    edit_file previews by default. Writing is opt-in per call, so a
+    mis-planned invocation costs a diff rather than a file. Rewriting a
+    file with what it already contains is reported and skipped, which makes
+    a repeated edit idempotent rather than merely harmless.
+
+    run_tests never takes a command from its caller. The command is
+    configuration; the argument only chooses which tests, and is rejected
+    if it looks like anything but a path or a test expression. No shell is
+    involved at any point.
+
+None of these are theoretical. A read tool with no root check is an
+arbitrary file disclosure primitive, a write tool with no preview turns one
+bad plan step into data loss, and a test runner that accepts its own command
+line is remote code execution wearing a different name.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+from logger import get_logger
+
+logger = get_logger(__name__)
+
+__all__ = [
+    "DEFAULT_TEST_COMMAND",
+    "ENV_TEST_COMMAND",
+    "ENV_WORKSPACE",
+    "MAX_READ_BYTES",
+    "MAX_WRITE_BYTES",
+    "WorkspaceError",
+    "edit_file",
+    "read_file",
+    "resolve_in_workspace",
+    "run_tests",
+    "workspace_root",
+]
+
+# Where the tools are allowed to operate. Defaults to the working directory,
+# which is the project root when the backend is started normally.
+ENV_WORKSPACE = "ARIA_TOOL_WORKSPACE"
+
+# The test command. Configuration, never an argument -- see the module
+# docstring. Split on whitespace, run without a shell.
+ENV_TEST_COMMAND = "ARIA_TEST_COMMAND"
+DEFAULT_TEST_COMMAND = (sys.executable, "-m", "pytest", "-q")
+
+# A read returns at most this much text, and a write refuses beyond it.
+# Bounds what one tool call can pull into a prompt or commit to disk.
+MAX_READ_BYTES = 200_000
+MAX_WRITE_BYTES = 1_000_000
+
+# What a test scope may look like: a path, a node id, or a -k expression.
+# Anything with a shell metacharacter in it is refused rather than escaped,
+# because there is no shell to escape for and a scope that needs one is a
+# scope that is trying to be a command.
+_SCOPE_ALLOWED = re.compile(r"^[A-Za-z0-9_./:\- \[\]=]*$")
+
+_TEST_TIMEOUT_SECONDS = 600
+
+
+class WorkspaceError(ValueError):
+    """A path that resolved outside the workspace, or could not be read."""
+
+
+def workspace_root() -> Path:
+    """The directory the file tools are confined to.
+
+    Read on every call rather than cached at import: a test fixture that
+    points the workspace at a tmp_path must take effect without reloading
+    the module, and a cached root is a root that silently ignores it.
+    """
+    configured = os.environ.get(ENV_WORKSPACE)
+    return Path(configured).resolve() if configured else Path.cwd().resolve()
+
+
+def resolve_in_workspace(path: str) -> Path:
+    """Resolve `path` and confirm it is inside the workspace.
+
+    strict=False so a file that does not exist yet still resolves -- writing
+    a new file is legitimate -- while symlinks and "..' segments are
+    flattened before the check, which is what makes the check meaningful.
+    """
+    root = workspace_root()
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+
+    resolved = candidate.resolve(strict=False)
+    if resolved != root and root not in resolved.parents:
+        raise WorkspaceError(
+            f"Path is outside the workspace: {path!r} resolves to {resolved}"
+        )
+    return resolved
+
+
+def _relative(resolved: Path) -> str:
+    """The path as the user would recognise it, for summaries and results."""
+    try:
+        return str(resolved.relative_to(workspace_root())).replace("\\", "/")
+    except ValueError:
+        return str(resolved)
+
+
+# ======================================================
+# read_file
+# ======================================================
+def read_file(path: str) -> dict:
+    """Read a text file from inside the workspace.
+
+    Decoded as UTF-8 with replacement rather than strict: a tool that raises
+    on one bad byte is a tool that cannot read half the log files it will be
+    pointed at, and the replacement character is visible in the output.
+    """
+    resolved = resolve_in_workspace(path)
+    if not resolved.is_file():
+        raise WorkspaceError(f"Not a file: {_relative(resolved)}")
+
+    size = resolved.stat().st_size
+    data = resolved.read_bytes()[:MAX_READ_BYTES]
+    text = data.decode("utf-8", errors="replace")
+
+    return {
+        "path": _relative(resolved),
+        "text": text,
+        "bytes": size,
+        "truncated": size > MAX_READ_BYTES,
+    }
+
+
+# ======================================================
+# edit_file
+# ======================================================
+def _unified_preview(before: str, after: str, name: str, context: int = 3) -> str:
+    """A unified diff of a proposed change, for a human to look at."""
+    import difflib
+
+    return "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=f"a/{name}",
+            tofile=f"b/{name}",
+            n=context,
+        )
+    )
+
+
+def edit_file(path: str, content: str, confirm: bool = False) -> dict:
+    """Replace a file's contents, previewing unless told to apply.
+
+    confirm defaults to False, so the ordinary call computes the diff and
+    writes nothing. That is the guard: a plan step that names the wrong file
+    or the wrong content costs a preview, and applying is a second, explicit
+    decision by whoever is driving the tool.
+
+    Writing the same bytes that are already there is skipped and reported as
+    unchanged. That makes a repeated invocation idempotent in the strong
+    sense -- the second call does not touch the file's mtime, so nothing
+    downstream sees a change that did not happen.
+    """
+    resolved = resolve_in_workspace(path)
+    name = _relative(resolved)
+
+    if resolved.exists() and not resolved.is_file():
+        raise WorkspaceError(f"Not a file: {name}")
+
+    encoded = str(content).encode("utf-8")
+    if len(encoded) > MAX_WRITE_BYTES:
+        raise WorkspaceError(
+            f"Refusing to write {len(encoded)} bytes to {name}; the limit is {MAX_WRITE_BYTES}"
+        )
+
+    existed = resolved.is_file()
+    before = resolved.read_text(encoding="utf-8", errors="replace") if existed else ""
+    diff = _unified_preview(before, str(content), name)
+
+    if existed and before == str(content):
+        return {
+            "path": name, "applied": False, "changed": False,
+            "reason": "unchanged", "diff": "", "created": False,
+        }
+
+    if not confirm:
+        return {
+            "path": name, "applied": False, "changed": True,
+            "reason": "preview_only", "diff": diff, "created": not existed,
+        }
+
+    if not resolved.parent.is_dir():
+        raise WorkspaceError(f"Directory does not exist: {_relative(resolved.parent)}")
+
+    resolved.write_text(str(content), encoding="utf-8")
+    logger.info("edit_file applied to %s (%d bytes)", name, len(encoded))
+    return {
+        "path": name, "applied": True, "changed": True,
+        "reason": "written", "diff": diff, "created": not existed,
+    }
+
+
+# ======================================================
+# run_tests
+# ======================================================
+def _test_command() -> list[str]:
+    configured = os.environ.get(ENV_TEST_COMMAND)
+    if configured:
+        return configured.split()
+    return list(DEFAULT_TEST_COMMAND)
+
+
+def run_tests(scope: str = "") -> dict:
+    """Run the configured test command, optionally narrowed to `scope`.
+
+    The command comes from configuration and the scope is appended as one
+    argument. Nothing the caller passes can become a command, an option or a
+    second command: there is no shell, the argument list is built here, and a
+    scope containing anything but path and test-expression characters is
+    refused outright.
+    """
+    scope = " ".join(str(scope or "").split())
+    if scope and not _SCOPE_ALLOWED.match(scope):
+        raise WorkspaceError(f"Test scope contains unsupported characters: {scope!r}")
+
+    command = _test_command()
+    if scope:
+        command = [*command, scope]
+
+    root = workspace_root()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=_TEST_TIMEOUT_SECONDS,
+            shell=False,
+        )
+    except FileNotFoundError as error:
+        raise WorkspaceError(f"Test command not found: {command[0]}") from error
+    except subprocess.TimeoutExpired as error:
+        raise WorkspaceError(
+            f"Test command timed out after {_TEST_TIMEOUT_SECONDS}s"
+        ) from error
+
+    output = (completed.stdout or "") + (completed.stderr or "")
+    return {
+        "command": " ".join(command),
+        "scope": scope,
+        "exit_code": completed.returncode,
+        "passed": completed.returncode == 0,
+        "output": output[-MAX_READ_BYTES:],
+    }

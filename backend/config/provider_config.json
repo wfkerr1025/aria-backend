@@ -1,0 +1,74 @@
+{
+  "providers": [
+    {
+      "name": "openai",
+      "enabled": true,
+      "metadata": {}
+    },
+    {
+      "name": "anthropic",
+      "enabled": true,
+      "metadata": {}
+    },
+    {
+      "name": "azure",
+      "enabled": true,
+      "metadata": {}
+    },
+    {
+      "name": "cohere",
+      "enabled": true,
+      "metadata": {}
+    },
+    {
+      "name": "custom_http",
+      "enabled": true,
+      "metadata": {}
+    },
+    {
+      "name": "deepseek",
+      "enabled": true,
+      "metadata": {}
+    },
+    {
+      "name": "gemini",
+      "enabled": true,
+      "metadata": {}
+    },
+    {
+      "name": "grok",
+      "enabled": true,
+      "metadata": {}
+    },
+    {
+      "name": "huggingface",
+      "enabled": true,
+      "metadata": {}
+    },
+    {
+      "name": "mistral",
+      "enabled": true,
+      "metadata": {}
+    },
+    {
+      "name": "openrouter",
+      "enabled": true,
+      "metadata": {}
+    },
+    {
+      "name": "perplexity",
+      "enabled": true,
+      "metadata": {}
+    },
+    {
+      "name": "replicate",
+      "enabled": true,
+      "metadata": {}
+    },
+    {
+      "name": "together",
+      "enabled": true,
+      "metadata": {}
+    }
+  ]
+}

@@ -1,0 +1,72 @@
+{
+    "default": "nemo-12b-q5",
+    "models": {
+        "nemo-12b-q5": {
+            "id": "nemo-12b-q5",
+            "name": "Mistral Nemo 12B Instruct (Q5_K_M)",
+            "provider": "local",
+            "type": "gguf",
+            "defaultFilename": "Mistral-Nemo-12B-Instruct-2407-Q5_K_M.gguf",
+            "path": "C:\\Users\\wfk10\\.aria-lite\\models\\Mistral-Nemo-12B-Instruct-2407-Q5_K_M.gguf",
+            "quant": "Q5_K_M",
+            "params": 12000000000,
+            "maxContext": 16384,
+            "defaultGpuLayers": 0,
+            "requirements": {
+                "minRamGB": 12,
+                "recRamGB": 24,
+                "minCpuCores": 4,
+                "recCpuCores": 8,
+                "minCpuFeatures": [
+                    "AVX2"
+                ],
+                "recCpuFeatures": [
+                    "AVX2"
+                ],
+                "recAvx2Tier": "High",
+                "minVramGB": 0,
+                "recVramGB": 10,
+                "minSpeedTokSec": 2,
+                "recSpeedTokSec": 6,
+                "minContext": 4096,
+                "recContext": 16384,
+                "difficulty": "Heavy",
+                "notes": "12B parameters at Q5_K_M is CPU-viable but slow; a GPU with 10GB+ VRAM is strongly recommended for usable generation speed."
+            }
+        },
+        "mistral-7b-q4km": {
+            "id": "mistral-7b-q4km",
+            "name": "Mistral 7B Instruct v0.2 (Q4_K_M)",
+            "provider": "local",
+            "type": "gguf",
+            "defaultFilename": "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+            "path": "C:\\Users\\wfk10\\.aria-lite\\models\\mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+            "quant": "Q4_K_M",
+            "params": 7000000000,
+            "maxContext": 4096,
+            "defaultGpuLayers": 0,
+            "requirements": {
+                "minRamGB": 8,
+                "recRamGB": 16,
+                "minCpuCores": 4,
+                "recCpuCores": 8,
+                "minCpuFeatures": [
+                    "AVX2"
+                ],
+                "recCpuFeatures": [
+                    "AVX2"
+                ],
+                "minVramGB": 0,
+                "recVramGB": 6,
+                "minSpeedTokSec": 3,
+                "recSpeedTokSec": 8,
+                "minContext": 2048,
+                "recContext": 4096,
+                "difficulty": "Medium",
+                "notes": "Runs comfortably on CPU-only systems with 8GB+ RAM; a 6GB+ VRAM GPU gives noticeably faster generation."
+            }
+        }
+    },
+    "fallback": "phi-3-mini-4k-instruct-q4",
+    "emergency": "qwen2.5-0.5b-instruct-q4_k_m"
+}
