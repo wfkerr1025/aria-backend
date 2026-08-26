@@ -46,6 +46,19 @@ class FakeWebSocket:
         self.sent.append(raw)
 
 
+# ------------------------------------------------------------------
+# Step 3 of the Turn Orchestrator blueprint moved the chat sequence out
+# of handlers.py and into backend/core/turn_orchestrator.py. These tests
+# hooked handler._start_inference and handlers_mod.evaluate_safety --
+# both internals of the old structure. What they assert is unchanged;
+# only the seam they attach to moved:
+#
+#     handler._start_inference(packet)  ->  _start_inference_from(result)
+#     handlers_mod.evaluate_safety      ->  turn_orchestrator.evaluate_safety
+#     packet["allowOverride"]           ->  result.inference_request.allow_override
+# ------------------------------------------------------------------
+from backend.core import turn_orchestrator as _turn_orch  # noqa: E402
+
 def _run(coro):
     return asyncio.run(coro)
 
@@ -235,7 +248,7 @@ def test_skr_short_circuit_never_touches_a_model():
         async def _explode(*_args, **_kwargs):
             raise AssertionError("_start_inference() was called for a self-query — it must never load a model")
 
-        handler._start_inference = _explode
+        handler._start_inference_from = _explode
 
         await handler._dispatch({
             "type": "chat_request",
@@ -649,7 +662,7 @@ def test_switch_to_lighter_model_grants_one_shot_safety_bypass():
     original_mode = mm.get_mode()
     mm.set_mode("local")
 
-    original_evaluate_safety = handlers_mod.evaluate_safety
+    original_evaluate_safety = _turn_orch.evaluate_safety
     calls = {"n": 0}
 
     def _counting_evaluate_safety(model_cfg):
@@ -668,8 +681,8 @@ def test_switch_to_lighter_model_grants_one_shot_safety_bypass():
         async def _capture(packet):
             captured["packet"] = packet
 
-        handler._start_inference = _capture
-        handlers_mod.evaluate_safety = _counting_evaluate_safety
+        handler._start_inference_from = _capture
+        _turn_orch.evaluate_safety = _counting_evaluate_safety
         try:
             await handler._dispatch({
                 "type": "chat_request",
@@ -678,10 +691,10 @@ def test_switch_to_lighter_model_grants_one_shot_safety_bypass():
                 "messages": [{"role": "user", "content": "hello"}],
             })
         finally:
-            handlers_mod.evaluate_safety = original_evaluate_safety
+            _turn_orch.evaluate_safety = original_evaluate_safety
 
         assert calls["n"] == 0, "evaluate_safety was called despite the one-shot bypass"
-        assert captured.get("packet", {}).get("allowOverride") is True
+        assert getattr(captured.get("packet"), "inference_request", None) is not None and captured["packet"].inference_request.allow_override is True
         assert handler._override_model_id is None, "the one-shot bypass must be consumed after use"
 
     try:
@@ -747,7 +760,7 @@ def test_proceed_anyway_allow_override_threads_to_inference_request():
         async def _capture(packet):
             captured["packet"] = packet
 
-        handler._start_inference = _capture
+        handler._start_inference_from = _capture
 
         await handler._dispatch({"type": "load_model_override", "model_id": "nemo-12b-q5"})
         # _handle_model_override must NOT call _start_inference.
@@ -768,7 +781,7 @@ def test_proceed_anyway_allow_override_threads_to_inference_request():
     assert confirmation["type"] == "stream_start" and confirmation["modelId"] == "system", (
         "load_model_override must reply with a system confirmation, not silence"
     )
-    assert captured.get("packet", {}).get("allowOverride") is True, (
+    assert getattr(captured.get("packet"), "inference_request", None) is not None and captured["packet"].inference_request.allow_override is True, (
         "allowOverride was not threaded through to _start_inference"
     )
 
@@ -786,7 +799,7 @@ def test_skip_safety_check_bypasses_safety_gate_and_never_calls_evaluate_safety(
     from backend.websocket import handlers as handlers_mod
 
     captured = {}
-    original_evaluate_safety = handlers_mod.evaluate_safety
+    original_evaluate_safety = _turn_orch.evaluate_safety
 
     def _explode(*_args, **_kwargs):
         raise AssertionError("evaluate_safety() was called despite skipSafetyCheck=True")
@@ -807,8 +820,8 @@ def test_skip_safety_check_bypasses_safety_gate_and_never_calls_evaluate_safety(
         async def _capture(packet):
             captured["packet"] = packet
 
-        handler._start_inference = _capture
-        handlers_mod.evaluate_safety = _explode
+        handler._start_inference_from = _capture
+        _turn_orch.evaluate_safety = _explode
         try:
             await handler._dispatch({
                 "type": "chat_request",
@@ -818,7 +831,7 @@ def test_skip_safety_check_bypasses_safety_gate_and_never_calls_evaluate_safety(
                 "skipSafetyCheck": True,
             })
         finally:
-            handlers_mod.evaluate_safety = original_evaluate_safety
+            _turn_orch.evaluate_safety = original_evaluate_safety
         return ws.sent
 
     try:
@@ -826,7 +839,7 @@ def test_skip_safety_check_bypasses_safety_gate_and_never_calls_evaluate_safety(
     finally:
         mm.set_mode(original_mode)
     assert sent == [], "skipSafetyCheck must short-circuit straight to _start_inference, no packets sent first"
-    assert captured.get("packet", {}).get("allowOverride") is True, (
+    assert getattr(captured.get("packet"), "inference_request", None) is not None and captured["packet"].inference_request.allow_override is True, (
         "skipSafetyCheck must set allowOverride=True on the inference packet"
     )
 
@@ -851,7 +864,7 @@ def test_safety_check_still_fires_without_skip_flag():
         async def _capture(packet):
             captured["packet"] = packet
 
-        handler._start_inference = _capture
+        handler._start_inference_from = _capture
         await handler._dispatch({
             "type": "chat_request",
             "modelId": "nemo-12b-q5",
