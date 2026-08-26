@@ -37,7 +37,14 @@ from __future__ import annotations
 
 from typing import Callable
 
-from backend.core import key_manager, self_knowledge, weather_nl
+from backend.core import (
+    evidence_routing,
+    key_manager,
+    search_intent,
+    self_knowledge,
+    turn_status,
+    weather_nl,
+)
 from backend.core.conversation_manager import (
     INTENT_MODEL_SWITCH,
     INTENT_SEARCH_QUERY,
@@ -317,6 +324,7 @@ def orchestrate_turn(
     suggester=None,
     generator: Callable[[str], str] | None = None,
     reasoning_enabled: bool = True,
+    on_status: Callable[[str], None] | None = None,
 ) -> TurnResult:
     """Decide what should happen for one chat turn.
 
@@ -327,7 +335,37 @@ def orchestrate_turn(
     generator is passed through to the reasoning core. It is unused until
     the Phase core is inserted at the two seams; accepting it now keeps the
     transports from needing a signature change then.
+
+    on_status is an optional progress callback, called with a value from
+    backend.core.turn_status as each phase begins. It is the one piece of
+    output this function has that is not in the TurnResult, and it is kept
+    honest by two rules: it is optional and defaulted, so every existing
+    caller behaves exactly as before; and it is fired only where the
+    statement it makes is true at the moment it is made.
+
+    That second rule is why only `planning` is emitted here and not
+    `executing` or `synthesizing`. Planning, tool routing, tool execution
+    and prompt assembly all happen inside one call into Engine B
+    (build_answer_prompt), which this function cannot see into. It learns a
+    tool ran only from AnswerPrompt.tool_runs, after the fact -- and
+    announcing "Searching..." once the search has finished is a progress
+    indicator that lies about the present tense, which is worse than the
+    coarser one it replaces. Emitting those two live needs the same
+    optional callback threaded into build_answer_prompt; that is an Engine
+    B change and is deliberately not made here.
+
+    A callback that raises is swallowed. Progress reporting is decoration,
+    and a turn must not be lost to it.
     """
+    def status(value: str) -> None:
+        """Report progress, if anyone is listening, without ever failing."""
+        if on_status is None:
+            return
+        try:
+            on_status(value)
+        except Exception:  # pragma: no cover - decoration must not break a turn
+            logger.debug("on_status(%r) raised; continuing", value, exc_info=True)
+
     if mode_manager is None:
         from backend.core.mode_manager import ModeManager
 
@@ -420,6 +458,47 @@ def orchestrate_turn(
                 telemetry=telemetry + [_event("cloud_mode_no_provider")],
             )
 
+    # --- 5b. Capability routing for a turn that will carry evidence.
+    #
+    # Decided here, beside the model resolution it overrides, and before
+    # the safety gate runs -- so the gate evaluates the model that will
+    # actually be loaded. Deciding it after Engine B, when tool_runs is a
+    # fact rather than a prediction, would mean projecting RAM for one
+    # model and loading another.
+    #
+    # The prediction is the search vocabulary that the planner itself uses
+    # (backend/core/search_intent.py), so "will a lookup happen" is
+    # answered here by the same table that decides it later. It is
+    # confirmed against the real tool_runs further down.
+    expects_evidence = (
+        intent == INTENT_SEARCH_QUERY or search_intent.mentions_web_search(text)
+    )
+    cloud_available = any(key_manager.list_configured_providers().values())
+    route = evidence_routing.choose_route(
+        expects_evidence=expects_evidence,
+        model_id=model_id,
+        mode=session.mode,
+        cloud_available=cloud_available,
+    )
+
+    if route != evidence_routing.ROUTE_NORMAL:
+        telemetry.append(_event(
+            "model_routing", decision=route, model_id=model_id, mode=session.mode,
+        ))
+
+    if route == evidence_routing.ROUTE_CLOUD:
+        # model_id=None is how this codebase says "let ProviderRouter
+        # choose", which in Cloud or Automatic mode means the configured
+        # cloud provider. There is deliberately no "cloud-default" id to
+        # set instead: the registry holds no cloud models, and
+        # model_violates_mode_separation() treats any concrete id in Cloud
+        # Mode as a violation.
+        logger.info(
+            "evidence-bearing turn: %s cannot synthesize evidence, routing to cloud.",
+            model_id,
+        )
+        model_id = None
+
     # --- 6. Safety.
     #
     # Two bypasses, and neither is the packet's allowOverride: that flag
@@ -486,6 +565,11 @@ def orchestrate_turn(
     # Engine B builds the prompt and stops there. Generation stays with
     # Engine A, which means this turn streams exactly like any other and
     # Engine B still knows nothing about streaming.
+    if reason:
+        # True at the moment it is said: build_answer_prompt's first act is
+        # to build the plan.
+        status(turn_status.PLANNING)
+
     answer = _build_reasoning_prompt(request, text, policy_info, intent) if reason else None
     reasoning_prompt = answer.text if answer is not None else None
     tool_runs = tuple(answer.tool_runs) if answer is not None else ()
@@ -496,6 +580,40 @@ def orchestrate_turn(
             tool_runs=list(tool_runs),
             evidence_items=len(policy_info.get("retrieved_items") or []),
         ))
+
+    # The prediction above is now a fact. A turn routed to a fallback that
+    # turns out to have run no evidence tool needs no fallback, so the
+    # downgrade is applied only where it is still warranted.
+    synthesis_mode = evidence_routing.SYNTHESIS_FULL
+    if route in (evidence_routing.ROUTE_SIMPLIFIED, evidence_routing.ROUTE_RAW_EVIDENCE):
+        confirmed = evidence_routing.is_evidence_bearing(tool_runs)
+        telemetry.append(_event(
+            "model_routing_confirmed", decision=route, evidence_bearing=confirmed,
+        ))
+
+        if confirmed:
+            evidence = evidence_routing.extract_tool_results(reasoning_prompt or "")
+
+            if route == evidence_routing.ROUTE_RAW_EVIDENCE:
+                # No model is asked to synthesize. Answering from a model
+                # that cannot read the evidence is the failure the whole
+                # pipeline exists to prevent, so this shows the findings
+                # instead.
+                return TurnResult(
+                    kind=KIND_TEXT,
+                    text=evidence_routing.format_raw_evidence(evidence, text),
+                    model_id=evidence_routing.SYNTHESIS_RAW_EVIDENCE,
+                    conversation_id=request.conversation_id,
+                    policy_info=policy_info,
+                    session_updates=session_updates,
+                    metadata={"tool_runs": tool_runs},
+                    synthesis_mode=evidence_routing.SYNTHESIS_RAW_EVIDENCE,
+                    telemetry=telemetry,
+                )
+
+            # ROUTE_SIMPLIFIED: same model, far less asked of it.
+            reasoning_prompt = evidence_routing.simplified_prompt(text, evidence)
+            synthesis_mode = evidence_routing.SYNTHESIS_SIMPLIFIED
 
     if reasoning_prompt is not None:
         # The synthesis prompt replaces the user turn; the persona system
@@ -533,5 +651,6 @@ def orchestrate_turn(
         safety_decision=decision,
         model_cfg=model_cfg,
         metadata={"tool_runs": tool_runs},
+        synthesis_mode=synthesis_mode,
         telemetry=telemetry,
     )

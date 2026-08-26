@@ -168,8 +168,9 @@ def test_a_search_query_reaches_the_tool_through_the_plan(offline, stub_search_t
     assert shape(result) == (None, LOCAL_MODEL)
     assert stub_search_tool, "the planned lookup did not reach the tool"
 
+    # Not the section heading: the prompt shape depends on whether the
+    # model is trusted with evidence (backend/core/evidence_routing.py).
     prompt = result["inference_request"].messages[-1].content
-    assert "Tool Results:" in prompt
     assert "3 results for" in prompt
 
 

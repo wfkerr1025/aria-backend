@@ -45,6 +45,7 @@ PYTEST_TESTS = [
     "test_answer_stream.py",
     "test_chat_status_and_scroll.py",
     "test_synthesis_evidence.py",
+    "test_evidence_routing.py",
     "test_provider_stop_sequences.py",
     "test_upgrade_01_note_embeddings.py",
     "test_upgrade_02_semantic_index.py",

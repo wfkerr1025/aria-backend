@@ -223,11 +223,18 @@ def test_a_lookup_query_puts_its_results_in_the_prompt(query, search_tool):
     A tool that ran and whose output never reached the prompt is no better
     than one that did not run: the model still answers from its weights.
     The sentinel is what proves the round trip.
+
+    The section heading is not asserted: which prompt the turn gets now
+    depends on the model. A model that cannot be trusted to read evidence
+    is handed a simplified prompt instead of the full synthesis document
+    (backend/core/evidence_routing.py), and these fixtures use a model
+    that is not on that allowlist. What has to hold either way -- and what
+    this test is actually about -- is that the lookup's result reaches the
+    model at all.
     """
     result = run(query)
     prompt = result.inference_request.messages[-1].content
 
-    assert "Tool Results:" in prompt, "no tool section in the prompt"
     assert "SENTINEL-EVIDENCE" in prompt, (
         "the search ran but its result never reached the model"
     )

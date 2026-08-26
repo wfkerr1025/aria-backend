@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from backend.core.answer_stream import AnswerStream
@@ -25,7 +27,12 @@ from backend.core.answer_stream import AnswerStream
 
 def stream(raw: str, chunk: int = 3) -> tuple[str, dict]:
     """Push `raw` through in small chunks, as a provider would."""
-    filt = AnswerStream()
+    return stream_with(raw, chunk=chunk)
+
+
+def stream_with(raw: str, chunk: int = 3, **options) -> tuple[str, dict]:
+    """As stream(), with AnswerStream options."""
+    filt = AnswerStream(**options)
     out = "".join(filt.push(raw[i:i + chunk]) for i in range(0, len(raw), chunk))
     return out + filt.finish(), filt.stats
 
@@ -252,3 +259,142 @@ def test_nothing_can_delete_the_answer_text():
         out, _ = stream(f"{label} Microsoft is at $412.30.\n")
         assert "Microsoft is at $412.30." in out
         assert label not in out
+
+# ======================================================
+# Scaffolding embedded in a sentence
+# ======================================================
+# The line-anchored rule cannot see an echo that arrives mid-sentence,
+# which is how verification caught this one:
+#
+#     Microsoft is trading at $412.30 (Tool Result: web_search (step1)).
+#
+# Removing it means un-sending text, so the filter holds a short tail of
+# each line back. The trade is a bounded lag, not a line-at-a-time stutter.
+def test_an_inline_tool_echo_is_removed_and_the_sentence_survives():
+    out, stats = stream(
+        "Currently, Microsoft (MSFT) is trading at $412.30, as reported by "
+        "example.com (Tool Result: web_search (step1))."
+    )
+    assert "$412.30" in out
+    assert "example.com" in out
+    assert "Tool Result" not in out
+    assert "step1" not in out
+    assert stats["stripped_inline"] >= 1
+
+
+@pytest.mark.parametrize("raw,keep", [
+    ("Microsoft is at $412.30 Tool Result: the lookup said so.", "the lookup said so"),
+    ("The price web_search (step1) came from a lookup.", "The price came from a lookup."),
+    ("Result (Tool Result: web_search (step1)) follows.", "follows"),
+])
+def test_surrounding_text_is_preserved(raw, keep):
+    out, _ = stream(raw)
+    assert keep in out
+
+
+def test_removing_an_echo_does_not_leave_ragged_whitespace():
+    """The gap it leaves usually arrives a token after the echo does."""
+    out, _ = stream("The price web_search (step1) came from a lookup.")
+    assert "  " not in out
+    assert out.strip() == "The price came from a lookup."
+
+
+def test_an_answer_with_no_echo_is_untouched():
+    answer = "Microsoft (MSFT) is trading at $412.30 (up 1.2%) per example.com."
+    assert stream(answer)[0] == answer
+
+
+# ------------------------------------------------------
+# Prefixes that leaked during verification
+# ------------------------------------------------------
+@pytest.mark.parametrize("prefix", ["### Response", "## Response", "support:"])
+def test_the_leaked_prefixes_are_stripped(prefix):
+    out, _ = stream(f"{prefix}\nMicrosoft is trading at $412.30.\n")
+    assert "Microsoft is trading at $412.30." in out
+    assert prefix not in out
+
+
+def test_those_words_mid_sentence_are_left_alone():
+    """A prefix rule fires at the start of a line, not inside one."""
+    for text in ("We discussed the support: ticket system yesterday.",
+                 "The server sent a 200 Response after the retry."):
+        assert stream(text)[0] == text
+
+
+# ======================================================
+# Near-duplicate sentences
+# ======================================================
+# Measured on this repo with the module's own similarity function:
+#
+#     real paraphrase loops        0.742   0.822   1.000
+#     legitimately distinct pairs  0.351   0.367   0.643   0.881
+#
+# The ranges are inverted -- catching the 0.742 loop needs a threshold
+# below the 0.881 legitimate pair -- so no lexical threshold separates
+# them. The default is set where it cannot cut correct text, and these
+# tests pin that choice rather than pretending it is a solved problem.
+PARAPHRASE_LOOP = (
+    "Microsoft (MSFT) is currently trading at $412.30, which is an increase "
+    "of 1.2% (source: example.com). "
+    "Based on a recent web search, Microsoft (MSFT) is currently trading at "
+    "$412.30, experiencing a 1.2% increase (source: example.com). "
+    "And a third restatement follows here."
+)
+
+# Two sentences that read almost identically and say opposite things.
+NEAR_IDENTICAL_BUT_DISTINCT = (
+    "This function returns the active model id. "
+    "This function returns the fallback model id. Both are used."
+)
+
+
+def test_a_restated_sentence_is_truncated_at_a_low_enough_threshold():
+    out, stats = stream_with(PARAPHRASE_LOOP, similarity_threshold=0.70)
+    assert stats["stopped_repeating_sentence"] is True
+    assert "third restatement" not in out
+    assert "$412.30" in out, "the first, correct sentence must survive"
+
+
+def test_the_default_threshold_does_not_cut_correct_text():
+    """The failure this default exists to avoid.
+
+    At 0.85 the two sentences below -- which say opposite things -- are
+    judged duplicates and the answer is truncated. The shipped default is
+    above that.
+    """
+    out, stats = stream(NEAR_IDENTICAL_BUT_DISTINCT)
+    assert stats["stopped_repeating_sentence"] is False
+    assert "fallback model id" in out
+
+    _, cut = stream_with(NEAR_IDENTICAL_BUT_DISTINCT, similarity_threshold=0.85)
+    assert cut["stopped_repeating_sentence"] is True, (
+        "if this stops being true the measured overlap has changed and the "
+        "default should be re-derived"
+    )
+
+
+def test_a_legitimate_multi_sentence_answer_is_never_truncated():
+    answer = (
+        "The pipeline compiles shaders first. Then it links them into a single "
+        "binary. Failures at the shader stage usually mean a missing include path."
+    )
+    out, stats = stream(answer)
+    assert out.strip() == answer.strip()
+    assert stats["stopped_repeating_sentence"] is False
+
+
+def test_short_sentences_are_not_compared():
+    """"Not found." twice is a model being terse, not a loop."""
+    out, stats = stream("Not found. Not found. The build log explains why it failed.")
+    assert stats["stopped_repeating_sentence"] is False
+
+
+def test_the_threshold_is_configurable_and_documented():
+    from backend.core import answer_stream
+
+    assert 0.0 < answer_stream.SENTENCE_SIMILARITY_THRESHOLD <= 1.0
+    assert AnswerStream().similarity_threshold == answer_stream.SENTENCE_SIMILARITY_THRESHOLD
+    assert AnswerStream(similarity_threshold=0.5).similarity_threshold == 0.5
+    # The rationale lives with the constant, not in a commit message.
+    source = pathlib.Path(answer_stream.__file__).read_text(encoding="utf-8")
+    assert "0.881" in source, "the measured overlap should stay recorded"

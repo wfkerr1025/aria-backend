@@ -971,6 +971,37 @@ def test_weather_location_extraction():
     assert extract_weather_location("weather at Paris, France") == "Paris, France"
 
 
+def test_a_trailing_time_qualifier_is_not_part_of_the_location():
+    """
+    The capture runs to the end of the sentence, so "weather in Tokyo
+    right now" produced "Tokyo right now" -- which no geocoder resolves,
+    so an ordinary question came back as "I couldn't get the weather for
+    that location". The time is not part of the place.
+    """
+    from backend.core.tool_executor import extract_weather_location
+
+    assert extract_weather_location("Weather in Tokyo right now") == "Tokyo"
+    assert extract_weather_location("Weather in Paris today") == "Paris"
+    assert extract_weather_location("Weather for London currently") == "London"
+    assert extract_weather_location("weather in New York at the moment") == "New York"
+    assert extract_weather_location("weather in Tokyo tomorrow") == "Tokyo"
+
+
+def test_a_location_that_is_only_a_time_is_no_location():
+    """"weather right now" names no place, so the caller must still ask."""
+    from backend.core.tool_executor import extract_weather_location
+
+    assert extract_weather_location("weather right now") is None
+
+
+def test_a_place_whose_name_survives_the_strip():
+    """Only a *trailing* qualifier goes, and only as a whole word."""
+    from backend.core.tool_executor import extract_weather_location
+
+    assert extract_weather_location("weather in Nowra") == "Nowra"
+    assert extract_weather_location("weather in Todays Corner") == "Todays Corner"
+
+
 def test_weather_reply_formats_error_gracefully():
     from backend.core.tool_executor import format_weather_reply
 

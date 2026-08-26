@@ -456,7 +456,6 @@ const Chat = {
       skipSafetyCheck: !!window.ARIA_STATE?.suppressSafetyWarningsThisSession,
     });
 
-    this.showTyping();
   },
 
   // Cache DOM elements
@@ -730,7 +729,6 @@ const Chat = {
       skipSafetyCheck: !!window.ARIA_STATE?.suppressSafetyWarningsThisSession,
     });
 
-    this.showTyping();
 
     this.input.value = "";
     this.input.style.height = "auto";
@@ -770,7 +768,6 @@ const Chat = {
       ...overrides,
     });
 
-    this.showTyping();
   },
 
   // Append a turn to the locally-retained conversation log (both roles),
@@ -1107,12 +1104,16 @@ const Chat = {
     chatLog("Tool message appended to history.");
   },
 
-  showTyping() {
-    chatLog("showTyping()");
-    if (this.typingIndicator) {
-      this.typingIndicator.textContent = "ARIA is typing...";
-    }
-  },
+  // showTyping() is gone. It set a fixed "ARIA is typing..." the instant
+  // the user pressed send, which was the only indicator available before
+  // the backend described what it was doing -- and which flashed for a
+  // moment before the first status packet replaced it with something
+  // true. _handleStatus is the only writer of the indicator now, so what
+  // it says always matches what the turn is actually doing.
+  //
+  // hideTyping() stays: clearing the indicator is still needed on the
+  // paths that end a turn without a status packet (an IPC error, a
+  // dropped connection).
 
   hideTyping() {
     chatLog("hideTyping()");

@@ -39,6 +39,50 @@ _LOCATION_PATTERNS = [
 ]
 
 
+# Words that say *when*, not *where*. The patterns above capture to the
+# end of the sentence, so "weather in Tokyo right now" yields "Tokyo right
+# now" -- which no geocoder resolves, so a perfectly ordinary question came
+# back as "I couldn't get the weather for that location".
+#
+# Stripped after extraction rather than folded into the patterns: the
+# patterns are shared with other phrasings and are easy to break, and a
+# suffix list is easy to read and extend. Longest first, so "right now" is
+# consumed before the bare "now" can take half of it.
+_TRAILING_TIME_QUALIFIERS = (
+    "at the moment",
+    "right now",
+    "right away",
+    "currently",
+    "tomorrow",
+    "tonight",
+    "today",
+    "now",
+)
+
+
+def _strip_trailing_time(location: str) -> str:
+    """Remove trailing time qualifiers from an extracted location.
+
+    Looped, because "weather in Paris today right now" is a thing people
+    type. Returns "" when the capture was nothing but a time qualifier,
+    which the caller treats as "no location found" and asks.
+    """
+    cleaned = location.strip().rstrip(".?!,").strip()
+
+    changed = True
+    while changed:
+        changed = False
+        lowered = cleaned.lower()
+        for qualifier in _TRAILING_TIME_QUALIFIERS:
+            if lowered == qualifier:
+                return ""
+            if lowered.endswith(" " + qualifier):
+                cleaned = cleaned[: -len(qualifier)].strip().rstrip(",").strip()
+                changed = True
+                break
+    return cleaned
+
+
 def extract_weather_location(text: str) -> Optional[str]:
     """
     Best-effort location extraction from a free-text weather question
@@ -46,12 +90,16 @@ def extract_weather_location(text: str) -> Optional[str]:
     not NLP — good enough for the common "weather in/for/at X" phrasing;
     falls back to None (caller asks the user to clarify) rather than
     guessing a wrong location.
+
+    A trailing time qualifier is removed before returning — see
+    _TRAILING_TIME_QUALIFIERS for why that is a correctness fix and not a
+    tidy-up.
     """
     t = (text or "").strip()
     for pattern in _LOCATION_PATTERNS:
         m = pattern.search(t)
         if m:
-            location = m.group(1).strip()
+            location = _strip_trailing_time(m.group(1))
             if location:
                 return location
     return None

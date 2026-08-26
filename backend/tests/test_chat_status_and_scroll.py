@@ -102,10 +102,25 @@ def streamed_text(sent):
 # ======================================================
 # Status sequence
 # ======================================================
-def test_a_reasoning_turn_reports_thinking_then_writing_then_idle(search_tool, monkeypatch):
+def test_a_reasoning_turn_reports_thinking_planning_writing_idle(search_tool, monkeypatch):
+    """`planning` joined the sequence when the orchestrator gained a callback.
+
+    It sits between thinking and writing because that is when it happens:
+    the orchestrator fires it immediately before handing the turn to Engine
+    B, whose first act is to build the plan.
+    """
+    from backend.core.turn_status import PLANNING
+
     sent = run_turn("how much is MSFT trading at",
                     ["Microsoft is at $412.30, per example.com."], monkeypatch)
-    assert statuses(sent) == [THINKING, WRITING, IDLE]
+    assert statuses(sent) == [THINKING, PLANNING, WRITING, IDLE]
+
+
+def test_a_turn_with_no_reasoning_never_claims_to_plan(search_tool, monkeypatch):
+    from backend.core.turn_status import PLANNING
+
+    sent = run_turn("what model are you running", [], monkeypatch)
+    assert PLANNING not in statuses(sent)
 
 
 def test_writing_carries_what_the_turn_actually_ran(search_tool, monkeypatch):
@@ -315,3 +330,46 @@ def test_a_hair_from_the_bottom_still_counts_as_the_bottom():
          "state": {"pinned": True}, "reason": "token"},
     ])
     assert result["follow"] is True
+
+# ======================================================
+# The legacy typing indicator is gone
+# ======================================================
+# showTyping() set a fixed "ARIA is typing..." the instant the user pressed
+# send. It was the only indicator available before the backend described
+# what it was doing, and it flashed for a moment before the first status
+# packet replaced it with something true. Status packets are the only
+# writer now, so what the indicator says always matches the turn.
+CHAT_JS = REPO / "webui" / "components" / "chat" / "chat.js"
+
+
+def _chat_js_code() -> str:
+    """chat.js with comments stripped, so prose about the old behaviour
+    does not read as the old behaviour."""
+    import re
+
+    source = CHAT_JS.read_text(encoding="utf-8")
+    source = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+    return "\n".join(
+        line for line in source.splitlines() if not line.strip().startswith("//")
+    )
+
+
+def test_nothing_calls_the_legacy_typing_indicator():
+    assert "showTyping(" not in _chat_js_code()
+
+
+def test_the_legacy_typing_string_is_never_assigned():
+    code = _chat_js_code()
+    assert "ARIA is typing" not in code
+
+
+def test_status_packets_are_the_only_writer_of_the_indicator():
+    """One writer, so the indicator cannot disagree with the turn."""
+    import re
+
+    code = _chat_js_code()
+    writers = re.findall(r"typingIndicator\.textContent\s*=", code)
+    # _handleStatus sets it; hideTyping clears it on the paths that end a
+    # turn without a status packet (an IPC error, a dropped connection).
+    assert len(writers) == 2, f"expected 2 writers, found {len(writers)}"
+    assert "_handleStatus(packet)" in code

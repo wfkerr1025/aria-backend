@@ -403,8 +403,11 @@ def test_a_search_turn_reaches_the_tool_through_the_plan(monkeypatch):
         )
         assert result.kind == KIND_INFERENCE
         assert calls, "the planned lookup did not reach the tool"
+        # Not the section heading: which prompt shape this turn gets
+        # depends on whether the model is trusted with evidence (see
+        # backend/core/evidence_routing.py). That the finding reaches the
+        # model is the invariant.
         prompt = result.inference_request.messages[-1].content
-        assert "Tool Results:" in prompt
         assert "3 results for" in prompt
     finally:
         core_reg.register_builtin_tools()
@@ -423,3 +426,71 @@ def test_the_search_bypass_survives_only_for_an_unhealthy_connection(offline):
 def test_a_local_query_never_reaches_the_search_tool(offline):
     orchestrate_turn(turn("search my notes for the pipeline"), default_local_model=local())
     assert not any(kind == "search" for kind, _ in offline)
+
+# ======================================================
+# Progress reporting
+# ======================================================
+# The orchestrator gained one output that is not in the TurnResult: an
+# optional callback saying which phase has begun. Everything about it is
+# built so a caller that ignores it is unaffected -- which is what these
+# check, alongside the one claim it makes being true when it makes it.
+def test_the_status_callback_is_optional(offline):
+    """Every existing caller passes nothing, and must be unaffected."""
+    with_none = orchestrate_turn(turn("explain the build pipeline"),
+                                 default_local_model=local())
+    with_cb = orchestrate_turn(turn("explain the build pipeline"),
+                               default_local_model=local(), on_status=lambda v: None)
+
+    assert with_none.kind == with_cb.kind
+    assert with_none.model_id == with_cb.model_id
+    assert with_none.metadata.get("tool_runs") == with_cb.metadata.get("tool_runs")
+
+
+def test_a_reasoning_turn_reports_that_planning_started(offline):
+    from backend.core import turn_status
+
+    seen = []
+    orchestrate_turn(turn("explain the build pipeline"),
+                     default_local_model=local(), on_status=seen.append)
+    assert turn_status.PLANNING in seen
+
+
+def test_a_turn_that_does_no_reasoning_reports_no_planning(offline):
+    """Nothing is planned for "hello", so nothing claims to be."""
+    from backend.core import turn_status
+
+    seen = []
+    orchestrate_turn(turn("hello"), default_local_model=local(), on_status=seen.append)
+    assert turn_status.PLANNING not in seen
+
+
+def test_every_reported_value_is_a_known_status(offline):
+    from backend.core import turn_status
+
+    seen = []
+    orchestrate_turn(turn("explain the build pipeline"),
+                     default_local_model=local(), on_status=seen.append)
+    assert all(value in turn_status.TURN_STATUSES for value in seen)
+
+
+def test_a_callback_that_raises_does_not_cost_the_user_the_turn(offline):
+    """Progress reporting is decoration. It must not be able to fail a turn."""
+    def explode(value):
+        raise RuntimeError("the UI went away")
+
+    result = orchestrate_turn(turn("explain the build pipeline"),
+                              default_local_model=local(), on_status=explode)
+    assert result.kind == KIND_INFERENCE
+    assert result.inference_request is not None
+
+
+def test_the_callback_does_not_make_the_orchestrator_impure(offline):
+    """Still no session mutated, still a TurnResult describing effects."""
+    session = SessionState(mode="local")
+    request = turn("explain the build pipeline", session=session)
+    before = (list(request.messages), request.latest_user_text, request.session)
+
+    orchestrate_turn(request, default_local_model=local(), on_status=lambda v: None)
+
+    assert (request.messages, request.latest_user_text, request.session) == before
+    assert session.awaiting_weather_location is False

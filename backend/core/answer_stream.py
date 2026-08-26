@@ -65,13 +65,16 @@ never is.
 
 from __future__ import annotations
 
+import difflib
 import re
 
 __all__ = [
     "AnswerStream",
     "SCAFFOLD_PREFIXES",
     "TERMINATORS",
+    "SENTENCE_SIMILARITY_THRESHOLD",
     "detect_repetition_loop",
+    "sentence_similarity",
 ]
 
 
@@ -113,6 +116,66 @@ TERMINATORS: tuple[str, ...] = (
 # after the colon is the finding, and only that is kept.
 _TOOL_RESULT_ECHO = re.compile(r"^[a-z][a-z0-9_]* \(step\d+\):\s*", re.IGNORECASE)
 
+# The same scaffolding, but embedded in a sentence rather than opening a
+# line. Verification caught phi-3 writing
+#
+#     Microsoft is trading at $412.30 (Tool Result: web_search (step1)).
+#
+# which the line-anchored pattern above cannot see. Applied in order:
+# the parenthesised whole first, then the bare label, then a naked
+# "tool (stepN)", then any empty parentheses left behind.
+#
+# "(step" followed by digits is the discriminating part. It is not
+# something that occurs in ordinary prose, which is what makes stripping
+# it safe without a whitelist of tool names.
+_INLINE_TOOL_ECHOES = (
+    re.compile(r"\s*\(\s*tool\s+results?\s*:[^()]*(?:\([^()]*\))?[^()]*\)", re.IGNORECASE),
+    re.compile(r"\btool\s+results?\s*:\s*", re.IGNORECASE),
+    re.compile(r"\b[a-z][a-z0-9_]*\s*\(step\d+\)\s*:?", re.IGNORECASE),
+    re.compile(r"\s*\(\s*\)"),
+)
+
+
+def _strip_inline_echoes(text: str, repair: bool = False) -> tuple[str, int]:
+    """Remove embedded tool scaffolding, keeping the sentence around it.
+
+    Returns (cleaned, removals). Only ever shortens, so it is safe to run
+    repeatedly over a growing buffer.
+
+    repair=True also tidies the whitespace a removal leaves behind. The
+    caller passes it once a removal has happened anywhere in this line,
+    not just in this call -- the doubled space usually arrives a token
+    after the echo did, and a call that removed nothing would otherwise
+    skip the repair and let it through.
+    """
+    cleaned = text
+    removals = 0
+    for pattern in _INLINE_TOOL_ECHOES:
+        cleaned, count = pattern.subn("", cleaned)
+        removals += count
+
+    if removals or repair:
+        # Removing a parenthetical mid-sentence leaves a doubled space or
+        # a space before the full stop.
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+        cleaned = re.sub(r"[ \t]+([.,;:!?])", r"\1", cleaned)
+    return cleaned, removals
+
+
+# How much of a line to keep back before sending it.
+#
+# The filter can only remove what it has not sent, and an inline echo is
+# recognisable only once the whole of it has arrived. Holding a short tail
+# buys exactly that: text streams with a bounded lag rather than a
+# line-at-a-time stutter, and an echo that fits inside the tail is gone
+# before the client ever sees it. Sized to comfortably contain
+# "(Tool Result: web_search (step1))", the longest form observed.
+#
+# The trade is honest and bounded: an echo split across the emit boundary
+# -- one appearing early in a very long single-line answer -- still gets
+# through. Every case seen in practice sits at the end of a sentence.
+_LAG_CHARS = 64
+
 # Section headers from the synthesis prompt, echoed back. The header is
 # removed and whatever follows it on the line is kept.
 SCAFFOLD_PREFIXES: tuple[str, ...] = (
@@ -120,6 +183,17 @@ SCAFFOLD_PREFIXES: tuple[str, ...] = (
     "final answer:",
     "response:",
     "- response:",
+    # Markdown-heading forms of the same label. phi-3 emitted "### Response"
+    # verbatim; the plain "response:" entry above does not match it because
+    # the hashes come first.
+    "### response",
+    "## response",
+    "# response",
+    "### answer",
+    "## answer",
+    # Seen leading an echoed restatement. Harmless to strip: the rule keeps
+    # everything after the label.
+    "support:",
     "solution:",
     "- solution:",
     "output:",
@@ -195,6 +269,57 @@ def detect_repetition_loop(text: str) -> bool:
     return False
 
 
+# --- Near-duplicate sentences -------------------------------------------
+#
+# The periodicity guard above needs the repetition to be character-exact.
+# A small model often restates instead, which reads the same to a person
+# and not at all the same to a substring comparison:
+#
+#     Microsoft (MSFT) is currently trading at $412.30, which is an
+#     increase of 1.2% (source: example.com).
+#     Based on a recent web search, Microsoft (MSFT) is currently trading
+#     at $412.30, experiencing a 1.2% increase (source: example.com).
+#
+# This compares each completed sentence against the last few, on
+# normalised text, with difflib. No embeddings: an embedding call per
+# sentence inside the streaming path would cost more than the tokens it
+# saves, and the model that would serve it is the one already busy
+# generating.
+#
+# WHAT THE THRESHOLD CAN AND CANNOT DO. Measured on this repo, with
+# difflib.SequenceMatcher over normalised sentences:
+#
+#     real paraphrase loops        0.742   0.822   1.000
+#     legitimately distinct pairs  0.351   0.367   0.643   0.881
+#
+# Those ranges overlap. "This function returns the active model id" and
+# "...the fallback model id" score 0.881 while saying opposite things, and
+# a real loop scored 0.742. So no single lexical threshold separates them,
+# and the choice is which error to make.
+#
+# The default is deliberately conservative. At 0.92 this catches only
+# near-verbatim restatement -- little that the periodicity guard misses --
+# and that is the intended trade: truncating a legitimate answer is a far
+# worse failure than letting a paraphrase through, and every other rule in
+# this module is built so it cannot delete an answer. Lower it below about
+# 0.89 and it starts cutting correct text.
+SENTENCE_SIMILARITY_THRESHOLD = 0.92
+_SENTENCE_WINDOW = 3       # how many recent sentences to compare against
+_SENTENCE_MIN_CHARS = 20   # shorter than this is too small to judge
+
+_SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
+
+
+def _normalize_sentence(text: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace."""
+    return " ".join(re.sub(r"[^a-z0-9 ]", " ", text.lower()).split())
+
+
+def sentence_similarity(a: str, b: str) -> float:
+    """How alike two sentences are, on normalised text. 0.0 to 1.0."""
+    return difflib.SequenceMatcher(None, _normalize_sentence(a), _normalize_sentence(b)).ratio()
+
+
 def _matches(lowered: str, markers: tuple[str, ...]) -> str | None:
     for marker in markers:
         if lowered.startswith(marker):
@@ -228,19 +353,35 @@ class AnswerStream:
     built, not something a user asked to read.
     """
 
-    def __init__(self, reveal_reasoning: bool = False) -> None:
+    def __init__(
+        self,
+        reveal_reasoning: bool = False,
+        similarity_threshold: float | None = None,
+    ) -> None:
         self.reveal_reasoning = reveal_reasoning
+        # Configurable per caller; see SENTENCE_SIMILARITY_THRESHOLD for
+        # what the default does and why it is set where it is.
+        self.similarity_threshold = (
+            SENTENCE_SIMILARITY_THRESHOLD if similarity_threshold is None
+            else similarity_threshold
+        )
         self._pending = ""          # current line, not yet released
         self._released = False      # current line decided; stream it straight through
         self._stopped = False       # hit a terminator; nothing more is published
         self._last_line = None      # for the repetition guard
         self._emitted_any = False
         self._blank_run = False
-        self._line_out = ""       # what has been emitted for the current line
+        self._line_out = ""       # the current line so far, for loop detection
+        self._lag = ""            # released but deliberately not yet sent
+        self._line_dirty = False  # an echo was removed from this line
+        self._prose = ""          # released text awaiting sentence boundaries
+        self._recent: list[str] = []
         self.stripped_prefixes = 0
+        self.stripped_inline = 0
         self.dropped_repeats = 0
         self.terminated_at: str | None = None
         self.stopped_looping = False
+        self.stopped_repeating_sentence = False
 
     # ------------------------------------------------------------------
     @property
@@ -248,9 +389,11 @@ class AnswerStream:
         """What the filter did, for the log line the transport writes."""
         return {
             "stripped_prefixes": self.stripped_prefixes,
+            "stripped_inline": self.stripped_inline,
             "dropped_repeats": self.dropped_repeats,
             "terminated_at": self.terminated_at,
             "stopped_looping": self.stopped_looping,
+            "stopped_repeating_sentence": self.stopped_repeating_sentence,
         }
 
     # ------------------------------------------------------------------
@@ -271,27 +414,96 @@ class AnswerStream:
                 out.append(self._feed(char))
 
         emitted = "".join(out)
-        self._line_out += emitted.rsplit("\n", 1)[-1] if "\n" in emitted else emitted
 
         # Once per token, not once per character: the check is cheap but
         # not free, and a loop is not going to be missed by noticing it a
-        # few characters late.
+        # few characters late. _line_out is maintained as text is
+        # released, not as it is sent, so the lag buffer does not delay
+        # detection.
         if not self._stopped and detect_repetition_loop(self._line_out):
             self._stopped = True
             self.stopped_looping = True
 
+        if not self._stopped:
+            self._check_repeated_sentence()
+
         return emitted
+
+    def _check_repeated_sentence(self) -> None:
+        """Stop if a completed sentence restates a recent one.
+
+        Runs on sentence boundaries rather than tokens, so the cost is a
+        handful of difflib comparisons per sentence.
+        """
+        while True:
+            match = _SENTENCE_END.search(self._prose)
+            if not match:
+                return
+
+            sentence, self._prose = self._prose[:match.end()], self._prose[match.end():]
+            normalized = _normalize_sentence(sentence)
+
+            # Too short to judge: "Not found." and "Yes." are ordinary
+            # things to say twice.
+            if len(normalized) < _SENTENCE_MIN_CHARS:
+                continue
+
+            for previous in self._recent:
+                ratio = difflib.SequenceMatcher(None, previous, normalized).ratio()
+                if ratio >= self.similarity_threshold:
+                    self._stopped = True
+                    self.stopped_looping = True
+                    self.stopped_repeating_sentence = True
+                    return
+
+            self._recent.append(normalized)
+            if len(self._recent) > _SENTENCE_WINDOW:
+                self._recent.pop(0)
 
     def finish(self) -> str:
         """Flush the final line, which may have arrived without a newline."""
-        if self.reveal_reasoning or self._stopped:
+        if self.reveal_reasoning:
+            return ""
+        if self._stopped:
+            # Nothing more may be published, and anything still lagging
+            # belongs to the part being cut.
+            self._lag = ""
             return ""
         return self._end_line(final=True)
 
     # ------------------------------------------------------------------
+    def _lagged(self, text: str) -> str:
+        """Queue released text, returning only what is now safe to send.
+
+        Inline cleanup runs over the whole retained tail on every call. It
+        only ever shortens, so repeating it as the buffer grows is both
+        cheap and idempotent.
+        """
+        if not text:
+            return ""
+
+        self._lag += text
+        self._lag, removed = _strip_inline_echoes(self._lag, repair=self._line_dirty)
+        self.stripped_inline += removed
+        self._line_dirty = self._line_dirty or bool(removed)
+
+        if len(self._lag) <= _LAG_CHARS:
+            return ""
+        out, self._lag = self._lag[:-_LAG_CHARS], self._lag[-_LAG_CHARS:]
+        return out
+
+    def _flush(self) -> str:
+        """Send whatever the lag buffer is still holding."""
+        out, removed = _strip_inline_echoes(self._lag, repair=self._line_dirty)
+        self.stripped_inline += removed
+        self._lag = ""
+        return out
+
     def _feed(self, char: str) -> str:
         if self._released:
-            return char
+            self._line_out += char
+            self._prose += char
+            return self._lagged(char)
 
         self._pending += char
         lowered = self._pending.lstrip().lower()
@@ -324,7 +536,9 @@ class AnswerStream:
         if line.strip():
             self._emitted_any = True
             self._blank_run = False
-        return line
+        self._line_out += line
+        self._prose += line
+        return self._lagged(line)
 
     def _strip_markers(self, line: str) -> str:
         """Apply the terminator and scaffolding rules to one line."""
@@ -351,14 +565,17 @@ class AnswerStream:
     def _end_line(self, final: bool = False) -> str:
         """Finish the current line and decide what of it is publishable."""
         if self._released:
-            # Already streaming this line; only the newline is left. A
+            # Already streaming this line; the lag buffer still holds its
+            # tail, and this is the last chance to clean it. A
             # partly-streamed line cannot be compared for repetition,
             # because half of it has already gone out.
+            tail = self._flush()
+            self._line_dirty = False
             self._released = False
             self._last_line = None
             self._blank_run = False
             self._line_out = ""
-            return "" if final else "\n"
+            return tail if final else tail + "\n"
 
         line = self._strip_markers(self._pending)
         self._pending = ""
@@ -366,6 +583,9 @@ class AnswerStream:
             return ""
 
         self._line_out = ""
+        line, removed = _strip_inline_echoes(line, repair=self._line_dirty)
+        self.stripped_inline += removed
+        self._line_dirty = False
         stripped = line.strip()
 
         if not stripped:
@@ -380,6 +600,7 @@ class AnswerStream:
             self.dropped_repeats += 1
             return ""
 
+        self._prose += line + " "
         self._last_line = stripped
         self._emitted_any = True
         self._blank_run = False

@@ -410,6 +410,12 @@ class WebSocketHandler:
         await self._emit_status(turn_status.THINKING)
 
         loop = asyncio.get_running_loop()
+
+        def forward_status(value: str) -> None:
+            # Called from the executor thread, so the send is handed back
+            # to the loop the same way stream tokens are.
+            asyncio.run_coroutine_threadsafe(self._emit_status(value), loop)
+
         result = await loop.run_in_executor(
             None,
             functools.partial(
@@ -417,6 +423,7 @@ class WebSocketHandler:
                 request,
                 mode_manager=self.router.mode_manager,
                 suggester=self.suggester,
+                on_status=forward_status,
             ),
         )
 

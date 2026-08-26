@@ -125,6 +125,13 @@ class TurnResult:
     #   model_switch: dict          -- the resolved switch, for KIND_MODEL_SWITCH
     metadata: dict = field(default_factory=dict)
 
+    # Which synthesis this turn ended up asking for: "full",
+    # "simplified_local", or "raw_evidence". See
+    # backend/core/evidence_routing.py -- a small local model handed
+    # multi-source evidence answers around it rather than from it, so a
+    # turn can be downgraded to a simpler prompt, or to no model at all.
+    synthesis_mode: str = "full"
+
     # The safety decision and the model config it was made against, carried
     # so the transport can run its own warning emission (_emit_warnings)
     # without re-evaluating. Present on every turn that resolved a model,
