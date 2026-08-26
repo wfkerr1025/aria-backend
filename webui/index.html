@@ -5,35 +5,37 @@
   <title>ARIA Lite</title>
 
   <!-- ======================================================
-       CORE LIBRARIES (LOCAL, CSP-SAFE)
+       Unified Logging: UI Bootstrap
        ====================================================== -->
+  <script>
+    function uiLog(subsystem, msg) {
+      try {
+        if (window.aria && typeof window.aria.log === "function") {
+          window.aria.log(subsystem, msg);
+        }
+      } catch (err) {
+        console.error("[UI LOG ERROR]", err);
+      }
+    }
+
+    uiLog("UI", "=== ARIA WEBUI HTML PARSED ===");
+    uiLog("UI", "Document readyState = " + document.readyState);
+  </script>
+
   <script src="lib/dompurify.min.js"></script>
   <script src="lib/marked.min.js"></script>
+  <!-- Pure scroll-position logic, shared with its Node test. Plain
+       script rather than a module so both can load the same file. -->
+  <script src="components/chat/scroll-policy.js"></script>
 
-  <!-- ======================================================
-       GLOBAL DESIGN SYSTEM (RAW TOKENS + SEMANTIC DEFAULTS)
-       ====================================================== -->
   <link rel="stylesheet" href="themes/variables.css" />
-
-  <!-- ======================================================
-       GLOBAL LAYOUT (STRUCTURE, SPACING, SEMANTIC USAGE)
-       ====================================================== -->
   <link rel="stylesheet" href="themes/layout.css" />
 
-  <!-- ======================================================
-       THEMES (BASE + ACCENT)
-       ====================================================== -->
   <link id="aria-base-theme" rel="stylesheet" href="themes/base/charcoal.css" />
   <link id="aria-accent-theme" rel="stylesheet" href="themes/accents/teal.css" />
 
-  <!-- ======================================================
-       CHAT SUBSYSTEM THEME (NEW — MUST LOAD AFTER THEMES)
-       ====================================================== -->
   <link rel="stylesheet" href="themes/chat/chat-theme.css" />
 
-  <!-- ======================================================
-       COMPONENT CSS (USES SEMANTIC + THEME + CHAT TOKENS)
-       ====================================================== -->
   <link rel="stylesheet" href="components/topbar/topbar.css" />
   <link rel="stylesheet" href="components/sidebar/sidebar.css" />
   <link rel="stylesheet" href="components/chat/chat.css" />
@@ -41,30 +43,62 @@
   <link rel="stylesheet" href="components/buttons/buttons.css" />
   <link rel="stylesheet" href="components/input/input.css" />
   <link rel="stylesheet" href="components/diagnostics/diagnostics.css" />
+  <!-- Shared "settings panel" primitives (.settings-panel/.settings-group/
+       .settings-btn/.settings-hint/.settings-empty) used by the Settings
+       hub's subpages below — see components/settings/settings.css's
+       header comment. -->
+  <link rel="stylesheet" href="components/settings/settings.css" />
+  <link rel="stylesheet" href="components/module_row/module_row.css" />
   <link rel="stylesheet" href="components/tools/tools.css" />
   <link rel="stylesheet" href="components/plugins/plugins.css" />
   <link rel="stylesheet" href="components/fileops/fileops.css" />
+  <link rel="stylesheet" href="components/toast/toast.css" />
 
-  <!-- ======================================================
-       APPLICATION SCRIPTS
-       ====================================================== -->
+  <link rel="stylesheet" href="components/compatibility-summary/compatibility-summary.css" />
+  <link rel="stylesheet" href="components/model_requirements/model_requirements.css" />
+  <link rel="stylesheet" href="components/model_performance/model_performance.css" />
+  <link rel="stylesheet" href="components/model_details/model_details.css" />
+  <link rel="stylesheet" href="components/model_card/model_card.css" />
+  <link rel="stylesheet" href="pages/models/models.css" />
+  <link rel="stylesheet" href="pages/debug/debug.css" />
+  <link rel="stylesheet" href="components/statusbar/statusbar.css" />
+  <link rel="stylesheet" href="components/warning_banner/warning_banner.css" />
+  <link rel="stylesheet" href="components/routing_log/routing_log.css" />
+
+  <!-- Settings hub (Steam-style tile page) + its four dedicated
+       subpages — see webui/core/router.js's "settings"/"settings/..."
+       routes. -->
+  <link rel="stylesheet" href="pages/settings_home/settings_home.css" />
+  <link rel="stylesheet" href="pages/appearance/appearance.css" />
+  <link rel="stylesheet" href="pages/cloud_llms/cloud_llms.css" />
+  <link rel="stylesheet" href="pages/modules/modules.css" />
+  <link rel="stylesheet" href="pages/local_models/local_models.css" />
+
   <script type="module" src="core/theme-loader.js"></script>
   <script type="module" src="core/app.js"></script>
+  <script type="module" src="components/toast/toast.js"></script>
+  <script type="module" src="components/statusbar/statusbar.js"></script>
+  <script type="module" src="components/warning_banner/warning_banner.js"></script>
 </head>
 
 <body>
 
   <!-- ======================================================
-       TOPBAR
+       FIXED TOPBAR
        ====================================================== -->
   <header id="topbar">
     <div class="topbar-left">
       <span class="topbar-title">ARIA Lite</span>
 
       <div class="topbar-actions">
-        <button class="topbar-btn">Settings</button>
-        <button class="topbar-btn">Help</button>
+        <button id="topbar-settings-btn" class="topbar-btn">Settings</button>
+        <button id="topbar-help-btn" class="topbar-btn">Help</button>
       </div>
+    </div>
+
+    <div class="topbar-right">
+      <div id="aria-mode-light" class="mode-automatic"></div>
+      <div id="aria-mode-indicator" class="mode-automatic">AUTOMATIC</div>
     </div>
   </header>
 
@@ -73,12 +107,13 @@
        ====================================================== -->
   <div id="app-container">
 
-    <!-- ====================================================
-         SIDEBAR
-         ==================================================== -->
     <aside id="sidebar">
-
       <div class="sidebar-section-label">Core</div>
+
+      <button class="sidebar-btn" data-panel="models">
+        <span class="sidebar-btn-icon">🧠</span>
+        <span>Models</span>
+      </button>
 
       <button class="sidebar-btn" data-panel="diagnostics">
         <span class="sidebar-btn-icon">🩺</span>
@@ -100,25 +135,115 @@
         <span>File Ops</span>
       </button>
 
-      <div class="sidebar-divider"></div>
-
-      <div class="sidebar-section-label">Chat</div>
-
-      <button class="sidebar-btn active" data-panel="chat">
-        <span class="sidebar-btn-icon">💬</span>
-        <span>Chat</span>
+      <button class="sidebar-btn" data-panel="debug">
+        <span class="sidebar-btn-icon">🐞</span>
+        <span>Debug</span>
       </button>
 
+      <button class="sidebar-btn" data-panel="settings">
+        <span class="sidebar-btn-icon">⚙️</span>
+        <span>Settings</span>
+      </button>
+
+      <div class="sidebar-divider"></div>
+
+      <!-- Direct chat navigation: "New Chat" and every existing chat are
+           always rendered here, on every page (see webui/components/
+           chat/chat.js's startNewChat()/switchToSession(), which
+           navigate to the Chat panel themselves if clicked from
+           elsewhere) — no collapsible/expandable wrapper, just a plain
+           section label like "Core" above it. -->
+      <div class="sidebar-section-label">Chats</div>
+
+      <button class="sidebar-btn sidebar-new-chat-btn" id="sidebar-new-chat-btn" type="button">
+        <span class="sidebar-btn-icon">➕</span>
+        <span>New Chat</span>
+      </button>
+
+      <!-- Populated by sidebar.js's renderChatList(), called from
+           chat.js whenever the session list changes (new chat, switch,
+           delete, rename, first init, or re-bind after navigating back
+           to the chat panel). Copilot/ChatGPT-style: one entry per chat
+           this run, title + timestamp + a "⋮" menu (Rename/Delete),
+           click to switch. -->
+      <div id="sidebar-chat-list" class="sidebar-chat-list"></div>
     </aside>
 
-    <!-- ====================================================
-         MAIN CONTENT AREA
-         ==================================================== -->
     <div id="content">
       <main id="panel-container"></main>
     </div>
 
   </div>
+
+  <div id="aria-toast-container"></div>
+
+  <!-- WebSocket connection status — moved out of the topbar to the
+       window's bottom-right corner. Driven by Topbar.handlePacket()'s
+       "connection_status" branch (webui/components/topbar/topbar.js),
+       fed by core/bridge.js from ARIA-Lite Desktop's main.js. Still just
+       "#system-status" — Topbar.init()'s document.getElementById lookup
+       and setStatus()/handlePacket() logic are unchanged and don't care
+       where in the DOM this element lives. -->
+  <div id="system-status-container">
+    <div id="system-status" class="status-ok">Connected</div>
+  </div>
+
+  <!-- Bottom-left: currently active model, local or cloud. Aligned with
+       #system-status-container's bottom-right pill (same fixed-corner
+       approach, mirrored — see topbar.css's comment on that element).
+       Driven by webui/components/statusbar/statusbar.js, independent of
+       the connection-status widget above; not inside #panel-container,
+       so it's always visible on every page regardless of router
+       navigation. -->
+  <div id="active-model-container">
+    <div id="active-model-status">Model: —</div>
+    <button id="auto-balance-chip" class="auto-balance-chip" style="display:none" type="button" title="View auto-balance diagnostics">Balanced</button>
+  </div>
+
+  <!-- Unified warning banner (spec: WARNING SYSTEM SPECIFICATION) —
+       persistent, dismissible, shown only while the Chat panel is
+       active. Driven by webui/components/warning_banner/warning_banner.js,
+       consuming backend.core.warning_manager's warning_event packets.
+       Bootstrapped once at app startup (webui/core/app.js), same
+       lifecycle as Statusbar/Toast above. -->
+  <div id="aria-warning-banner-container"></div>
+
+  <!-- The RAM/CPU safety warning is no longer rendered here — it's a
+       separate Electron BrowserWindow (ARIA-Lite Desktop/warning.html),
+       opened via window.aria.showSafetyWarning() from core/app.js. See
+       ARIA-Lite Desktop/main.js's createWarningWindow(). This keeps it
+       from ever tangling with chat's own layout and lets it stay open
+       without pausing this window's JS or WebSocket connection. -->
+
+  <!-- ======================================================
+       Unified Logging: UI Runtime
+       ====================================================== -->
+  <script>
+    uiLog("UI", "=== ARIA WEBUI DOMContentLoaded ===");
+
+    window.addEventListener("DOMContentLoaded", () => {
+      uiLog("UI", "DOM fully loaded.");
+    });
+
+    window.addEventListener("error", (event) => {
+      uiLog("UI ERROR", "Unhandled error: " + event.message);
+    });
+
+    window.addEventListener("unhandledrejection", (event) => {
+      uiLog("UI ERROR", "Unhandled promise rejection: " + event.reason);
+    });
+
+    // Panel switching logging
+    document.addEventListener("click", (ev) => {
+      const btn = ev.target.closest(".sidebar-btn");
+      if (!btn) return;
+
+      const panel = btn.getAttribute("data-panel");
+      uiLog("UI", "Sidebar panel selected: " + panel);
+    });
+
+    uiLog("UI", "ARIA WebUI fully initialized.");
+  </script>
 
 </body>
 </html>

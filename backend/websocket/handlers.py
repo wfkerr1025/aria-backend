@@ -10,6 +10,8 @@ from backend.core.provider_router import ProviderRouter
 from backend.core.streaming_engine import StreamingEngine
 from backend.core.local_inference_engine import InferenceRequest, InferenceMessage
 
+from backend.core.answer_stream import AnswerStream
+from backend.core import turn_status
 from backend.core.turn_orchestrator import orchestrate_turn
 from backend.core.turn_types import (
     KIND_CLARIFY,
@@ -400,6 +402,13 @@ class WebSocketHandler:
             session=self._session_snapshot(),
         )
 
+        # The whole orchestration phase reads as one state from out here:
+        # it is a single synchronous call, and everything it does inside
+        # -- retrieval, the plan, a web lookup, synthesis -- finishes
+        # before it returns. See backend/core/turn_status.py for why the
+        # finer states are defined but not sent.
+        await self._emit_status(turn_status.THINKING)
+
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
@@ -421,12 +430,14 @@ class WebSocketHandler:
 
         if result.kind == KIND_SAFETY_WARNING:
             await self._send(result.warning)
+            await self._emit_status(turn_status.IDLE)
             return
 
         if result.kind == KIND_ERROR:
             await self._send(ipc_errors.build_error(
                 tool_router.BACKEND_DISCONNECTED, result.text,
             ))
+            await self._emit_status(turn_status.IDLE)
             return
 
         if result.kind == KIND_MODEL_SWITCH:
@@ -438,6 +449,7 @@ class WebSocketHandler:
             await self._handle_model_switch_directly(
                 result.metadata["model_switch"], conversation_id,
             )
+            await self._emit_status(turn_status.IDLE)
             return
 
         if result.kind == KIND_CLARIFY:
@@ -445,10 +457,12 @@ class WebSocketHandler:
             # _send_confirmation emits modelId "system" so the client can
             # tell a fixed prompt from a generated one.
             await self._send_confirmation(result.text)
+            await self._emit_status(turn_status.IDLE)
             return
 
         if result.kind == KIND_TEXT:
             await self._emit_text(result.text, result.model_id)
+            await self._emit_status(turn_status.IDLE)
             return
 
         await self._start_inference_from(result)
@@ -510,6 +524,18 @@ class WebSocketHandler:
                     if k != "event" and k != "snapshot"
                 } | {"conversation_id": conversation_id})
 
+    async def _emit_status(self, value: str, **fields) -> None:
+        """Announce what this turn is doing. Never fails a turn.
+
+        A status packet is decoration: a client that ignores the type
+        behaves exactly as it did before, and a send that fails must not
+        take the answer down with it.
+        """
+        try:
+            await self._send(turn_status.status_packet(value, **fields))
+        except Exception:
+            logger.debug("status packet %r not sent", value, exc_info=True)
+
     async def _emit_text(self, text: str, model_id: str | None) -> None:
         """Send a complete reply as a one-token stream.
 
@@ -523,14 +549,24 @@ class WebSocketHandler:
         await self._send({"type": "stream_end", "modelId": model_id, "requestId": request_id})
 
     async def _start_inference_from(self, result) -> None:
-        """Stream the provider reply for a turn the orchestrator prepared."""
+        """Stream the provider reply for a turn the orchestrator prepared.
+
+        Signature deliberately unchanged: what the turn ran is already on
+        the result, so reading it here beats threading it through as a
+        second argument that every caller and test double would have to
+        learn about.
+        """
         logger.info("Starting inference for model: %s", result.model_id)
         start_time = time.monotonic()
         try:
-            await self._stream_inference(result.inference_request)
+            await self._stream_inference(
+                result.inference_request,
+                tool_runs=turn_status.tool_runs_from(result),
+            )
         finally:
             elapsed_ms = round((time.monotonic() - start_time) * 1000, 2)
             logger.info("Inference for model %s finished in %s ms", result.model_id, elapsed_ms)
+            await self._emit_status(turn_status.IDLE)
 
     async def _emit_warnings(self, model_cfg: dict, decision) -> None:
         balancer = auto_balancer.get_active_balancer(model_cfg.get("id"))
@@ -786,7 +822,7 @@ class WebSocketHandler:
     # -----------------------------------------------------
     # Streaming wrapper
     # -----------------------------------------------------
-    async def _stream_inference(self, request: InferenceRequest):
+    async def _stream_inference(self, request: InferenceRequest, tool_runs=None):
         logger.debug("Starting streaming inference.")
 
         # streamer.stream() does blocking I/O/CPU work (local GGUF
@@ -799,6 +835,12 @@ class WebSocketHandler:
         loop = asyncio.get_running_loop()
         accumulated_tokens: list[str] = []
 
+        # The answer, separated from the scaffolding, before anything is
+        # sent. optimize_response below still runs on the raw text, so the
+        # log keeps recording what the model actually produced -- what
+        # changed is that the client no longer has to see it.
+        answer = AnswerStream()
+
         def send_packet_sync(packet: dict):
             # Called from the executor's worker thread, not the event
             # loop thread — asyncio.create_task() is not thread-safe and
@@ -809,9 +851,34 @@ class WebSocketHandler:
             # tokens actually arrive in real time instead of in a burst.
             logger.debug("Streaming packet: %s", packet)
 
-            if packet.get("type") == "stream_token":
-                accumulated_tokens.append(packet.get("token", ""))
+            if packet.get("type") == "stream_start":
+                asyncio.run_coroutine_threadsafe(
+                    self._emit_status(turn_status.WRITING, tool_runs=list(tool_runs or [])),
+                    loop,
+                )
+            elif packet.get("type") == "stream_token":
+                raw = packet.get("token", "")
+                accumulated_tokens.append(raw)
+
+                publishable = answer.push(raw)
+                if not publishable:
+                    # Held back, stripped, or past a terminator. Sending an
+                    # empty stream_token would make the client render a
+                    # token that carries nothing.
+                    return
+                packet = {**packet, "token": publishable}
             elif packet.get("type") == "stream_end":
+                # Anything the filter was still holding when generation
+                # stopped -- a final line that never got its newline.
+                tail = answer.finish()
+                if tail:
+                    asyncio.run_coroutine_threadsafe(
+                        self._send({**packet, "type": "stream_token", "token": tail}), loop,
+                    )
+                if any(answer.stats.values()):
+                    unified_log("websocket", "INFO", "answer_stream filtered model output", {
+                        **answer.stats, "conversation_id": self.conversation_id,
+                    })
                 # Observability only on this path: the tokens above have
                 # already been sent (and the client has already rendered
                 # them) by the time the full text is available here, so

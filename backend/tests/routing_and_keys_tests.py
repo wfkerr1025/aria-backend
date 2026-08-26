@@ -710,12 +710,20 @@ def test_explicit_model_override_persists_and_wins_over_auto_routing():
 
         # An ordinary message afterward must use the pinned model, not
         # AutoSelector, even though mode is auto.
+        #
+        # skipSafetyCheck for the same reason the sibling test above gives:
+        # evaluate_safety() reads live CPU/RAM, and the pinned model here
+        # trips it whenever the machine is busy -- which short-circuits the
+        # turn to a safety_warning and leaves `captured` empty. This test is
+        # about model precedence, not the safety gate, and the gate has its
+        # own coverage in skr_and_ipc_tests.py.
         await handler._dispatch({
             "type": "chat_request",
             "payload": {
                 "messages": [{"role": "user", "content": "ordinary message"}],
                 "conversationId": "override-persist-test",
                 "multiTurn": True,
+                "skipSafetyCheck": True,
             },
         })
         return captured
@@ -875,6 +883,10 @@ def test_weather_intent_short_circuits_to_real_tool_no_model_call():
         open_meteo_provider.geocode = original_geocode
         weather_router.weather_fusion.get_fused_weather = original_fuse
 
+    # Status packets are additive turn-indicator decoration carrying no
+    # result (backend/core/turn_status.py); this test is about the answer
+    # packets, so they are filtered rather than counted.
+    sent = [p for p in sent if p.get("type") != "status"]
     assert [p["type"] for p in sent] == ["stream_start", "stream_token", "stream_end"]
     assert sent[0]["modelId"] == "weather-fusion", "must never be the retired 'weather' sentinel"
     assert "Richmond" in sent[1]["token"]

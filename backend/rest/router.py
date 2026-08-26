@@ -93,6 +93,8 @@ from backend.core.conversation_manager import (
     log_tool_routing_decision,
     optimize_response,
 )
+from backend.core.answer_stream import AnswerStream
+from backend.core import turn_status
 from backend.core.turn_orchestrator import orchestrate_turn
 from backend.core.turn_types import (
     KIND_CLARIFY,
@@ -898,6 +900,18 @@ async def post_chat(payload: ChatRequest) -> Dict[str, Any]:
         raise _rest_error(ipc_errors.INFERENCE_ERROR, error_packet.get("message") or "Streaming error", 500)
 
     raw_reply = "".join(p.get("token", "") for p in packets if p.get("type") == schema.STREAM_TOKEN)
+
+    # Same filter the WebSocket path applies token by token. This route
+    # buffers the whole reply before responding, so one pass over the
+    # finished text is equivalent -- and optimize_response still runs
+    # after it, exactly as before.
+    _answer = AnswerStream()
+    raw_reply = _answer.push(raw_reply) + _answer.finish()
+    if any(_answer.stats.values()):
+        unified_log("rest", "INFO", "answer_stream filtered model output", {
+            **_answer.stats, "conversation_id": turn["conversation_id"],
+        })
+
     reply, optimize_info = optimize_response(raw_reply)
     log_response_optimized("rest", optimize_info, turn["conversation_id"])
 

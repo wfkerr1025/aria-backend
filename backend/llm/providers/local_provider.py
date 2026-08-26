@@ -7,6 +7,8 @@ from backend.core import model_registry
 
 from backend.logger import log as unified_log
 
+from backend.core.answer_stream import detect_repetition_loop
+from backend.logger import log as unified_log
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -23,7 +25,38 @@ logger = get_logger(__name__)
 TURN_BOUNDARY_STOP_SEQUENCES = [
     "\nuser:", "\nUser:", "\nUSER:",
     "\nsystem:", "\nSystem:", "\nSYSTEM:",
+    "\nassistant:", "\nAssistant:", "\nASSISTANT:",
+
+    # The synthesis prompt renders past turns as "- [user] ..." in its
+    # Conversation Context section, and a model completing that document
+    # writes the next turn rather than answering. Observed on phi-3-mini:
+    # a correct answer about a stock price, then a fabricated exchange in
+    # the user's own voice. Matched with and without the leading dash,
+    # since the bullet is the prompt's formatting rather than the model's.
+    "- [user]", "- [assistant]", "- [system]",
+    "\n[user]", "\n[assistant]", "\n[system]",
+
+    # The prompt's own instruction block, restarting. Everything after
+    # this belongs to a turn that does not exist.
+    "\nInstruction:", "\nInstructions:",
+    "\nUser Query:", "\nSynthesis Instructions:",
 ]
+
+# Kept in step with backend/core/answer_stream.py's TERMINATORS, which
+# truncates the same markers on the way out. The two lists are not shared
+# outright because they answer different questions -- llama.cpp matches
+# raw substrings including newlines, the transport matches a normalised
+# line start -- but a marker added to one belongs in the other, and
+# backend/tests/test_provider_stop_sequences.py fails if they diverge.
+#
+# What is deliberately NOT here: the scaffolding prefixes answer_stream
+# strips ("Response:", "Solution:", "web_search (step1):"). Stripping and
+# stopping are opposites. Those labels are followed by the answer -- in
+# the captured phi-3 output the best phrasing came after "Solution:", and
+# qwen's reply *opened* with "web_search (step1):" -- so a stop sequence
+# there would end generation before the answer existed, turning a cosmetic
+# problem into an empty reply. The transport removes the label and keeps
+# the text; the provider must not pre-empt that.
 
 # ============================================================
 # LOAD-SURVIVAL FALLBACK CHAIN
@@ -204,6 +237,29 @@ class Provider:
         raise last_error
 
     # -----------------------------------------------------
+    # Degeneration halt
+    #
+    # Stop sequences catch a model that starts a new turn. They cannot
+    # catch one that repeats itself, because there is no fixed string to
+    # match -- the repeated segment is whatever the model happened to
+    # land on. Observed on qwen2.5-0.5b: the correct answer, then the
+    # same two citations for another thirty-six seconds.
+    #
+    # The condition is shared with the transport rather than restated, so
+    # the provider halts at the same character the transport would have
+    # truncated at. That equivalence is the point: without it the two
+    # could disagree and nothing would show it, since the user sees the
+    # filtered output either way and only the wasted seconds differ.
+    #
+    # Scoped to the current line, exactly as the transport scopes it: a
+    # newline resets the window, so a list whose items rhyme is not a
+    # loop.
+    # -----------------------------------------------------
+    @staticmethod
+    def _degenerating(line_so_far: str) -> bool:
+        return detect_repetition_loop(line_so_far)
+
+    # -----------------------------------------------------
     # Non-streaming inference
     # -----------------------------------------------------
     def run(self, request):
@@ -240,17 +296,38 @@ class Provider:
 
         # Streaming loop
         try:
-            for chunk in self.loader.run_stream(
+            stream = self.loader.run_stream(
                 prompt,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
                 stop=TURN_BOUNDARY_STOP_SEQUENCES,
-            ):
-                logger.debug(f"stream() chunk received (len={len(chunk)})")
-                callback({
-                    "type": "chat_stream",
-                    "content": chunk
-                })
+            )
+
+            line_so_far = ""
+            try:
+                for chunk in stream:
+                    logger.debug(f"stream() chunk received (len={len(chunk)})")
+                    callback({
+                        "type": "chat_stream",
+                        "content": chunk
+                    })
+
+                    line_so_far = (line_so_far + chunk).rsplit("\n", 1)[-1]
+                    if self._degenerating(line_so_far):
+                        # Closing the generator is what actually stops
+                        # llama.cpp: it is lazy, so no further token is
+                        # sampled once nothing pulls on it. Breaking alone
+                        # would leave that to garbage collection.
+                        logger.info(
+                            "stream() halting early — model is repeating itself "
+                            "(model_id=%s)", model_id,
+                        )
+                        unified_log("local_provider", "INFO", "generation halted: repetition", {
+                            "model_id": model_id,
+                        })
+                        break
+            finally:
+                stream.close()
 
             callback({"type": "chat_complete"})
             logger.debug("stream() completed successfully")

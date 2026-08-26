@@ -55,6 +55,22 @@ class FakeWebSocket:
 #
 #     handler._start_inference(packet)  ->  _start_inference_from(result)
 #     handlers_mod.evaluate_safety      ->  turn_orchestrator.evaluate_safety
+#
+# Status packets ({"type": "status", "value": ...}) were added for the turn
+# indicator -- see backend/core/turn_status.py. They are additive decoration
+# and carry no result, so the assertions below that pin an exact answer
+# sequence filter them out rather than counting them. What those tests are
+# about is unchanged: which result packets a turn produces, and in what
+# order.
+
+
+def _result_packets(sent):
+    """The packets that carry a result, with status decoration removed."""
+    import json as _json
+
+    parsed = [_json.loads(item) if isinstance(item, str) else item for item in sent]
+    return [packet for packet in parsed if packet.get("type") != "status"]
+
 #     packet["allowOverride"]           ->  result.inference_request.allow_override
 # ------------------------------------------------------------------
 from backend.core import turn_orchestrator as _turn_orch  # noqa: E402
@@ -265,8 +281,8 @@ def test_skr_short_circuit_never_touches_a_model():
     finally:
         mm.set_mode(original_mode)
 
-    assert len(sent) == 3, f"expected stream_start/stream_token/stream_end, got {sent}"
-    packets = [json.loads(s) for s in sent]
+    packets = _result_packets(sent)
+    assert len(packets) == 3, f"expected stream_start/stream_token/stream_end, got {packets}"
     assert [p["type"] for p in packets] == ["stream_start", "stream_token", "stream_end"]
     assert packets[0]["modelId"] == "skr", "self-query replies must use the 'skr' sentinel modelId, not a real one"
     token = packets[1]["token"]
@@ -506,9 +522,8 @@ def test_chat_request_reads_fields_from_bridge_payload_shape():
         })
         return ws.sent
 
-    import json
     sent = _run(scenario())
-    packets = [json.loads(s) for s in sent]
+    packets = _result_packets(sent)
     assert [p["type"] for p in packets] == ["stream_start", "stream_token", "stream_end"], (
         f"expected a self-query SKR reply, got {packets}"
     )
@@ -838,7 +853,9 @@ def test_skip_safety_check_bypasses_safety_gate_and_never_calls_evaluate_safety(
         sent = _run(scenario())
     finally:
         mm.set_mode(original_mode)
-    assert sent == [], "skipSafetyCheck must short-circuit straight to _start_inference, no packets sent first"
+    assert _result_packets(sent) == [], (
+        "skipSafetyCheck must short-circuit straight to inference, no result packets sent first"
+    )
     assert getattr(captured.get("packet"), "inference_request", None) is not None and captured["packet"].inference_request.allow_override is True, (
         "skipSafetyCheck must set allowOverride=True on the inference packet"
     )
