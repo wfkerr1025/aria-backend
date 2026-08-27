@@ -43,6 +43,7 @@ __all__ = [
     "ROUTE_NORMAL",
     "ROUTE_RAW_EVIDENCE",
     "ROUTE_SIMPLIFIED",
+    "ROUTE_DEFERRED_TO_ROUTER",
     "SYNTHESIS_FULL",
     "SYNTHESIS_RAW_EVIDENCE",
     "SYNTHESIS_SIMPLIFIED",
@@ -77,6 +78,12 @@ ROUTE_NORMAL = "normal"
 ROUTE_CLOUD = "cloud_fallback_for_evidence"
 ROUTE_SIMPLIFIED = "simplified_local_synthesis"
 ROUTE_RAW_EVIDENCE = "raw_evidence_fallback"
+# Automatic mode: no model id exists yet, so the allowlist has nothing to
+# check and ProviderRouter decides. Recorded rather than acted on --
+# complexity_router floors the tier for an evidence-bearing prompt, and
+# pinning a model here would expose the turn to the safety gate that
+# model_id=None skips. See turn_orchestrator step 5c.
+ROUTE_DEFERRED_TO_ROUTER = "deferred_to_provider_router"
 
 # What the turn ends up asking of the model, reported on the TurnResult.
 SYNTHESIS_FULL = "full"

@@ -122,6 +122,54 @@ def _is_installed(model_id: Optional[str]) -> bool:
     return bool(model_id) and get_model(model_id) is not None
 
 
+# ============================================================
+# EVIDENCE-BEARING TURNS
+#
+# classify_task_complexity() measures one thing: how long the prompt is.
+# That is a fine proxy for how much context a model has to hold, and a bad
+# one for how capable it has to be -- and the two come apart exactly on
+# short factual questions.
+#
+# "What is the stock price of Microsoft?" is 37 characters, so it
+# classifies "low" and lands on the 0.5B emergency model. It is also a
+# question that cannot be answered from any model's weights, only from a
+# lookup. The weakest model was being handed the turns with the highest
+# hallucination risk.
+#
+# Worse, that happened precisely when the lookup had FAILED. With evidence
+# the prompt is the assembled synthesis document (~1600 chars, "high", the
+# 12B model); without it the turn falls back to the raw question (37
+# chars, "low", the 0.5B model). So losing the evidence also lost the
+# model that might have said "I don't know" -- degrading quietly toward
+# fabrication.
+#
+# So: when the prompt carries evidence, length stops deciding.
+#
+# Detected from the prompt rather than passed down, because the two call
+# sites (backend.core.auto_selector, backend.core.provider_router) sit
+# behind interfaces this change is not allowed to widen. The markers are
+# section headings owned by prompts this codebase builds, so they are
+# stable, and an explicit evidence_present= argument overrides the sniff
+# for any caller that knows better.
+_EVIDENCE_MARKERS = (
+    "tool results:",             # synthesis_prompt's tool section
+    "evidence summary:",         # synthesis_prompt's header line
+    "synthesis instructions:",   # synthesis_prompt's rule block
+    "what the lookup returned:",  # evidence_routing's simplified prompt
+)
+
+
+def prompt_carries_evidence(prompt: str) -> bool:
+    """Whether this prompt has retrieved or looked-up material in it.
+
+    Also the answer to "is this a simplified evidence prompt", which is
+    ~314 characters and would otherwise sit 14 characters from being
+    classified "low" -- a margin no routing decision should rest on.
+    """
+    lowered = (prompt or "").lower()
+    return any(marker in lowered for marker in _EVIDENCE_MARKERS)
+
+
 def _pick_medium_tier(prompt: str) -> str:
     return SIMPLE_MODEL_ID if len(prompt.strip()) < _MEDIUM_BUCKET_SPLIT_CHARS else MEDIUM_MODEL_ID
 
@@ -135,6 +183,7 @@ def select_local_model_for_prompt(
     prompt: str,
     context_length: Optional[int] = None,
     tool_use: bool = False,
+    evidence_present: Optional[bool] = None,
 ) -> str:
     """
     Pick the best installed local model for `prompt`'s task complexity.
@@ -142,6 +191,13 @@ def select_local_model_for_prompt(
     the way to whatever this specific install actually treats as its
     default/fallback/emergency model if none of the four ladder models
     are registered at all.
+
+    `evidence_present` overrides the length heuristic entirely: a turn
+    carrying looked-up material is never trivial, however short the
+    question was. Left as None it is sniffed from the prompt (see
+    prompt_carries_evidence), which is what lets the two existing call
+    sites benefit without changing their signatures. `tool_use=True`
+    counts as evidence too.
 
     `context_length`/`tool_use` are optional, additive inputs recorded
     into the routing log alongside the decision — every existing call
@@ -157,7 +213,21 @@ def select_local_model_for_prompt(
         context_length = len(prompt)
     complexity = classify_task_complexity(prompt)
 
-    if complexity == "low":
+    if evidence_present is None:
+        evidence_present = prompt_carries_evidence(prompt) or bool(tool_use)
+
+    if evidence_present:
+        # Reading evidence and answering from it -- rather than around it
+        # -- is the capability at stake, and it is not what prompt length
+        # measures. Aim high and let the hardware gates below step down;
+        # they cannot go below the medium tier for this turn.
+        complexity = "high"
+        ideal_model_id = DIFFICULT_MODEL_ID
+        logger.info(
+            "select_local_model_for_prompt() -> evidence present; ignoring the "
+            "length heuristic and flooring at %s", MEDIUM_MODEL_ID,
+        )
+    elif complexity == "low":
         ideal_model_id = TRIVIAL_MODEL_ID
     elif complexity == "high":
         ideal_model_id = DIFFICULT_MODEL_ID
@@ -192,11 +262,41 @@ def select_local_model_for_prompt(
         )
         start_index += 1
 
+    # The floor. An evidence-bearing turn may step down from the 12B to
+    # the 7B when the machine is busy, and no further -- the tiers below
+    # are the ones that cannot be trusted to read evidence at all, so
+    # "the machine is loaded" is not a reason to reach them.
+    floor_index = len(_LADDER) - 1
+    if evidence_present:
+        floor_index = _LADDER.index(MEDIUM_MODEL_ID)
+        if start_index > floor_index:
+            logger.info(
+                "select_local_model_for_prompt() -> hardware would have stepped to %s, "
+                "held at %s for an evidence-bearing turn",
+                _LADDER[start_index], _LADDER[floor_index],
+            )
+            start_index = floor_index
+
     chosen = None
-    for candidate in _LADDER[start_index:]:
+    for candidate in _LADDER[start_index:floor_index + 1]:
         if _is_installed(candidate):
             chosen = candidate
             break
+
+    if chosen is None and evidence_present:
+        # Nothing at or above the floor is installed. A weaker model is
+        # still better than no answer, but this is worth saying out loud:
+        # the turn is about to be handled by a model this router does not
+        # trust with evidence.
+        for candidate in _LADDER[floor_index + 1:]:
+            if _is_installed(candidate):
+                chosen = candidate
+                logger.warning(
+                    "select_local_model_for_prompt() -> no model at or above %s is "
+                    "installed; falling below the evidence floor to %r",
+                    MEDIUM_MODEL_ID, candidate,
+                )
+                break
 
     if chosen is None:
         # None of the four ladder models are registered on this install
@@ -228,6 +328,7 @@ def select_local_model_for_prompt(
     unified_log("complexity_router", "INFO", "Local model tier selected", {
         "complexity": complexity, "ideal_model_id": ideal_model_id, "chosen_model_id": chosen,
         "free_ram_gb": round(free_ram_gb, 1), "cpu_saturated": cpu_saturated,
+        "evidence_present": evidence_present,
     })
     _ROUTING_HISTORY.append({
         "timestamp": time.time(),

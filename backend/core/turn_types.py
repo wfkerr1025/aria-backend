@@ -96,6 +96,10 @@ class TurnRequest:
     max_tokens: int = 2048
     temperature: float = 0.7
     session: SessionState = field(default_factory=SessionState)
+    # Ask the orchestrator to record how the model was chosen. Off by
+    # default: the trace is for someone debugging a routing decision, and
+    # every turn carrying one would be noise on every other turn.
+    debug_trace: bool = False
 
 
 @dataclass(frozen=True)
@@ -131,6 +135,16 @@ class TurnResult:
     # multi-source evidence answers around it rather than from it, so a
     # turn can be downgraded to a simpler prompt, or to no model at all.
     synthesis_mode: str = "full"
+
+    # A lookup was expected for this turn and produced nothing. The turn
+    # says so rather than answering anyway -- a question about a current
+    # price, answered from a model's weights because the search failed, is
+    # the exact failure the evidence pipeline exists to prevent.
+    evidence_missing: bool = False
+
+    # How the model was chosen, when TurnRequest.debug_trace asked for it.
+    # Empty otherwise. Debugging aid only -- nothing routes on it.
+    model_resolution_trace: dict = field(default_factory=dict)
 
     # The safety decision and the model config it was made against, carried
     # so the transport can run its own warning emission (_emit_warnings)

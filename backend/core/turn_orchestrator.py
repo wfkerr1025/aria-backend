@@ -107,6 +107,32 @@ NO_CLOUD_PROVIDER_WARNING = {
 }
 
 
+# What a turn says when the lookup it needed produced nothing. Fixed text,
+# no model involved: the one thing that must not happen here is a fluent
+# answer assembled from the model's weights.
+EVIDENCE_MISSING_ANSWER = "I could not retrieve current data for this query."
+
+
+def _trace(request, initial, route, post_resolution, final) -> dict:
+    """How the model was chosen, when the caller asked to be told.
+
+    provider_router is deliberately None. It resolves inside
+    StreamingEngine, after this function has returned, so the orchestrator
+    genuinely does not know what it picked -- and recording a guess there
+    would make the trace worse than useless to whoever is reading it to
+    find out.
+    """
+    if not getattr(request, "debug_trace", False):
+        return {}
+    return {
+        "initial": initial,
+        "provider_router": None,
+        "post_resolution": post_resolution,
+        "capability_routing": route,
+        "final": final,
+    }
+
+
 def _event(name: str, **fields) -> dict:
     """One telemetry record. Emitted by the transport, never here."""
     return {"event": name, **fields}
@@ -440,6 +466,7 @@ def orchestrate_turn(
 
     # --- 4/5. Model resolution and mode separation.
     model_id, explicit = _resolve_model_id(request, default_local_model)
+    initial_model_id = model_id
 
     # Cloud Mode, nothing asked for by name, and no cloud provider
     # configured anywhere. "Must NOT silently fall back to local" -- so
@@ -484,6 +511,34 @@ def orchestrate_turn(
     if route != evidence_routing.ROUTE_NORMAL:
         telemetry.append(_event(
             "model_routing", decision=route, model_id=model_id, mode=session.mode,
+        ))
+
+    # --- 5c. Automatic mode and the allowlist.
+    #
+    # Automatic leaves model_id None so ProviderRouter can weigh local
+    # against cloud, which means capability routing here has no model to
+    # act on. The obvious fix -- pin the evidence floor model when there
+    # is no cloud to escalate to -- was implemented, measured, and
+    # removed, because it makes things worse:
+    #
+    #   a concrete model_id is a model the SAFETY GATE evaluates. With
+    #   model_id None the gate is skipped entirely and AutoSelector does
+    #   its own hardware-aware stepping without ever refusing a turn.
+    #   Pinning mistral-7b put an evidence turn in front of the gate for
+    #   the first time, and on a loaded machine it came back
+    #   safety_warning/caution -- refusing a turn that would previously
+    #   have run.
+    #
+    # Trading "might pick a weak model" for "might refuse outright" is not
+    # a trade worth making, and it is not needed: complexity_router now
+    # floors an evidence-bearing prompt at the medium tier
+    # (prompt_carries_evidence), so Automatic's local branch cannot reach
+    # the emergency model for one of these turns anyway. The guarantee is
+    # kept; the new failure mode is not introduced.
+    if expects_evidence and model_id is None:
+        telemetry.append(_event(
+            "model_routing", decision=evidence_routing.ROUTE_DEFERRED_TO_ROUTER,
+            mode=session.mode, cloud_available=cloud_available,
         ))
 
     if route == evidence_routing.ROUTE_CLOUD:
@@ -581,6 +636,38 @@ def orchestrate_turn(
             evidence_items=len(policy_info.get("retrieved_items") or []),
         ))
 
+    # --- Evidence was expected and did not arrive.
+    #
+    # answer is not None but answer.text is None means Engine B ran and
+    # found nothing to work with: an empty bundle and no successful
+    # lookup. Answering anyway means answering from the model's weights,
+    # which for a question about a current price is fabrication by
+    # construction -- and the old behaviour made it worse, because the
+    # fallback prompt was the short raw question, which the length
+    # heuristic classified "low" and handed to the 0.5B model. The
+    # weakest model, on the turn with the highest hallucination risk.
+    #
+    # answer is None is a different case -- the reasoning core was
+    # unavailable or raised -- and still fails open to ordinary chat, as
+    # it always has.
+    if expects_evidence and answer is not None and answer.text is None:
+        logger.info("evidence was expected for this turn and none arrived; not answering from weights.")
+        telemetry.append(_event("evidence_missing", intent=intent))
+        return TurnResult(
+            kind=KIND_TEXT,
+            text=EVIDENCE_MISSING_ANSWER,
+            model_id=None,
+            conversation_id=request.conversation_id,
+            policy_info=policy_info,
+            session_updates=session_updates,
+            metadata={"tool_runs": tool_runs},
+            evidence_missing=True,
+            model_resolution_trace=_trace(
+                request, initial_model_id, route, model_id, None,
+            ),
+            telemetry=telemetry,
+        )
+
     # The prediction above is now a fact. A turn routed to a fallback that
     # turns out to have run no evidence tool needs no fallback, so the
     # downgrade is applied only where it is still warranted.
@@ -608,6 +695,9 @@ def orchestrate_turn(
                     session_updates=session_updates,
                     metadata={"tool_runs": tool_runs},
                     synthesis_mode=evidence_routing.SYNTHESIS_RAW_EVIDENCE,
+                    model_resolution_trace=_trace(
+                        request, initial_model_id, route, model_id, None,
+                    ),
                     telemetry=telemetry,
                 )
 
@@ -652,5 +742,6 @@ def orchestrate_turn(
         model_cfg=model_cfg,
         metadata={"tool_runs": tool_runs},
         synthesis_mode=synthesis_mode,
+        model_resolution_trace=_trace(request, initial_model_id, route, model_id, model_id),
         telemetry=telemetry,
     )
