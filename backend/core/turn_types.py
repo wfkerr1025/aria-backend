@@ -146,6 +146,16 @@ class TurnResult:
     # Empty otherwise. Debugging aid only -- nothing routes on it.
     model_resolution_trace: dict = field(default_factory=dict)
 
+    # How the lookup's output became the evidence in the prompt --
+    # raw_tool_results / normalized / merged / bundle. Populated only when
+    # TurnRequest.debug_trace asked for it. Debugging aid only.
+    evidence_trace: dict = field(default_factory=dict)
+
+    # The same journey one stage earlier: what each tool returned, what it
+    # normalized to, how it was rendered, and what reached the bundle.
+    # Populated only when TurnRequest.debug_trace asked for it.
+    tool_result_trace: dict = field(default_factory=dict)
+
     # The safety decision and the model config it was made against, carried
     # so the transport can run its own warning emission (_emit_warnings)
     # without re-evaluating. Present on every turn that resolved a model,

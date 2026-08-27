@@ -47,6 +47,8 @@ PYTEST_TESTS = [
     "test_synthesis_evidence.py",
     "test_evidence_routing.py",
     "test_evidence_aware_resolution.py",
+    "test_evidence_bundling.py",
+    "test_tool_result_structuring.py",
     "test_provider_stop_sequences.py",
     "test_upgrade_01_note_embeddings.py",
     "test_upgrade_02_semantic_index.py",

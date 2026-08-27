@@ -113,6 +113,42 @@ NO_CLOUD_PROVIDER_WARNING = {
 EVIDENCE_MISSING_ANSWER = "I could not retrieve current data for this query."
 
 
+def _tool_result_trace(request, tool_runs, lines, items) -> dict:
+    """The same journey one stage earlier than _evidence_trace.
+
+    Separate because the failures are separate: a tool can return
+    structure that renders to a good line and still be dropped later, and
+    a tool can return nothing while everything downstream looks healthy.
+    Reading both traces side by side says which half broke.
+    """
+    if not getattr(request, "debug_trace", False):
+        return {}
+    return {
+        "raw": list(tool_runs or ()),
+        "normalized": [item.as_dict() for item in items],
+        "flattened": lines,
+        "bundle_ready": [item.as_dict() for item in items if item.usable],
+    }
+
+
+def _evidence_trace(request, tool_runs, lines, items) -> dict:
+    """How the lookup's output became the evidence in the prompt.
+
+    Four stages because four things can go wrong independently: the tool
+    ran or it did not, the line was rendered or it was blank, the item
+    normalized or it was a blob, and the block printed it or dropped it as
+    unusable. A single "no evidence" tells you none of that.
+    """
+    if not getattr(request, "debug_trace", False):
+        return {}
+    return {
+        "raw_tool_results": list(tool_runs or ()),
+        "normalized": [item.as_dict() for item in items],
+        "merged": [item.as_dict() for item in items if item.usable],
+        "bundle": lines,
+    }
+
+
 def _trace(request, initial, route, post_resolution, final) -> dict:
     """How the model was chosen, when the caller asked to be told.
 
@@ -650,9 +686,41 @@ def orchestrate_turn(
     # answer is None is a different case -- the reasoning core was
     # unavailable or raised -- and still fails open to ordinary chat, as
     # it always has.
-    if expects_evidence and answer is not None and answer.text is None:
+    # What the lookup actually produced, normalized once and reused by the
+    # detection below, by the prompt builders, and by the debug trace.
+    evidence_lines = evidence_routing.extract_tool_results(reasoning_prompt or "")
+    evidence_items = evidence_routing.normalize_evidence(evidence_lines)
+
+    # Evidence is missing when a lookup ran and produced nothing usable --
+    # not when Engine B happened to return no prompt.
+    #
+    # The old test was `answer.text is None`, which only catches a tool
+    # that raised. Measured against the seven ways a tool can come back,
+    # five slipped through: an empty list, None, a malformed shape, an
+    # empty reply string, and a serialized API envelope all produced a
+    # turn that reported success and handed the model "" or a JSON blob --
+    # under an instruction reading "use ONLY the evidence above". That is
+    # a prompt that asks for a fabrication.
+    #
+    # retrieved_items is the other half: a turn backed by notes or files
+    # has evidence even when no tool ran, and must not be refused because
+    # the search came back thin.
+    retrieved_items = policy_info.get("retrieved_items") or []
+    tool_evidence_unusable = (
+        bool(tool_runs)
+        and not evidence_routing.has_usable_evidence(evidence_items)
+        and not retrieved_items
+    )
+
+    if expects_evidence and (
+        (answer is not None and answer.text is None) or tool_evidence_unusable
+    ):
         logger.info("evidence was expected for this turn and none arrived; not answering from weights.")
-        telemetry.append(_event("evidence_missing", intent=intent))
+        telemetry.append(_event(
+            "evidence_missing", intent=intent,
+            tool_runs=list(tool_runs), lines_returned=len(evidence_lines),
+            usable=evidence_routing.has_usable_evidence(evidence_items),
+        ))
         return TurnResult(
             kind=KIND_TEXT,
             text=EVIDENCE_MISSING_ANSWER,
@@ -665,6 +733,8 @@ def orchestrate_turn(
             model_resolution_trace=_trace(
                 request, initial_model_id, route, model_id, None,
             ),
+            evidence_trace=_evidence_trace(request, tool_runs, evidence_lines, evidence_items),
+            tool_result_trace=_tool_result_trace(request, tool_runs, evidence_lines, evidence_items),
             telemetry=telemetry,
         )
 
@@ -679,7 +749,7 @@ def orchestrate_turn(
         ))
 
         if confirmed:
-            evidence = evidence_routing.extract_tool_results(reasoning_prompt or "")
+            evidence = evidence_items
 
             if route == evidence_routing.ROUTE_RAW_EVIDENCE:
                 # No model is asked to synthesize. Answering from a model
@@ -697,6 +767,12 @@ def orchestrate_turn(
                     synthesis_mode=evidence_routing.SYNTHESIS_RAW_EVIDENCE,
                     model_resolution_trace=_trace(
                         request, initial_model_id, route, model_id, None,
+                    ),
+                    evidence_trace=_evidence_trace(
+                        request, tool_runs, evidence_lines, evidence_items,
+                    ),
+                    tool_result_trace=_tool_result_trace(
+                        request, tool_runs, evidence_lines, evidence_items,
                     ),
                     telemetry=telemetry,
                 )
@@ -743,5 +819,7 @@ def orchestrate_turn(
         metadata={"tool_runs": tool_runs},
         synthesis_mode=synthesis_mode,
         model_resolution_trace=_trace(request, initial_model_id, route, model_id, model_id),
+        evidence_trace=_evidence_trace(request, tool_runs, evidence_lines, evidence_items),
+        tool_result_trace=_tool_result_trace(request, tool_runs, evidence_lines, evidence_items),
         telemetry=telemetry,
     )

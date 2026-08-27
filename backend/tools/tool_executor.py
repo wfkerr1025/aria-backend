@@ -38,6 +38,9 @@ write whose content is already on disk.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
+
 try:
     from backend.tools.tool_registry import (
         STATUS_ERROR,
@@ -71,6 +74,251 @@ def _shorten(text: str, limit: int = SUMMARY_CHARS) -> str:
     return collapsed if len(collapsed) <= limit else collapsed[: limit - 1] + "…"
 
 
+# ============================================================
+# NORMALIZING A TOOL RESULT
+#
+# A tool answers with structure and this layer renders it to one line, so
+# whatever the line does not carry is gone by the time anything downstream
+# sees it. For web_search that was almost everything: _search_handler
+# returns {"raw": <the rich result>, "reply": <one string>}, where the rich
+# result holds the heading, the source URL and every related topic -- and
+# only `reply` was read.
+#
+# So a search that found "Microsoft Corporation - MSFT is trading at
+# $412.30 - investopedia.com, plus four related results" reached the model
+# as a single untitled, unattributed sentence.
+#
+# Normalizing first and rendering second keeps those fields. What cannot
+# be recovered stays None: DuckDuckGo's instant-answer API carries no
+# timestamp, so timestamp is None for a web_search rather than being
+# filled in with "now" -- a fabricated date on a stale result is worse
+# than no date.
+TITLE_CHARS = 120
+SNIPPET_CHARS = 300
+MAX_RELATED_ITEMS = 4
+
+
+@dataclass(frozen=True)
+class NormalizedToolResult:
+    """One finding from one tool, before it is rendered to a line."""
+
+    tool: str
+    source: str
+    title: str | None = None
+    snippet: str | None = None
+    url: str | None = None
+    timestamp: "datetime | None" = None
+    rank: int = 1
+    raw: object = None
+
+    def as_dict(self) -> dict:
+        return {
+            "tool": self.tool,
+            "source": self.source,
+            "title": self.title,
+            "snippet": self.snippet,
+            "url": self.url,
+            "timestamp": self.timestamp,
+            "rank": self.rank,
+        }
+
+
+def _clip(text, limit: int):
+    """Trim at a word boundary, or None if there is nothing to trim."""
+    collapsed = " ".join(str(text or "").split())
+    if not collapsed:
+        return None
+    if len(collapsed) <= limit:
+        return collapsed
+    cut = collapsed[:limit]
+    boundary = cut.rfind(" ")
+    if boundary > limit // 2:
+        cut = cut[:boundary]
+    return cut.rstrip(" ,;:") + "\u2026"
+
+
+def _url_or_none(candidate):
+    """A URL only if it carries a scheme we would actually follow."""
+    text = str(candidate or "").strip().rstrip(".,;)")
+    lowered = text.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return text if len(text) > len("https://") else None
+    return None
+
+
+def _timestamp_or_none(candidate):
+    from datetime import datetime as _dt
+
+    if isinstance(candidate, _dt):
+        return candidate
+    if not candidate:
+        return None
+    try:
+        return _dt.fromisoformat(str(candidate).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _normalize_web_search(value) -> list:
+    """The instant answer, then the related topics, in the order given.
+
+    Rank is assigned by position rather than by score, because DuckDuckGo
+    does not return one -- and an invented ranking would read exactly like
+    a real one.
+    """
+    raw = value.get("raw") if isinstance(value, dict) else None
+    if not isinstance(raw, dict):
+        # Nothing structured survived; fall back to the rendered reply so
+        # the finding is not lost entirely.
+        snippet = _clip(value.get("reply") if isinstance(value, dict) else value, SNIPPET_CHARS)
+        if not snippet:
+            return []
+        return [NormalizedToolResult(
+            tool="web_search", source="web_search", snippet=snippet, raw=value,
+        )]
+
+    items = []
+    abstract = _clip(raw.get("summary"), SNIPPET_CHARS)
+    if abstract:
+        items.append(NormalizedToolResult(
+            tool="web_search",
+            source=_url_or_none(raw.get("source_url")) or "web_search",
+            title=_clip(raw.get("heading"), TITLE_CHARS),
+            snippet=abstract,
+            url=_url_or_none(raw.get("source_url")),
+            timestamp=_timestamp_or_none(raw.get("timestamp")),
+            rank=len(items) + 1,
+            raw=raw,
+        ))
+
+    for related in (raw.get("related") or [])[:MAX_RELATED_ITEMS]:
+        if not isinstance(related, dict):
+            continue
+        snippet = _clip(related.get("text"), SNIPPET_CHARS)
+        if not snippet:
+            continue
+        url = _url_or_none(related.get("url"))
+        items.append(NormalizedToolResult(
+            tool="web_search",
+            source=url or "web_search",
+            title=None,
+            snippet=snippet,
+            url=url,
+            timestamp=None,
+            rank=len(items) + 1,
+            raw=related,
+        ))
+
+    return items
+
+
+def _normalize_read_file(value) -> list:
+    if not isinstance(value, dict):
+        return []
+    path = value.get("path")
+    snippet = _clip(value.get("text") or value.get("content"), SNIPPET_CHARS)
+    if not (path or snippet):
+        return []
+    return [NormalizedToolResult(
+        tool="read_file", source=str(path or "read_file"),
+        title=_clip(path, TITLE_CHARS), snippet=snippet, url=None,
+        timestamp=_timestamp_or_none(value.get("modified")), rank=1, raw=value,
+    )]
+
+
+def _normalize_search_notes(value) -> list:
+    """One item per note, so a five-note answer is five findings."""
+    rows = value.get("results") or value.get("notes") if isinstance(value, dict) else None
+    if not isinstance(rows, list):
+        return []
+
+    items = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        snippet = _clip(row.get("text") or row.get("content"), SNIPPET_CHARS)
+        if not snippet:
+            continue
+        items.append(NormalizedToolResult(
+            tool="search_notes",
+            source=str(row.get("id") or "search_notes"),
+            title=_clip(row.get("title"), TITLE_CHARS),
+            snippet=snippet, url=None,
+            timestamp=_timestamp_or_none(row.get("created") or row.get("timestamp")),
+            rank=len(items) + 1, raw=row,
+        ))
+    return items
+
+
+def _normalize_weather(value) -> list:
+    if not isinstance(value, dict):
+        return []
+    parts = [str(value[key]) for key in ("temperature", "conditions") if value.get(key)]
+    if not parts:
+        return []
+    where = value.get("location") or value.get("place")
+    return [NormalizedToolResult(
+        tool="weather", source=str(value.get("provider") or "weather"),
+        title=_clip(where, TITLE_CHARS), snippet=_clip(", ".join(parts), SNIPPET_CHARS),
+        url=None, timestamp=_timestamp_or_none(value.get("timestamp")), rank=1, raw=value,
+    )]
+
+
+_NORMALIZERS = {
+    "web_search": _normalize_web_search,
+    "read_file": _normalize_read_file,
+    "search_notes": _normalize_search_notes,
+    "weather": _normalize_weather,
+}
+
+
+def normalize_tool_value(tool_name: str, value) -> list:
+    """Every finding this tool returned, in the unified shape.
+
+    An empty list means the tool ran and found nothing -- which is a
+    different thing from failing, and a different thing again from
+    succeeding, and the caller needs to be able to tell all three apart.
+    """
+    normalizer = _NORMALIZERS.get(tool_name)
+    if normalizer is None:
+        return []
+    try:
+        return normalizer(value)
+    except Exception:  # pragma: no cover - a normalizer must never fail a turn
+        logger.exception("normalize_tool_value(%s) failed; falling back to the summary", tool_name)
+        return []
+
+
+# Delimiters for rendering several findings into the one line this layer
+# is allowed to produce. Chosen to be unambiguous to parse and readable in
+# a prompt: a bracketed title cannot be confused with prose, and " | also:
+# " does not occur in ordinary sentences.
+TITLE_OPEN, TITLE_CLOSE = "[", "]"
+ALSO_SEPARATOR = " | also: "
+
+
+def render_normalized(items) -> str:
+    """The findings as one line, keeping title and source attached.
+
+    One line because that is the shape the prompt builder consumes -- it
+    renders "- {result.line}" per result and is not ours to change. So the
+    structure rides inside the line in a form that survives being read
+    back out.
+    """
+    if not items:
+        return ""
+
+    def render(item) -> str:
+        head = f"{TITLE_OPEN}{item.title}{TITLE_CLOSE} " if item.title else ""
+        tail = f" ({item.url})" if item.url else ""
+        stamp = f" [{item.timestamp.isoformat()}]" if item.timestamp else ""
+        return f"{head}{item.snippet or ''}{tail}{stamp}".strip()
+
+    primary = render(items[0])
+    extras = [render(item) for item in items[1:] if item.snippet]
+    return primary + (ALSO_SEPARATOR + "; ".join(extras) if extras else "")
+
+
 def summarize(tool_name: str, value) -> str:
     """One line describing what a tool returned.
 
@@ -101,6 +349,11 @@ def summarize(tool_name: str, value) -> str:
         return f"previewed a change to {path}; nothing written (confirm required)"
 
     if tool_name == "web_search":
+        # Normalized first: the heading, the source URL and the related
+        # topics all live in value["raw"] and used to be dropped here.
+        rendered = render_normalized(normalize_tool_value("web_search", value))
+        if rendered:
+            return rendered
         reply = _shorten(value.get("reply") or "")
         return reply or "search returned no summary"
 
