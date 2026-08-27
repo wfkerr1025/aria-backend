@@ -2,6 +2,10 @@
 import importlib
 import traceback
 
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 
 class ModuleLoader:
     """
@@ -39,8 +43,7 @@ class ModuleLoader:
             tb = traceback.format_exc()
             msg = f"Failed to import {module_path}.{attr_name or ''}: {e}"
 
-            print(f"[{self.label} ERROR] {msg}")
-            print(tb)
+            logger.exception(f"[{self.label} ERROR] {msg}")
 
             if self.logger:
                 self.logger.log_error(self.label, msg, tb)

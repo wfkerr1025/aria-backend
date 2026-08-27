@@ -61,6 +61,40 @@ class BasePlugin:
         return {}
 
     # ---------------------------------------------------------
+    # Capability Hooks (Phase 2 — backend.core.plugin_registry)
+    #
+    # Optional, additive, safe-default overrides — a plugin that doesn't
+    # implement any of these (every plugin shipped today: blender, unity,
+    # unreal, wordpress) behaves exactly as before. A plugin that DOES
+    # override one of these gets picked up automatically by
+    # backend.core.plugin_registry's aggregation without any change to
+    # PluginManager itself.
+    # ---------------------------------------------------------
+    def get_tools(self):
+        """
+        Return a list of (ToolSchema, handler) tuples this plugin wants
+        registered into backend.core.tool_registry. See that module for
+        ToolSchema's shape. Default: no tools.
+        """
+        return []
+
+    def get_models(self):
+        """
+        Return a list of model_cfg dicts (same shape as
+        backend.core.model_registry entries) this plugin wants to make
+        available. Default: no models.
+        """
+        return []
+
+    def get_diagnostics(self):
+        """
+        Return a dict of plugin-specific diagnostic info, surfaced via
+        backend.core.plugin_registry's aggregation (and, from there,
+        /v1/diagnostics/plugins). Default: empty.
+        """
+        return {}
+
+    # ---------------------------------------------------------
     # Lifecycle Hooks
     # ---------------------------------------------------------
     def on_load(self):

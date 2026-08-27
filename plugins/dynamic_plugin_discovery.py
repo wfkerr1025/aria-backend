@@ -3,6 +3,10 @@ import importlib
 from pathlib import Path
 from .base_plugin import BasePlugin
 
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 
 class DynamicPluginDiscoveryEngine:
     """
@@ -77,6 +81,6 @@ class DynamicPluginDiscoveryEngine:
                 })
 
             except Exception as e:
-                print(f"[DynamicPluginDiscovery] Failed to load plugin '{plugin_name}': {e}")
+                logger.exception(f"[DynamicPluginDiscovery] Failed to load plugin '{plugin_name}': {e}")
 
         return discovered

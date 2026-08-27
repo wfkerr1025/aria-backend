@@ -272,6 +272,11 @@ _TOOL_PRIORITY = {
 # the evidence above" over an empty string.
 _EMPTY_PLACEHOLDERS = (
     "search returned no summary",
+    # What the provider-backed web_search says when no provider could
+    # serve the query. Listed here for the same reason as the others: it
+    # is the tool reporting a miss, and a miss read as a finding is how a
+    # model ends up told to answer from "No results found."
+    "no results found",
     "no summary",
     "none",
     "n/a",

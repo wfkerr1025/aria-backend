@@ -1,0 +1,63 @@
+## Overview
+This PR introduces the full foundation for ARIA Lite’s model‑management system, including performance estimation, compatibility gating, unified model details UI, and pre‑install safety logic. These systems prepare ARIA Lite for the upcoming Models Page, Installer, Uninstaller, and Model Switcher.
+
+## Features Added
+### 1. Performance Estimator
+- New backend module `performance_estimator.py`
+- Predicts tokens/sec using CPU cores, AVX2, thread count, quantization size, model size, and memory bandwidth
+- Integrated into safety_manager, lighter_model_engine, and Model Performance UI
+
+### 2. Compatibility Gating Enhancements
+- Install gating blocks models that fail minimum requirements
+- Recommended requirements trigger warnings
+- Unified pass/fail indicators for RAM, CPU, VRAM, AVX2
+- Added compatibility state tracking in WebUI
+
+### 3. Unified Model Details Panel
+- New component combining Requirements, Compatibility, Performance, Difficulty, and Notes
+- Uses fetch+inject pattern consistent with existing router
+
+### 4. Model Performance UI Component
+- Displays estimated tokens/sec, recommended tokens/sec, pass/warn/fail indicator, explanation text
+- Syncs with safety popup via safety_decision_result
+
+### 5. Pre‑Install Popup Gating
+- Blocks install when minimum requirements fail
+- Shows failed minimum requirements
+- Shows warning when recommended requirements fail
+- Updated HTML + CSS for gating states
+
+## Backend Changes
+- Added performance_estimator.py
+- Updated safety_manager.py
+- Updated lighter_model_engine.py
+- Updated model-requirements.js
+
+## WebUI Changes
+- Added model_performance component
+- Added model_details component
+- Updated model_requirements component
+- Added gating UI states
+- Added compatibility and performance indicators
+
+## Integration Points
+- Performance estimator feeds into safety manager, lighter model engine, and model details panel
+- Compatibility checker feeds into install gating, model details panel, and requirements UI
+- Unified details panel composes requirements, compatibility, and performance
+
+## Breaking Changes
+None.
+
+## Migration Steps
+None.
+
+## Testing Instructions
+See Testing Checklist below.
+
+## Future Work
+- Full Models Page
+- Sidebar “Models” button
+- Installer/Uninstaller UI
+- Active model switcher
+- Model registry expansion
+- Model discovery and metadata sync

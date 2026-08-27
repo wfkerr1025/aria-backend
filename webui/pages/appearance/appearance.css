@@ -1,0 +1,73 @@
+/* ==========================================================
+   APPEARANCE SETTINGS PAGE
+   Shares .settings-panel/.settings-group with the other Settings
+   subpages (webui/components/settings/settings.css). The rules below
+   are the GLOBAL effects of this page's controls — they're written
+   against :root/html so they apply everywhere, not just while this
+   page happens to be open (this file is linked globally in index.html,
+   like every other page's stylesheet).
+   ========================================================== */
+
+.appearance-toggle-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.appearance-toggle-group label {
+  margin-bottom: 0;
+}
+
+/* -------------------------------------------------------
+   FONT SIZE — overrides the same tokens every component already
+   consumes (webui/themes/variables.css), so this genuinely resizes
+   text app-wide rather than only on this page.
+   ------------------------------------------------------- */
+
+:root[data-font-size="small"] {
+  --font-size-xs: 10px;
+  --font-size-sm: 12px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 19px;
+}
+
+:root[data-font-size="large"] {
+  --font-size-xs: 13px;
+  --font-size-sm: 15px;
+  --font-size-md: 18px;
+  --font-size-lg: 21px;
+  --font-size-xl: 26px;
+}
+
+/* -------------------------------------------------------
+   UI DENSITY — overrides the shared spacing scale.
+   ------------------------------------------------------- */
+
+:root[data-density="compact"] {
+  --space-2xs: 1px;
+  --space-xs: 3px;
+  --space-sm: 4px;
+  --space-md: 7px;
+  --space-lg: 11px;
+  --space-xl: 16px;
+}
+
+:root[data-density="spacious"] {
+  --space-2xs: 3px;
+  --space-xs: 6px;
+  --space-sm: 9px;
+  --space-md: 14px;
+  --space-lg: 22px;
+  --space-xl: 30px;
+}
+
+/* -------------------------------------------------------
+   ANIMATIONS OFF — global kill switch.
+   ------------------------------------------------------- */
+
+:root[data-animations="off"] * {
+  animation-duration: 0.001ms !important;
+  animation-delay: 0ms !important;
+  transition-duration: 0.001ms !important;
+}

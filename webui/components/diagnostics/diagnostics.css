@@ -57,6 +57,16 @@
   margin-top: var(--space-md);
 }
 
+.diagnostics-detail {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  margin: var(--space-xs) 0 var(--space-sm);
+}
+
+.diagnostics-detail-row {
+  padding: 2px 0;
+}
+
 /* -------------------------------------------------------
    CONTENT AREA
    ------------------------------------------------------- */

@@ -8,7 +8,7 @@
    ------------------------------------------------------- */
 
 #sidebar {
-  width: 260px;
+  width: var(--sidebar-width);
   background: var(--sidebar-bg);
   padding: var(--space-lg) var(--space-md);
   box-shadow: var(--shadow-panel);
@@ -102,6 +102,170 @@
 .sidebar-btn.active .sidebar-btn-icon {
   opacity: 1;
   filter: drop-shadow(0 0 4px var(--accent-primary));
+}
+
+/* -------------------------------------------------------
+   DIRECT CHAT NAVIGATION — "Chats" section label + New Chat + chat list,
+   below Core, always visible on every page (no collapsible/expandable
+   section — see webui/index.html and webui/components/chat/chat.js's
+   startNewChat()/switchToSession(), which navigate to the Chat panel
+   themselves if clicked from elsewhere).
+   ------------------------------------------------------- */
+
+.sidebar-new-chat-btn {
+  border-style: dashed;
+  color: var(--sidebar-text-muted);
+}
+
+.sidebar-new-chat-btn:hover {
+  border-style: solid;
+  border-color: var(--accent-primary);
+}
+
+/* -------------------------------------------------------
+   SIDEBAR CHAT LIST (Copilot/ChatGPT-style, under the Chat button)
+   ------------------------------------------------------- */
+
+.sidebar-chat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: var(--space-md);
+  margin-top: var(--space-xs);
+  border-left: 1px solid var(--sidebar-divider);
+  padding-left: var(--space-sm);
+}
+
+/* Wraps one chat's switch-button + "⋮" menu button + dropdown, so the
+   menu can be positioned relative to the row and the "⋮" icon can be
+   hover-revealed without affecting the switch button's own layout. */
+.sidebar-chat-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sidebar-chat-row .sidebar-chat-item {
+  flex: 1;
+  min-width: 0; /* let the title's ellipsis actually kick in inside a flex child */
+}
+
+.sidebar-chat-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 4px var(--space-sm);
+  cursor: pointer;
+  text-align: left;
+
+  color: var(--sidebar-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.sidebar-chat-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--sidebar-text);
+}
+
+.sidebar-chat-item.active {
+  color: var(--accent-primary);
+  font-weight: var(--font-weight-medium);
+}
+
+.sidebar-chat-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.sidebar-chat-item-time {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  opacity: 0.7;
+}
+
+/* -------------------------------------------------------
+   "⋮" HOVER-ACTION MENU (Rename Chat / Delete Chat)
+   Hidden until the row is hovered/focused; the dropdown itself is a
+   small Steam-style panel anchored to the row.
+   ------------------------------------------------------- */
+
+.sidebar-chat-item-menu-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--sidebar-text-muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 1rem;
+  line-height: 1;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--motion-duration-sm) var(--motion-easing);
+}
+
+.sidebar-chat-row:hover .sidebar-chat-item-menu-btn,
+.sidebar-chat-item-menu-btn:focus-visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+.sidebar-chat-item-menu-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--sidebar-text);
+}
+
+.sidebar-chat-item-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 20;
+  min-width: 140px;
+  margin-top: 2px;
+  padding: var(--space-xs);
+  flex-direction: column;
+  gap: 1px;
+
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--sidebar-button-border);
+  background: var(--panel-bg, #1a1a1a);
+  box-shadow: var(--shadow-lg, 0 4px 14px rgba(0, 0, 0, 0.4));
+}
+
+.sidebar-chat-item-menu.open {
+  display: flex;
+}
+
+.sidebar-chat-item-menu-option {
+  background: transparent;
+  border: none;
+  color: var(--sidebar-text);
+  text-align: left;
+  padding: 6px var(--space-sm);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+
+.sidebar-chat-item-menu-option:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.sidebar-chat-item-menu-option-danger {
+  color: #f44336;
+}
+
+.sidebar-chat-item-menu-option-danger:hover {
+  background: rgba(244, 67, 54, 0.12);
 }
 
 /* -------------------------------------------------------

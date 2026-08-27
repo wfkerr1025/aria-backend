@@ -1,0 +1,56 @@
+.compat-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.compat-summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.compat-badge {
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.compat-badge-pass { background: var(--color-success, #1f9d55); color: #fff; }
+.compat-badge-warn { background: var(--color-warning, #d69e2e); color: #fff; }
+.compat-badge-fail { background: var(--color-danger, #c53030); color: #fff; }
+.compat-badge-unknown { background: var(--color-muted, #718096); color: #fff; }
+
+.compat-summary-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.compat-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--color-border, #2d3748);
+  cursor: help;
+}
+
+.compat-row-label { font-weight: 500; }
+.compat-row-value { opacity: 0.85; }
+.compat-row-target { font-size: 0.8rem; opacity: 0.6; }
+
+.compat-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1em;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.compat-indicator-pass { color: var(--color-success, #1f9d55); }
+.compat-indicator-warn { color: var(--color-warning, #d69e2e); }
+.compat-indicator-fail { color: var(--color-danger, #c53030); }

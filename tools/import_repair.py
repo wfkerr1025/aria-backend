@@ -1,7 +1,12 @@
+from logger import get_logger
+
+logger = get_logger(__name__)
+
+
 def scan_and_fix():
     module_map = find_all_modules()
 
-    print("\n=== ARIA Lite Import Fixer ===\n")
+    logger.info("\n=== ARIA Lite Import Fixer ===\n")
 
     for module_name, file_path in module_map.items():
         try:
@@ -22,22 +27,22 @@ def scan_and_fix():
                     continue
 
                 if import_path not in module_map:
-                    print("----------------------------------------")
-                    print(f"[BROKEN IMPORT] in {module_name}")
-                    print(f"  → from {import_path} import ...")
+                    logger.info("----------------------------------------")
+                    logger.warning(f"[BROKEN IMPORT] in {module_name}")
+                    logger.warning(f"  → from {import_path} import ...")
 
                     suggestion = suggest_fix(import_path, module_map)
 
                     if suggestion:
-                        print(f"[SUGGESTED FIX]")
-                        print(f"  → from {suggestion} import ...")
+                        logger.info(f"[SUGGESTED FIX]")
+                        logger.info(f"  → from {suggestion} import ...")
                         choice = input("Apply fix? (y/n): ").strip().lower()
                         if choice == "y":
                             apply_fix(file_path, import_path, suggestion)
-                            print("[FIX APPLIED]")
+                            logger.info("[FIX APPLIED]")
                         else:
-                            print("[SKIPPED]")
+                            logger.info("[SKIPPED]")
                     else:
-                        print("[NO MATCH FOUND]")
+                        logger.warning("[NO MATCH FOUND]")
 
-    print("\n=== Import Fixer Completed ===\n")
+    logger.info("\n=== Import Fixer Completed ===\n")

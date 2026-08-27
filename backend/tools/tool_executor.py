@@ -177,6 +177,39 @@ def _normalize_web_search(value) -> list:
             tool="web_search", source="web_search", snippet=snippet, raw=value,
         )]
 
+    # The provider-backed shape, when present: each item already carries
+    # its own title, url and timestamp, so reading it directly keeps what
+    # reconstructing from the legacy heading/related pair would lose --
+    # a headline's own title and publication time.
+    structured = raw.get("items")
+    if isinstance(structured, list):
+        if not structured:
+            # A provider-backed result that found nothing. Falling through
+            # to raw["summary"] here would read the hard-miss line ("No
+            # results found.") as a finding -- which is precisely the
+            # DuckDuckGo behaviour this backend replaced.
+            return []
+
+        built = []
+        for entry in structured:
+            if not isinstance(entry, dict):
+                continue
+            snippet = _clip(entry.get("snippet"), SNIPPET_CHARS)
+            if not snippet:
+                continue
+            url = _url_or_none(entry.get("url"))
+            built.append(NormalizedToolResult(
+                tool="web_search",
+                source=str(entry.get("provenance") or url or "web_search"),
+                title=_clip(entry.get("title"), TITLE_CHARS),
+                snippet=snippet,
+                url=url,
+                timestamp=_timestamp_or_none(entry.get("timestamp")),
+                rank=len(built) + 1,
+                raw=entry,
+            ))
+        return built
+
     items = []
     abstract = _clip(raw.get("summary"), SNIPPET_CHARS)
     if abstract:

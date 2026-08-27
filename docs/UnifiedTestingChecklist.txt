@@ -1,0 +1,62 @@
+## Startup
+- Launch ARIA Lite
+- Confirm no console errors
+- Confirm backend loads without exceptions
+
+## Requirements & Compatibility
+- Open a model’s details panel
+- Verify minimum requirements display correctly
+- Verify recommended requirements display correctly
+- Verify ✔ / ✘ indicators match actual hardware
+- Verify difficulty rating displays correctly
+- Verify notes display correctly
+
+## Performance Estimator
+- Open model details
+- Confirm estimated tokens/sec displays
+- Confirm recommended tokens/sec displays
+- Confirm pass/warn/fail indicator matches expected thresholds
+- Trigger a safety check → confirm speed appears in popup
+
+## Install Gating
+### Minimum requirements fail
+- Temporarily modify a model’s min requirements to exceed your hardware
+- Open install popup
+- Confirm Install button is disabled
+- Confirm failed minimum requirements are listed
+- Confirm warning banner appears
+
+### Recommended requirements fail
+- Modify recommended requirements to exceed your hardware
+- Confirm Install button is enabled
+- Confirm warning state appears
+- Confirm recommended failures listed
+
+### All requirements pass
+- Restore normal values
+- Confirm Install button enabled
+- Confirm no warnings
+- Confirm “meets recommended” state appears
+
+## Unified Model Details Panel
+- Confirm requirements, compatibility, and performance components load inside the panel
+- Confirm no duplicated markup
+- Confirm fetch+inject pattern works with router
+
+## Safety Manager Integration
+- Trigger a safety check
+- Confirm projected_speed_toksec is included
+- Confirm speed appears in safe/warning messages
+- Confirm compatibility gating still works
+
+## Lighter Model Engine
+- Trigger lighter-model suggestions
+- Confirm models failing minimum requirements score 0
+- Confirm speed influences scoring
+
+## Regression Checks
+- Load settings page
+- Load plugins page
+- Load chat page
+- Confirm no UI regressions
+- Confirm no broken IPC calls

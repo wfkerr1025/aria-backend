@@ -1,0 +1,54 @@
+.model-performance-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.perf-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.perf-stats {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.perf-stat {
+  display: flex;
+  flex-direction: column;
+}
+
+.perf-stat-label {
+  font-size: 0.75rem;
+  opacity: 0.6;
+}
+
+.perf-stat-value {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.perf-explanation {
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+
+.perf-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6em;
+  height: 1.6em;
+  border-radius: 50%;
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: #fff;
+  cursor: help;
+}
+
+.perf-indicator-pass { background: var(--color-success, #1f9d55); }
+.perf-indicator-warn { background: var(--color-warning, #d69e2e); }
+.perf-indicator-fail { background: var(--color-danger, #c53030); }
+.perf-indicator-unknown { background: var(--color-muted, #718096); }

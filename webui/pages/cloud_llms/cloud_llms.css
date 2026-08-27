@@ -1,0 +1,37 @@
+/* ==========================================================
+   CLOUD LLMS PAGE — provider API key rows
+   Shares .settings-panel/.settings-group/.settings-hint/.settings-empty
+   with the other Settings subpages — see
+   webui/components/settings/settings.css.
+   ========================================================== */
+
+.api-key-row {
+  display: grid;
+  grid-template-columns: 120px 1fr auto auto;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.api-key-row label {
+  margin: 0;
+  text-transform: capitalize;
+  color: var(--text-secondary);
+}
+
+.api-key-row label.configured {
+  color: var(--accent-success, #3fb950);
+}
+
+.api-key-row input {
+  padding: var(--space-sm);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm);
+  color: var(--input-text);
+  font-size: var(--font-size-sm);
+}
+
+.api-key-row button {
+  padding: var(--space-xs) var(--space-sm);
+  font-size: var(--font-size-sm);
+}

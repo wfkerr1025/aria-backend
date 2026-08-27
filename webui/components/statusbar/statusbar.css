@@ -1,0 +1,99 @@
+/* ==========================================================
+   ARIA LITE — BOTTOM-LEFT ACTIVE MODEL STATUS
+   Mirrors webui/components/topbar/topbar.css's #system-status-container
+   pattern (same fixed-corner-pill approach), anchored bottom-left
+   instead of bottom-right so the two never overlap — aligned with the
+   System OK indicator on the opposite corner.
+
+   Offset by --sidebar-width so this sits in the main content area, next
+   to the sidebar, rather than floating on top of it — the sidebar spans
+   the full window height, so a plain `left: var(--space-lg)` would land
+   inside its column instead of the content area beside it.
+   ========================================================== */
+
+#active-model-container {
+  position: fixed;
+  left: calc(var(--sidebar-width) + var(--space-lg));
+  bottom: var(--space-lg);
+  z-index: 1500; /* above normal content, below toasts (2000) */
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+/* "Balanced" chip — shown next to Active Model only while
+   backend.core.auto_balancer has an active throttled tier for the
+   current model (see statusbar.js's _refreshBalancerChip()). Clicking
+   it opens the autobalance diagnostics view. */
+.auto-balance-chip {
+  display: none;
+  align-items: center;
+  padding: 4px var(--space-sm);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  border-radius: 999px;
+  border: 1px solid #ffcc33;
+  background: color-mix(in srgb, #ffcc33 20%, transparent);
+  color: #ffcc33;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.auto-balance-chip:hover {
+  background: color-mix(in srgb, #ffcc33 32%, transparent);
+}
+
+#active-model-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+
+  padding: 4px var(--space-sm);
+
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+
+  /* See topbar.css's #system-status for why this is a literal 999px /
+     --border-hairline rather than the nonexistent --radius-pill /
+     --topbar-border tokens. */
+  border-radius: 999px;
+  border: 1px solid var(--border-hairline);
+
+  background: color-mix(in srgb, var(--surface-float, #1a1a1a) 85%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-lg, 0 2px 10px rgba(0,0,0,0.35));
+
+  pointer-events: auto;
+}
+
+/* Small colored dot distinguishing Local vs Cloud at a glance — same
+   fixed-color rationale as topbar.css's mode-light / connection-status
+   dots: this must read the same regardless of the active theme. */
+#active-model-status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+#active-model-status.model-local::before {
+  background: #4caf50; /* green — matches mode-local elsewhere */
+  box-shadow: 0 0 6px #4caf50;
+}
+
+#active-model-status.model-cloud::before {
+  background: #ffcc33; /* yellow — matches mode-cloud elsewhere */
+  box-shadow: 0 0 6px #ffcc33;
+}
+
+#active-model-status.model-unknown::before {
+  background: #888;
+  box-shadow: none;
+}
+
+#active-model-status.model-automatic::before {
+  background: #5b8def; /* neutral blue — matches topbar.css's mode-automatic */
+  box-shadow: 0 0 6px #5b8def;
+}

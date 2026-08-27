@@ -1,0 +1,90 @@
+.local-models-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md, 0.75rem);
+  padding: var(--space-lg, 1rem);
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.local-models-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.local-models-header h1 {
+  margin: 0;
+  font-size: 1.4rem;
+  color: var(--text-primary);
+}
+
+.local-models-install-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  opacity: 0.75;
+}
+
+.local-models-folder-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm, 0.5rem);
+  flex-wrap: wrap;
+}
+
+.local-models-folder-label {
+  font-size: 0.8rem;
+  opacity: 0.6;
+}
+
+.local-models-folder-path {
+  font-family: var(--font-family-mono, monospace);
+  font-size: 0.8rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--panel-bg-alt, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--color-border, #2d3748);
+}
+
+.local-models-disk-usage {
+  font-size: 0.82rem;
+  opacity: 0.7;
+}
+
+/* Card grid + Details column, same structural pattern as
+   pages/models/models.css's .models-page-body/.models-list-column/
+   .models-details-column — the .model-card family itself now lives in
+   components/model_card/model_card.css, shared with the Models page
+   (see that file's header comment: "one unified card design"). */
+
+.local-models-page-body {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: var(--space-xl, 1.25rem);
+  align-items: start;
+}
+
+.local-models-list-column {
+  display: flex;
+  flex-direction: column;
+}
+
+.local-models-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-md, 0.75rem);
+}
+
+/* Sticky AND independently scrollable, identical to models.css's
+   .models-details-column — without this, System Specs/Compatibility
+   Summary/Performance Estimate at the bottom of a long Details panel
+   were only reachable by scrolling the whole page past them. 48px =
+   #topbar's fixed height (components/topbar/topbar.css). */
+.local-models-details-column {
+  position: sticky;
+  top: var(--space-lg);
+  max-height: calc(100vh - 48px - (var(--space-lg) * 2));
+  overflow-y: auto;
+}

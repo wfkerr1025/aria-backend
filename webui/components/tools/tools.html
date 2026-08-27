@@ -1,4 +1,4 @@
-<section class="panel">
+<section class="panel" id="tools-panel">
   <div class="tools-header">
     <div class="tools-title">Tools</div>
   </div>
@@ -6,14 +6,14 @@
   <div class="tools-content">
     <div class="tools-section-title">Available Tools</div>
 
-    <div class="tool-item active">
+    <div class="tool-item active" data-name="Code Assistant" data-status="Online">
       <div>
         <div class="tool-label">Code Assistant</div>
         <div class="tool-value">Online</div>
       </div>
     </div>
 
-    <div class="tool-item">
+    <div class="tool-item" data-name="Log Viewer" data-status="Idle">
       <div>
         <div class="tool-label">Log Viewer</div>
         <div class="tool-value">Idle</div>
@@ -21,8 +21,70 @@
     </div>
 
     <div class="tools-actions">
-      <button class="tools-btn">Refresh</button>
-      <button class="tools-btn">Configure</button>
+      <button class="tools-btn" id="tools-refresh-btn">Refresh</button>
+      <button class="tools-btn" id="tools-configure-btn">Configure</button>
     </div>
   </div>
 </section>
+
+<script>
+  function toolsLog(msg) {
+    try {
+      if (window.aria && typeof window.aria.log === "function") {
+        window.aria.log("ToolsPanel", msg);
+      }
+    } catch (err) {
+      console.error("[ToolsPanel LOG ERROR]", err);
+    }
+  }
+
+  toolsLog("Tools panel inserted into DOM.");
+
+  // Track tool item clicks
+  document.querySelectorAll(".tool-item").forEach(item => {
+    item.addEventListener("click", () => {
+      const name = item.dataset.name;
+      const status = item.dataset.status;
+
+      toolsLog(`Tool item clicked → ${name} (${status})`);
+
+      // Set active state
+      document.querySelectorAll(".tool-item").forEach(t => t.classList.remove("active"));
+      item.classList.add("active");
+
+      // Dispatch to backend
+      window.aria?.send("aria-command", {
+        module: "tools",
+        command: "select",
+        args: { name }
+      });
+
+      toolsLog(`Tool selection dispatched → ${name}`);
+    });
+  });
+
+  // Refresh button
+  document.getElementById("tools-refresh-btn")?.addEventListener("click", () => {
+    toolsLog("Refresh clicked → tools_request");
+
+    window.aria?.send("aria-command", {
+      module: "tools",
+      command: "refresh",
+      args: {}
+    });
+  });
+
+  // Configure button
+  document.getElementById("tools-configure-btn")?.addEventListener("click", () => {
+    const active = document.querySelector(".tool-item.active");
+    const name = active?.dataset?.name || "unknown";
+
+    toolsLog(`Configure clicked → ${name}`);
+
+    window.aria?.send("aria-command", {
+      module: "tools",
+      command: "configure",
+      args: { name }
+    });
+  });
+</script>

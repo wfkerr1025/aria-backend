@@ -1,0 +1,12 @@
+/* ==========================================================
+   MODULES PAGE
+   Shares .settings-panel/.settings-hint with the other Settings
+   subpages (webui/components/settings/settings.css) and the
+   RealModuleRow/AddNewModuleRow styling with
+   webui/components/module_row/module_row.css. Nothing module-specific
+   needs its own layout beyond spacing between the list and the add-form.
+   ========================================================== */
+
+#modules-settings .module-keys-list {
+  margin-bottom: var(--space-md);
+}

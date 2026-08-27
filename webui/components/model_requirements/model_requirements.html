@@ -1,0 +1,48 @@
+<div class="model-requirements-panel" id="model-requirements-panel">
+    <div class="model-req-header">
+        <h2 id="model-requirements-name">Model Requirements</h2>
+        <span
+            class="model-req-difficulty model-req-difficulty-unknown"
+            id="model-requirements-difficulty"
+            title="Difficulty is derived from RAM footprint, CPU load, quantization size, context size, expected tokens/sec, and parameter count."
+        >—</span>
+    </div>
+
+    <div class="model-req-badges">
+        <span class="model-req-badge model-req-badge-unknown" id="model-requirements-min-badge">Checking minimum…</span>
+        <span class="model-req-badge model-req-badge-unknown" id="model-requirements-rec-badge">Checking recommended…</span>
+    </div>
+
+    <div class="model-req-columns">
+        <div class="model-req-column">
+            <h4>Minimum</h4>
+            <div class="model-req-table" id="model-requirements-min-table"></div>
+        </div>
+
+        <div class="model-req-column">
+            <h4>Recommended</h4>
+            <div class="model-req-table" id="model-requirements-rec-table"></div>
+        </div>
+    </div>
+
+    <p class="model-req-notes" id="model-requirements-notes"></p>
+
+    <div class="model-req-compat-mount" id="model-requirements-compat-mount">
+        <!-- components/compatibility-summary/compatibility-summary.html injected here -->
+    </div>
+</div>
+
+<!-- Steam-style pre-install popup -->
+<div class="preinstall-popup hidden" id="preinstall-popup">
+    <div class="preinstall-popup-content">
+        <h3>Install <span id="preinstall-model-name"></span>?</h3>
+
+        <p class="preinstall-hint" id="preinstall-hint"></p>
+        <ul class="preinstall-failed-list" id="preinstall-failed-list"></ul>
+
+        <div class="preinstall-popup-actions">
+            <button id="preinstall-cancel-btn">Cancel</button>
+            <button id="preinstall-install-btn" class="primary">Install</button>
+        </div>
+    </div>
+</div>

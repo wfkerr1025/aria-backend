@@ -224,7 +224,22 @@ def register_builtin_tools() -> None:
             description="Run a web search and return summarized results.",
             parameters={"query": {"type": "string", "required": True, "description": "Search query"}},
             permission=PERMISSION_NETWORK,
-            timeout_seconds=10.0,
+            # web_search is not one request: it is a chain of specialist
+            # providers and, when none of them answers, a general-web
+            # fallback behind them. At 10.0 this budget was the same as
+            # one HTTP request's, so a single unreachable host cancelled
+            # the whole tool -- 2.1 seconds before the fallback returned
+            # ten good results into a turn that had already given up.
+            #
+            # The providers now bound themselves (3s for the best-effort
+            # news tier, 6s otherwise), so this is a ceiling over the
+            # whole chain rather than the thing that ends it. Every
+            # provider hanging until its own deadline sums to 27s; this
+            # sits above that, and is pinned by a test so the two cannot
+            # drift apart. In practice a query costs 3-7 seconds -- the
+            # ceiling only matters when something is already broken,
+            # which is exactly when the fallback tier must still run.
+            timeout_seconds=30.0,
         ),
         _search_handler,
     )

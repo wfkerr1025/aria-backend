@@ -1,68 +1,85 @@
 #!/usr/bin/env python3
 import os
-import logging
+import sys
 import signal
 import threading
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from functools import partial
 from urllib.parse import urlparse
 
+# ======================================================
 # Configuration
+# ======================================================
 HOST = "0.0.0.0"
 PORT = 3000
 
-# Document root is the webui folder (script directory)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(SCRIPT_DIR)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-# Logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
+from logger import get_logger
 
-logging.info("Starting secure_server with document root: %s", SCRIPT_DIR)
+logger = get_logger(__name__)
 
+logger.info("Secure server starting with document root: %s", SCRIPT_DIR)
+
+# ======================================================
+# CSP Handler
+# ======================================================
 class CSPHandler(SimpleHTTPRequestHandler):
-    # Add Content Security Policy header and simple request logging
+
     def end_headers(self):
+        logger.debug("Injecting Content-Security-Policy header.")
         self.send_header("Content-Security-Policy", "script-src 'self'")
         super().end_headers()
 
     def log_message(self, format, *args):
-        # Use logging module instead of printing
-        logging.info("%s - - %s", self.client_address[0], format % args)
+        msg = format % args
+        logger.info("%s - - %s", self.client_address[0], msg)
 
     def do_GET(self):
-        # Health endpoint
         parsed = urlparse(self.path)
+        logger.debug("GET %s", parsed.path)
+
         if parsed.path == "/healthz":
+            logger.debug("Health check endpoint hit.")
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
             self.wfile.write(b"ok")
             return
+
         return super().do_GET()
 
+# ======================================================
+# Server Runner
+# ======================================================
 def run_server():
+    logger.info("Binding HTTP server on http://%s:%s", HOST, PORT)
+
     Handler = partial(CSPHandler, directory=SCRIPT_DIR)
     server = HTTPServer((HOST, PORT), Handler)
 
     def _shutdown(signum, frame):
-        logging.info("Shutdown signal received (%s). Stopping server.", signum)
-        # Shutdown in a separate thread to avoid blocking signal handler
+        logger.info("Shutdown signal received (%s). Stopping server.", signum)
         threading.Thread(target=server.shutdown).start()
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
     try:
-        logging.info("Listening on http://%s:%d", HOST, PORT)
+        logger.info("Listening on http://%s:%s", HOST, PORT)
         server.serve_forever()
-    except Exception as e:
-        logging.exception("Server error: %s", e)
+    except Exception:
+        logger.exception("Server error.")
     finally:
         server.server_close()
-        logging.info("Server stopped")
+        logger.info("Server stopped cleanly.")
 
+# ======================================================
+# Main Entry
+# ======================================================
 if __name__ == "__main__":
+    logger.info("Secure server main entry invoked.")
     run_server()

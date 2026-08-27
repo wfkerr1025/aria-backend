@@ -1,25 +1,46 @@
+/* ==========================================================
+   ARIA LITE — GLOBAL LAYOUT (UNIFIED + FIXED TOPBAR)
+   Professional Steam‑Grade Tokenized Geometry
+   ========================================================== */
+
 /* -------------------------------------------------------
-   GLOBAL LAYOUT (ARIA Lite Geometry)
-   Professional Steam‑Grade Tokenized Layout
+   ROOT DOCUMENT
    ------------------------------------------------------- */
 
-html, body {
+html,
+body {
   margin: 0;
   padding: 0;
   height: 100%;
   background: var(--bg-app);
   color: var(--text-primary);
   font-family: var(--font-family-ui);
-  overflow: hidden;
+
+  /* ⭐ FIX: Topbar must NOT be clipped */
+  overflow-x: hidden;
+  overflow-y: visible; /* ← FIXED */
+
+  /* ⭐ Prevent flex inheritance from app-container */
+  display: block !important;
 }
 
-/* ROOT APP CONTAINER */
+/* -------------------------------------------------------
+   ROOT APP CONTAINER (SIDEBAR + CONTENT)
+   ------------------------------------------------------- */
+
 #app-container {
   display: flex;
-  height: 100vh;
+  flex-direction: row;
+
+  /* ⭐ correct geometry under fixed topbar */
+  height: calc(100vh - 48px);
+  margin-top: 48px;
+
   width: 100vw;
+
   overflow: hidden;
   background: var(--bg-app);
+  box-sizing: border-box;
 }
 
 /* -------------------------------------------------------
@@ -31,12 +52,15 @@ html, body {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+
   overflow-y: auto;
   overflow-x: hidden;
 
   background: var(--sidebar-bg);
   color: var(--sidebar-text);
   border-right: 1px solid var(--sidebar-border);
+
+  box-sizing: border-box;
 }
 
 /* -------------------------------------------------------
@@ -47,27 +71,13 @@ html, body {
   flex: 1;
   display: flex;
   flex-direction: column;
+
   overflow: hidden;
 
   background: var(--bg-app-alt);
   color: var(--text-primary);
-}
 
-/* -------------------------------------------------------
-   TOPBAR
-   ------------------------------------------------------- */
-
-#topbar {
-  height: 48px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-
-  padding: 0 var(--space-md);
-  background: var(--topbar-bg);
-  color: var(--topbar-text);
-  border-bottom: 1px solid var(--topbar-border-bottom);
+  box-sizing: border-box;
 }
 
 /* -------------------------------------------------------
@@ -76,14 +86,16 @@ html, body {
 
 #panel-container {
   flex: 1;
+
   overflow-y: auto;
   overflow-x: hidden;
+
   position: relative;
 
   padding: var(--panel-padding);
   padding-top: var(--space-md);
 
-  /* ⭐ FINAL FIX: Adds space below sticky InputBar */
+  /* Space below sticky chat input bar */
   padding-bottom: 64px;
 
   box-sizing: border-box;
@@ -102,6 +114,7 @@ html, body {
   box-sizing: border-box;
 
   display: block;
+
   overflow-y: auto;
   overflow-x: hidden;
 
@@ -144,4 +157,122 @@ a {
 
 a:hover {
   text-decoration: underline;
+}
+
+/* ======================================================
+   SAFETY WARNING POPUP (NEW)
+   ====================================================== */
+
+.popup {
+  position: fixed;
+  top: 0;
+  left: 0;
+
+  width: 100%;
+  height: 100%;
+
+  background: rgba(0, 0, 0, 0.55);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  z-index: 9999;
+}
+
+.popup.hidden {
+  display: none;
+}
+
+.popup-content {
+  background: var(--panel-bg);
+  color: var(--panel-fg);
+
+  padding: 24px;
+  border-radius: 12px;
+
+  width: 420px;
+
+  box-shadow: 0 0 20px rgba(0, 0, 0, 0.4);
+}
+
+.usage-box {
+  margin-top: 12px;
+  padding: 12px;
+
+  background: var(--panel-bg-alt);
+  border-radius: 8px;
+}
+
+.usage-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+/* -------------------------------------------------------
+   SUGGESTION BOX (Recommended Lighter Models)
+   ------------------------------------------------------- */
+
+#suggestion-box {
+  margin-top: 20px;
+  padding-top: 12px;
+  border-top: 1px solid var(--panel-border);
+}
+
+#suggestion-box h3 {
+  margin: 0 0 10px 0;
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+
+#suggestion-box button {
+  width: 100%;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+
+  background: var(--panel-bg-alt);
+  color: var(--text-primary);
+
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+
+  text-align: left;
+  cursor: pointer;
+
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+#suggestion-box button:hover {
+  background: var(--panel-bg);
+  border-color: var(--accent-primary);
+}
+
+/* -------------------------------------------------------
+   POPUP CHECKBOX ROW
+   ------------------------------------------------------- */
+
+.popup-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  font-size: 0.85rem;
+  color: var(--text-secondary, #a0a0a0);
+  cursor: pointer;
+  user-select: none;
+}
+
+.popup-checkbox-row input[type="checkbox"] {
+  cursor: pointer;
+}
+
+/* -------------------------------------------------------
+   POPUP BUTTONS
+   ------------------------------------------------------- */
+
+.popup-buttons {
+  margin-top: 20px;
+  display: flex;
+  justify-content: space-between;
 }

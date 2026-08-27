@@ -136,6 +136,7 @@
   --panel-padding: var(--space-lg);
 
   /* Sidebar */
+  --sidebar-width: 260px;
   --sidebar-bg: var(--bg-app);
   --sidebar-bg-hover: var(--bg-surface-soft);
   --sidebar-bg-active: var(--bg-surface-softer);

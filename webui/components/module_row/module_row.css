@@ -1,0 +1,91 @@
+/* ==========================================================
+   MODULE ROW COMPONENT
+   Two entirely separate rules sets — RealModuleRow (.module-row*) and
+   AddNewModuleRow (.add-module-row*) share NO class names and NO
+   styling on purpose. See module_row.js's module docstring for why:
+   this is what keeps the "Add New Module" form from ever being
+   mistaken for (or visually collapsing into) a real module row.
+   ========================================================== */
+
+/* -------------------------------------------------------
+   REAL MODULE ROW
+   ------------------------------------------------------- */
+
+.module-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 120px) minmax(90px, 120px) minmax(140px, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.module-row-name {
+  margin: 0;
+  text-transform: capitalize;
+  color: var(--text-secondary);
+}
+
+.module-row-name.configured {
+  color: var(--accent-success, #3fb950);
+}
+
+.module-row-status {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+.module-row-key-input {
+  padding: var(--space-sm);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm);
+  color: var(--input-text);
+  font-size: var(--font-size-sm);
+}
+
+.module-row-save-btn,
+.module-row-remove-btn {
+  padding: var(--space-xs) var(--space-sm);
+  font-size: var(--font-size-sm);
+}
+
+/* -------------------------------------------------------
+   ADD NEW MODULE ROW (form, not a module)
+   ------------------------------------------------------- */
+
+.add-module-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-hairline, var(--input-border));
+}
+
+.add-module-row-header {
+  flex-basis: 100%;
+  margin: 0 0 var(--space-xs) 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.add-module-row-input {
+  flex: 1;
+  min-width: 120px;
+  padding: var(--space-sm);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm);
+  color: var(--input-text);
+  font-size: var(--font-size-sm);
+}
+
+.add-module-row-btn {
+  padding: var(--space-xs) var(--space-sm);
+  font-size: var(--font-size-sm);
+}

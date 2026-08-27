@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>ARIA Loading</title>
+
+  <style>
+    body {
+      background: #0a0a0a;
+      color: #e0e0e0;
+      font-family: Consolas, monospace;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      transition: opacity 1.2s ease-in-out;
+      opacity: 1;
+    }
+
+    body.fade-out {
+      opacity: 0;
+    }
+
+    #particle-glow {
+      position: absolute;
+      width: 260px;
+      height: 260px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(120,0,255,0.35), rgba(0,180,255,0.15), transparent);
+      filter: blur(40px);
+      animation: glowPulse 4s ease-in-out infinite;
+      z-index: -1;
+    }
+
+    @keyframes glowPulse {
+      0% { transform: scale(1); opacity: 0.6; }
+      50% { transform: scale(1.15); opacity: 1; }
+      100% { transform: scale(1); opacity: 0.6; }
+    }
+
+    #logo {
+      width: 180px;
+      opacity: 0.9;
+      margin-bottom: 20px;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 0.7; }
+      50% { opacity: 1; }
+      100% { opacity: 0.7; }
+    }
+
+    #loading-dots {
+      font-size: 18px;
+      margin-bottom: 10px;
+      height: 24px;
+    }
+
+    #boot-sequence {
+      font-size: 14px;
+      margin-bottom: 20px;
+      height: 20px;
+      opacity: 0;
+      animation: bootText 2s forwards;
+    }
+
+    @keyframes bootText {
+      0% { opacity: 0; transform: translateY(10px); }
+      100% { opacity: 1; transform: translateY(0); }
+    }
+
+    #status {
+      width: 70%;
+      max-width: 600px;
+      background: #111;
+      padding: 20px;
+      border-radius: 8px;
+      border: 1px solid #333;
+      font-size: 14px;
+      white-space: pre-wrap;
+      overflow-y: auto;
+      height: 200px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="particle-glow"></div>
+
+  <img id="logo" src="./assets/aria_splash_logo.png">
+
+  <div id="loading-dots">Loading…</div>
+
+  <div id="boot-sequence">Initializing ARIA Core Systems…</div>
+
+  <div id="status">Starting ARIA systems…</div>
+
+  <script>
+    // ------------------------------------------------------------
+    // WebView2 Messaging (Launcher → Splash)
+    // ------------------------------------------------------------
+    window.chrome.webview.addEventListener("message", event => {
+      const msg = event.data;
+
+      // Fade-out trigger from launcher
+      if (msg === "__FADE_OUT__") {
+        document.body.classList.add("fade-out");
+        return;
+      }
+
+      // Append backend probe output
+      const status = document.getElementById("status");
+      status.textContent += "\n" + msg;
+      status.scrollTop = status.scrollHeight;
+    });
+
+    // ------------------------------------------------------------
+    // Loading dots animation
+    // ------------------------------------------------------------
+    const dots = document.getElementById("loading-dots");
+    let dotCount = 0;
+    setInterval(() => {
+      dotCount = (dotCount + 1) % 4;
+      dots.textContent = "Loading" + ".".repeat(dotCount);
+    }, 400);
+
+    // ------------------------------------------------------------
+    // Boot sequence cycling
+    // ------------------------------------------------------------
+    const boot = document.getElementById("boot-sequence");
+    const bootLines = [
+      "Initializing ARIA Core Systems…",
+      "Loading Neural Interface…",
+      "Establishing Secure Channels…",
+      "Booting WebUI Modules…",
+      "Synchronizing AI Runtime…",
+      "Finalizing Startup…"
+    ];
+
+    let bootIndex = 0;
+    setInterval(() => {
+      boot.textContent = bootLines[bootIndex];
+      bootIndex = (bootIndex + 1) % bootLines.length;
+    }, 1500);
+  </script>
+</body>
+</html>

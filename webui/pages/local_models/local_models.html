@@ -1,0 +1,34 @@
+<div class="local-models-page" id="local-models-page">
+    <div class="local-models-header">
+        <h1>Local Models</h1>
+        <button id="local-models-refresh-btn" class="btn btn-secondary">Refresh</button>
+    </div>
+
+    <p class="local-models-install-hint">
+        To install a new model, drag the downloaded model file into this folder.
+    </p>
+
+    <div class="local-models-folder-row">
+        <span class="local-models-folder-label">Models folder:</span>
+        <code class="local-models-folder-path" id="local-models-folder-path">—</code>
+    </div>
+
+    <div class="local-models-disk-usage" id="local-models-disk-usage">
+        Disk usage: —
+    </div>
+
+    <div class="local-models-page-body">
+        <div class="local-models-list-column">
+            <div class="local-models-grid" id="local-models-grid">
+                <p class="models-empty">Loading…</p>
+            </div>
+        </div>
+
+        <div class="local-models-details-column" id="local-models-details-mount">
+            <p class="models-details-placeholder" id="local-models-details-placeholder">
+                Select a model to see its full requirements, compatibility, and performance estimate.
+            </p>
+            <!-- components/model_details/model_details.html injected here -->
+        </div>
+    </div>
+</div>

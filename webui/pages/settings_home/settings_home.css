@@ -1,0 +1,94 @@
+/* ==========================================================
+   SETTINGS HOME — Steam-library-style hub
+   ========================================================== */
+
+.settings-home {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+  padding: var(--space-xl);
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.settings-home-header h1 {
+  margin: 0 0 var(--space-xs) 0;
+  font-size: var(--font-size-xl);
+  color: var(--text-primary);
+}
+
+.settings-home-subtitle {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  opacity: 0.75;
+}
+
+.settings-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-lg);
+}
+
+/* -------------------------------------------------------
+   TILE — large rectangular button, rounded corners, soft
+   gradient background, hover glow.
+   ------------------------------------------------------- */
+
+.settings-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-sm);
+
+  min-height: 160px;
+  padding: var(--space-xl) var(--space-lg);
+
+  border-radius: var(--radius-lg, 12px);
+  border: 1px solid var(--border-hairline, var(--input-border));
+
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--surface-float, #1a1a1a) 92%, var(--accent-primary) 8%),
+    color-mix(in srgb, var(--surface-float, #1a1a1a) 98%, transparent)
+  );
+
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+
+  box-shadow: var(--shadow-panel, 0 2px 10px rgba(0, 0, 0, 0.25));
+  transition:
+    transform var(--motion-duration-sm, 0.15s) var(--motion-easing, ease),
+    box-shadow var(--motion-duration-sm, 0.15s) var(--motion-easing, ease),
+    border-color var(--motion-duration-sm, 0.15s) var(--motion-easing, ease);
+}
+
+.settings-tile:hover,
+.settings-tile:focus-visible {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 1px var(--accent-primary), 0 0 24px color-mix(in srgb, var(--accent-primary) 55%, transparent);
+  transform: translateY(-2px);
+  outline: none;
+}
+
+.settings-tile:active {
+  transform: translateY(0);
+}
+
+.settings-tile-icon {
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.settings-tile-title {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+}
+
+.settings-tile-subtitle {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  opacity: 0.75;
+}

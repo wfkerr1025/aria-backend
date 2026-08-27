@@ -1,0 +1,56 @@
+/* components/routing_log/routing_log.css
+   Collapsible <details> panel — no other collapsible primitive exists
+   anywhere in webui/ (checked before writing this), so a native
+   <details>/<summary> is used directly rather than a hand-rolled
+   toggle, keeping this dependency-free and accessible by default. */
+
+.routing-log-panel {
+  margin: 8px 16px;
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-md, 6px);
+  background: color-mix(in srgb, var(--surface-float, #1a1a1a) 60%, transparent);
+  font-size: var(--font-size-xs);
+}
+
+.routing-log-summary {
+  padding: 6px 12px;
+  cursor: pointer;
+  font-weight: var(--font-weight-bold);
+  color: var(--text-secondary, #aaa);
+  user-select: none;
+}
+
+.routing-log-content {
+  padding: 4px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.routing-log-empty {
+  color: var(--text-muted, #777);
+  font-style: italic;
+}
+
+.routing-log-entry {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-hairline) 60%, transparent);
+}
+
+.routing-log-model {
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary, #eee);
+}
+
+.routing-log-tier {
+  text-transform: capitalize;
+  color: #5b8def;
+}
+
+.routing-log-meta {
+  color: var(--text-muted, #888);
+  margin-left: auto;
+}

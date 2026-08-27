@@ -1,0 +1,58 @@
+/* components/warning_banner/warning_banner.css
+   Persistent, dismissible banner for backend.core.warning_manager's
+   warning_event packets — shown only while the Chat panel is active
+   (see warning_banner.js), positioned at the top of the app content
+   area so it reads as "top of the chat window" per the spec, without
+   needing its own DOM lifecycle tied to chat.html's router remounts. */
+
+#aria-warning-banner-container {
+  position: fixed;
+  top: 0;
+  left: var(--sidebar-width, 220px);
+  right: 0;
+  z-index: 500;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.aria-warning-banner {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  font-size: 0.9rem;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.15);
+}
+
+.aria-warning-banner.level-normal {
+  background: var(--warning-bg, #4a3b12);
+  color: var(--warning-fg, #ffd76a);
+}
+
+.aria-warning-banner.level-critical {
+  background: var(--danger-bg, #4a1212);
+  color: var(--danger-fg, #ff8a8a);
+  font-weight: 600;
+}
+
+.aria-warning-banner-message {
+  flex: 1;
+}
+
+.aria-warning-banner-dismiss {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+  opacity: 0.8;
+  line-height: 1;
+}
+
+.aria-warning-banner-dismiss:hover {
+  opacity: 1;
+}

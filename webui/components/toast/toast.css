@@ -1,0 +1,152 @@
+/* ==========================================================
+   ARIA LITE — TOAST NOTIFICATIONS (PREMIUM)
+   Glassmorphism, accent stripe, mode icons, smooth motion.
+   ========================================================== */
+
+#aria-toast-container {
+  position: fixed;
+  bottom: var(--space-xl);
+  right: var(--space-xl);
+
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+
+  z-index: 2000;
+  pointer-events: none;
+}
+
+/* ----------------------------------------------------------
+   PREMIUM TOAST BASE
+   ---------------------------------------------------------- */
+
+.aria-toast {
+  position: relative;
+
+  min-width: 240px;
+  max-width: 360px;
+
+  padding: var(--space-md) var(--space-xl);
+  border-radius: var(--radius-lg);
+
+  background: color-mix(in srgb, var(--surface-float) 85%, transparent);
+  backdrop-filter: blur(14px);
+
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--shadow-xl);
+
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+
+  opacity: 0;
+  transform: translateY(14px) scale(0.96);
+
+  animation: ariaToastIn 0.32s var(--motion-easing) forwards;
+}
+
+/* ----------------------------------------------------------
+   ACCENT STRIPE
+   ---------------------------------------------------------- */
+
+.aria-toast::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+
+  width: 5px;
+  border-radius: var(--radius-md);
+
+  background: var(--accent-info);
+}
+
+/* Mode-specific accent colors */
+.aria-toast.toast-mode-local::before {
+  background: var(--accent-success);
+}
+
+.aria-toast.toast-mode-cloud::before {
+  background: var(--accent-warning);
+}
+
+.aria-toast.toast-mode-auto::before {
+  background: var(--accent-info);
+}
+
+.aria-toast.toast-mode-automatic::before {
+  background: var(--accent-info);
+}
+
+/* Fixed color, not a theme var — same rationale as topbar.css's
+   connection-status dot: an error must read the same regardless of the
+   active accent theme. */
+.aria-toast.toast-mode-error::before {
+  background: #f44336;
+}
+
+/* ----------------------------------------------------------
+   MODE ICONS
+   ---------------------------------------------------------- */
+
+.aria-toast::after {
+  content: "⚡";
+  opacity: 0.75;
+  font-size: 1.2rem;
+  margin-left: auto;
+}
+
+.aria-toast.toast-mode-local::after {
+  content: "💻";
+}
+
+.aria-toast.toast-mode-cloud::after {
+  content: "☁️";
+}
+
+.aria-toast.toast-mode-auto::after {
+  content: "🤖";
+}
+
+.aria-toast.toast-mode-automatic::after {
+  content: "🤖";
+}
+
+.aria-toast.toast-mode-error::after {
+  content: "⚠️";
+}
+
+/* ----------------------------------------------------------
+   EXIT ANIMATION
+   ---------------------------------------------------------- */
+
+.aria-toast.hide {
+  animation: ariaToastOut 0.32s var(--motion-easing) forwards;
+}
+
+@keyframes ariaToastIn {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes ariaToastOut {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
+}

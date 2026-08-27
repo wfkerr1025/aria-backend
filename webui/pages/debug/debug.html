@@ -1,0 +1,60 @@
+<div class="debug-page" id="debug-page">
+    <div class="debug-page-header">
+        <h1>IPC Debug</h1>
+        <button id="debug-copy-btn" class="btn btn-secondary">Copy All</button>
+        <button id="debug-save-btn" class="btn btn-secondary">Save to File</button>
+        <button id="debug-clear-btn" class="btn btn-secondary">Clear</button>
+    </div>
+
+    <p class="debug-page-hint">
+        Live view of the WebSocket IPC layer — sent/received packets,
+        errors, and connection/heartbeat events. Populated by
+        core/debug_log.js from the moment the app started, not just since
+        this page was opened.
+    </p>
+
+    <div class="debug-page-body">
+        <!-- Batch 2.5 — "Routing Truth Snapshot": reads directly from the
+             last mode_status_result / providers_list_result / heartbeat
+             events already captured by core/debug_log.js, so nothing new
+             needs to be requested from the backend just to populate this.
+             This page isn't linked from the sidebar (see webui/core/router.js
+             vs. any sidebar nav list) — it's the app's existing hidden/
+             developer-mode surface, so this lives here rather than as a
+             new floating overlay. -->
+        <section class="debug-section debug-section-wide">
+            <h2>Routing Truth Snapshot</h2>
+            <div class="debug-truth-grid" id="debug-truth-grid">
+                <p class="debug-empty">No mode_status_result received yet this session.</p>
+            </div>
+        </section>
+
+        <section class="debug-section">
+            <h2>Connection &amp; Heartbeat</h2>
+            <div class="debug-list" id="debug-connection-list">
+                <p class="debug-empty">No connection events yet.</p>
+            </div>
+        </section>
+
+        <section class="debug-section">
+            <h2>Errors</h2>
+            <div class="debug-list" id="debug-error-list">
+                <p class="debug-empty">No errors yet.</p>
+            </div>
+        </section>
+
+        <section class="debug-section debug-section-wide">
+            <h2>Sent Packets</h2>
+            <div class="debug-list" id="debug-sent-list">
+                <p class="debug-empty">Nothing sent yet.</p>
+            </div>
+        </section>
+
+        <section class="debug-section debug-section-wide">
+            <h2>Received Packets</h2>
+            <div class="debug-list" id="debug-received-list">
+                <p class="debug-empty">Nothing received yet.</p>
+            </div>
+        </section>
+    </div>
+</div>

@@ -33,3 +33,26 @@ logs/
 tmp/
 workspace/projects/
 dashboard_test.bin
+
+# ARIA Lite memory databases
+backend/aria_memory.db
+backend/*.db
+backend/*.db-*
+
+# Live API keys. Encrypted at rest with a master key that lives on the
+# same machine, so committing the ciphertext puts the secret in history
+# permanently and reversibly only by rewriting it.
+backend/config/module_keys.enc.json
+
+# Runtime state, not configuration: which local model happens to be
+# loaded right now. Committing it makes every machine fight over it.
+config/local_model_state.json
+
+# The C# launcher's build output and its embedded-browser profile:
+# .vs/, bin/, obj/ and WebView2Data/ (Local Storage, Session Storage,
+# leveldb). 43MB of generated files and browser state.
+AriaLauncher/.vs/
+AriaLauncher/**/bin/
+AriaLauncher/**/obj/
+AriaLauncher/**/WebView2Data/
+AriaLauncher/**/*.csproj.user

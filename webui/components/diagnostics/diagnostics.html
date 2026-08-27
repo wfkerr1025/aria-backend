@@ -1,4 +1,4 @@
-<section class="panel">
+<section class="panel" id="diagnostics-panel">
   <div class="diagnostics-header">
     <div class="diagnostics-title">Diagnostics</div>
   </div>
@@ -6,16 +6,72 @@
   <div class="diagnostics-content">
     <div class="diagnostics-section-title">System Status</div>
 
-    <div class="diagnostics-item active">
+    <div class="diagnostics-item active" id="diag-engine">
       <div class="diagnostics-label">Engine Health</div>
       <div class="diagnostics-value">Nominal</div>
     </div>
 
-    <div class="diagnostics-item">
+    <div class="diagnostics-item" id="diag-latency">
       <div class="diagnostics-label">Latency</div>
       <div class="diagnostics-value">24 ms</div>
     </div>
 
-    <button class="diagnostics-btn">Run Full Diagnostics</button>
+    <div class="diagnostics-section-title">Auto-Balance</div>
+
+    <div class="diagnostics-item" id="diag-autobalance">
+      <div class="diagnostics-label">Active Sessions</div>
+      <div class="diagnostics-value" id="diag-autobalance-value">None</div>
+    </div>
+    <div id="diag-autobalance-detail" class="diagnostics-detail"></div>
+
+    <!-- Routing History (moved here from the chat panel) — recent local
+         model routing decisions (complexity, context length, tool use,
+         selected model, reasoning tier). Content is injected by
+         diagnostics.js from components/routing_log/routing_log.html;
+         see that module for the ring-buffer data source. -->
+    <div class="diagnostics-section-title">Routing History</div>
+    <div id="diagnostics-routing-log-mount"></div>
+
+    <button class="diagnostics-btn" id="diag-run-btn">Run Full Diagnostics</button>
   </div>
 </section>
+
+<script>
+  function diagLog(msg) {
+    try {
+      if (window.aria && typeof window.aria.log === "function") {
+        window.aria.log("DiagnosticsPanel", msg);
+      }
+    } catch (err) {
+      console.error("[DiagnosticsPanel LOG ERROR]", err);
+    }
+  }
+
+  diagLog("Diagnostics panel inserted into DOM.");
+
+  // Panel activation logging
+  diagLog("Diagnostics panel ready.");
+
+  // Item interaction logging
+  document.getElementById("diag-engine")?.addEventListener("click", () => {
+    diagLog("Engine Health item clicked.");
+  });
+
+  document.getElementById("diag-latency")?.addEventListener("click", () => {
+    diagLog("Latency item clicked.");
+  });
+
+  // Run Full Diagnostics button
+  document.getElementById("diag-run-btn")?.addEventListener("click", () => {
+    diagLog("Run Full Diagnostics button clicked.");
+
+    // Dispatch to backend via unified bridge
+    window.aria?.send("aria-command", {
+      module: "diagnostics",
+      command: "run_full",
+      args: {}
+    });
+
+    diagLog("Diagnostics command sent to backend.");
+  });
+</script>

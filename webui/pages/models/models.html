@@ -1,0 +1,69 @@
+<div class="models-page" id="models-page">
+    <div class="models-page-header">
+        <h1>Models</h1>
+        <button id="models-refresh-btn" class="btn btn-secondary">Refresh</button>
+    </div>
+
+    <!-- Routing status — mode/active model/override, pulled from
+         backend.core.mode_manager + model_registry via mode_status_request.
+         Updated live by models.js whenever it changes (e.g. after a
+         "switch to X" chat message). -->
+    <div class="models-mode-bar" id="models-mode-bar">
+        <span class="models-mode-chip" id="models-mode-chip">Mode: —</span>
+        <span class="models-mode-chip" id="models-active-model-chip">Active: —</span>
+        <span class="models-mode-chip models-mode-chip-override" id="models-override-chip" style="display: none;">Pinned</span>
+    </div>
+
+    <!-- Dual-context UI's Models-page Diagnostics block (spec 3C) —
+         Active Chat Model / System Fallback Model / Last Local
+         Escalation / Last Cloud Escalation / Highest Available Local
+         Model. Populated by models.js from diagnostics_models_request. -->
+    <section class="models-section models-diagnostics-section">
+        <h2>Diagnostics</h2>
+        <div class="models-diagnostics-grid" id="models-diagnostics-grid">
+            <p class="models-empty">Loading…</p>
+        </div>
+    </section>
+
+    <div class="models-page-body">
+        <div class="models-list-column">
+            <section class="models-section">
+                <h2>Installed</h2>
+                <div class="models-grid" id="models-installed-grid">
+                    <p class="models-empty">Loading…</p>
+                </div>
+            </section>
+
+            <section class="models-section">
+                <h2>Available</h2>
+                <div class="models-grid" id="models-available-grid">
+                    <p class="models-empty">Loading…</p>
+                </div>
+            </section>
+
+            <section class="models-section">
+                <h2>Large Models (Download)</h2>
+                <p class="models-section-hint">
+                    Not bundled with ARIA Lite — see backend.core.model_manager for why. Entries your
+                    hardware can't support yet are shown disabled with the reason.
+                </p>
+                <div class="models-grid" id="models-catalog-grid">
+                    <p class="models-empty">Loading…</p>
+                </div>
+            </section>
+
+            <section class="models-section">
+                <h2>Cloud Providers</h2>
+                <p class="models-section-hint">Keys are stored in this OS's secure credential store, never in plaintext on disk.</p>
+                <div class="provider-cards" id="provider-cards-container"></div>
+            </section>
+        </div>
+
+        <div class="models-details-column" id="models-details-mount">
+            <p class="models-details-placeholder" id="models-details-placeholder">
+                Select a model to see its full requirements, compatibility, and performance estimate.
+            </p>
+            <!-- components/model_details/model_details.html injected here -->
+        </div>
+    </div>
+</div>

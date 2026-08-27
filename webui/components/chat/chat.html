@@ -1,17 +1,26 @@
 <section id="chat-view">
   <div id="chat-panel-inner">
 
-    <!-- STEAM-STYLE CHAT TOOLBAR -->
+    <!-- STEAM-STYLE CHAT TOOLBAR
+         "New Chat" used to live here too, duplicating the sidebar's own
+         New Chat button (webui/index.html) — removed; the sidebar is
+         now the only New Chat entry point. -->
     <div id="chat-toolbar">
       <div class="chat-toolbar-actions">
-        <button class="chat-toolbar-btn">Chat Menu</button>
-        <button class="chat-toolbar-btn">New Chat</button>
+        <div class="chat-menu-wrap">
+          <button class="chat-toolbar-btn" id="chat-menu-btn">Chat Menu</button>
+          <div id="chat-menu-dropdown" class="chat-menu-dropdown"></div>
+        </div>
       </div>
     </div>
 
-    <div id="chat-history"></div>
-    <div id="typing-indicator"></div>
+    <!-- Chat history -->
+    <div id="chat-history" class="chat-history"></div>
 
+    <!-- Typing indicator -->
+    <div id="typing-indicator" class="typing-indicator"></div>
+
+    <!-- Input area -->
     <div id="chat-input-bar">
       <textarea id="chat-input" placeholder="Type a message..." rows="1"></textarea>
       <button id="chat-send-btn">Send</button>
@@ -19,3 +28,40 @@
 
   </div>
 </section>
+
+<script>
+  // Unified logging hook
+  function chatPanelLog(msg) {
+    try {
+      if (window.aria && typeof window.aria.log === "function") {
+        window.aria.log("ChatPanelHTML", msg);
+      }
+    } catch (err) {
+      console.error("[ChatPanelHTML LOG ERROR]", err);
+    }
+  }
+
+  chatPanelLog("Chat panel HTML inserted into DOM.");
+
+  // Toolbar button logging
+  document.getElementById("chat-menu-btn")?.addEventListener("click", () => {
+    chatPanelLog("Chat Menu button clicked.");
+  });
+
+  // NOTE: this whole inline <script> block is dead code — router.js loads
+  // this file via `container.innerHTML = html`, and <script> tags
+  // inserted through innerHTML never execute (DOM spec behavior, not a
+  // CSP restriction). The real wiring (and everything else this block
+  // appears to do) lives in webui/components/chat/chat.js's bindUI(),
+  // which runs as a proper imported module and actually fires.
+
+  // Input + send logging
+  document.getElementById("chat-send-btn")?.addEventListener("click", () => {
+    const text = document.getElementById("chat-input")?.value || "";
+    chatPanelLog("Send button clicked. Message length: " + text.length);
+  });
+
+  document.getElementById("chat-input")?.addEventListener("input", () => {
+    chatPanelLog("User typing…");
+  });
+</script>

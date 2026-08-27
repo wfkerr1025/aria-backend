@@ -1,6 +1,16 @@
 /* ==========================================================
-   ARIA LITE — SETTINGS PANEL (REFINED)
+   ARIA LITE — SHARED SETTINGS-PANEL PRIMITIVES
    Uses semantic tokens only. No hard-coded colors.
+
+   The old single-page Settings panel (webui/components/settings/
+   settings.html/.js) was replaced by a Steam-style hub with dedicated
+   subpages (webui/pages/settings_home/, appearance/, cloud_llms/,
+   modules/, local_models/) — but the generic "settings panel" look
+   (.settings-panel/.settings-group/.settings-btn/.settings-hint/
+   .settings-empty) is shared by several of those subpages, so this
+   file stays as their common base instead of being duplicated into
+   each one. Page-specific rules (e.g. cloud_llms.css's .api-key-row)
+   live in that page's own stylesheet.
    ========================================================== */
 
 /* -------------------------------------------------------
@@ -95,4 +105,22 @@
 
 .settings-btn:active {
   background: var(--button-bg-active);
+}
+
+/* -------------------------------------------------------
+   SETTINGS HINT TEXT / EMPTY STATE
+   ------------------------------------------------------- */
+
+.settings-hint {
+  margin: 0 0 var(--space-md) 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  opacity: 0.8;
+  line-height: 1.4;
+}
+
+.settings-empty {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  opacity: 0.6;
 }

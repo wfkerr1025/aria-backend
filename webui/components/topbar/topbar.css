@@ -1,6 +1,6 @@
 /* ==========================================================
-   ARIA LITE — TOPBAR (PREMIUM ENHANCED)
-   Uses semantic tokens only. No hard-coded colors.
+   ARIA LITE — TOPBAR (PREMIUM ENHANCED, UNIFIED)
+   Fully isolated from app layout. No clipping. No flex bleed.
    ========================================================== */
 
 /* -------------------------------------------------------
@@ -8,10 +8,16 @@
    ------------------------------------------------------- */
 
 #topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+
   width: 100%;
   height: 48px;
 
-  /* Premium gradient */
+  flex: 0 0 auto;
+  overflow: visible;
+
   background: linear-gradient(
     to bottom,
     rgba(255,255,255,0.05),
@@ -25,42 +31,27 @@
     var(--shadow-header);
 
   padding: 0 var(--space-lg);
+
   display: flex;
   align-items: center;
   justify-content: space-between;
 
-  position: fixed;
-  top: 0;
-  left: 0;
-  z-index: 1000;
+  z-index: 9999;
 
   color: var(--topbar-text);
   font-family: var(--font-family-ui);
-}
 
-#app-container {
-  margin-top: 48px;
-}
-
-/* -------------------------------------------------------
-   TOPBAR ACTIONS
-   ------------------------------------------------------- */
-
-.topbar-actions {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: var(--space-md);
+  box-sizing: border-box;
 }
 
 /* -------------------------------------------------------
-   TOPBAR LEFT SECTION
+   TOPBAR LEFT SECTION (ARIA Lite + Settings + Help)
    ------------------------------------------------------- */
 
 .topbar-left {
   display: flex;
   align-items: center;
-  gap: var(--space-lg);
+  gap: var(--space-xl);
 }
 
 .topbar-title {
@@ -71,25 +62,177 @@
   letter-spacing: 0.3px;
 }
 
-.topbar-subtitle {
-  font-size: var(--font-size-sm);
-  color: var(--topbar-text-muted);
-  margin-left: var(--space-sm);
-  opacity: 0.85;
+/* -------------------------------------------------------
+   TOPBAR ACTIONS (Settings + Help)
+   ------------------------------------------------------- */
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  overflow: visible;
 }
 
 /* -------------------------------------------------------
-   TOPBAR RIGHT SECTION
+   TOPBAR RIGHT SECTION (Indicator Light + mode text)
    ------------------------------------------------------- */
 
 .topbar-right {
   display: flex;
   align-items: center;
   gap: var(--space-md);
+  margin-left: auto;
+  overflow: visible;
 }
 
 /* -------------------------------------------------------
-   TOPBAR BUTTONS (FLAT + TEAL HOVER)
+   MODE INDICATOR LIGHT (FIXED COLORS — NOT THEME DEPENDENT)
+   ------------------------------------------------------- */
+
+#aria-mode-light {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #5b8def;        /* Automatic default — neutral blue */
+  box-shadow: 0 0 6px #5b8def;
+}
+
+#aria-mode-light.mode-automatic {
+  background: #5b8def;        /* neutral blue */
+  box-shadow: 0 0 6px #5b8def;
+}
+
+#aria-mode-light.mode-local {
+  background: #4caf50;        /* green */
+  box-shadow: 0 0 6px #4caf50;
+}
+
+#aria-mode-light.mode-cloud {
+  background: #ffcc33;        /* yellow */
+  box-shadow: 0 0 6px #ffcc33;
+}
+
+/* -------------------------------------------------------
+   CONNECTION STATUS (#system-status — WebSocket IPC QoL)
+   Fixed colors, same rationale as the mode-light dot above: a
+   connection's health should read the same regardless of the active
+   theme/accent. Driven by Topbar.setStatus()/handlePacket()'s
+   "connection_status" branch — unchanged by the move below, since
+   Topbar.init() finds this element with document.getElementById(
+   "system-status") regardless of where in the DOM it lives.
+
+   Pinned to the window's bottom-right corner (webui/index.html, outside
+   #panel-container) instead of the topbar, so it survives router
+   navigation unchanged and stays clear of the chat panel's own sticky
+   #chat-input-bar (which is inset from the window edge by
+   #chat-view's padding — see chat.css — so this sits in that margin,
+   never on top of the input or the Send button).
+   ------------------------------------------------------- */
+
+#system-status-container {
+  position: fixed;
+  right: var(--space-lg);
+  bottom: var(--space-lg);
+  z-index: 1500; /* above normal content, below toasts (2000) */
+  pointer-events: none;
+}
+
+#system-status {
+  display: inline-flex;
+  align-items: center;
+  /* Explicit 8px, not var(--space-xxs) — that variable was never
+     actually defined anywhere in themes/variables.css, so this rule
+     silently fell back to `gap: normal` (0 for flex) and the dot sat
+     flush against the text. See also the identical bug this caused in
+     the padding below. */
+  gap: 8px;
+
+  padding: 4px var(--space-sm);
+
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+
+  /* 999px, not var(--radius-pill) — that token doesn't exist anywhere in
+     themes/; matches the literal-pill convention already used elsewhere
+     (e.g. pages/models/models.css's .models-mode-chip). Border likewise
+     uses --border-hairline directly, not the nonexistent --topbar-border
+     (--topbar-border-bottom exists but aliases to this same value and is
+     semantically about the topbar specifically, which this widget no
+     longer lives in). Both were silently rendering as square corners /
+     no border at all before this fix. */
+  border-radius: 999px;
+  border: 1px solid var(--border-hairline);
+
+  background: color-mix(in srgb, var(--surface-float, #1a1a1a) 85%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-lg, 0 2px 10px rgba(0,0,0,0.35));
+
+  pointer-events: auto;
+}
+
+#system-status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+#system-status.status-ok::before {
+  background: #4caf50;        /* green */
+  box-shadow: 0 0 6px #4caf50;
+}
+
+#system-status.status-warn::before {
+  background: #ffcc33;        /* yellow */
+  box-shadow: 0 0 6px #ffcc33;
+}
+
+#system-status.status-error::before {
+  background: #f44336;        /* red */
+  box-shadow: 0 0 6px #f44336;
+}
+
+/* -------------------------------------------------------
+   ARIA MODE INDICATOR (Local / Cloud / Automatic text)
+   ------------------------------------------------------- */
+
+#aria-mode-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  padding: var(--space-xxs) var(--space-sm);
+
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--topbar-border);
+
+  background: linear-gradient(
+    135deg,
+    rgba(255,255,255,0.06),
+    rgba(255,255,255,0.02)
+  );
+
+  color: var(--topbar-text);
+  backdrop-filter: blur(6px);
+
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,0.04),
+    var(--shadow-header-soft);
+
+  transition:
+    color var(--motion-duration-sm) var(--motion-easing),
+    border-color var(--motion-duration-sm) var(--motion-easing),
+    background var(--motion-duration-sm) var(--motion-easing);
+}
+
+/* -------------------------------------------------------
+   TOPBAR BUTTONS (Settings + Help)
    ------------------------------------------------------- */
 
 .topbar-btn {
@@ -111,6 +254,11 @@
   border-radius: var(--radius-sm);
 
   transition: color var(--motion-duration-sm) var(--motion-easing);
+
+  width: auto !important;
+  min-width: max-content;
+  white-space: nowrap;
+  overflow: visible !important;
 }
 
 .topbar-btn:hover {
@@ -133,7 +281,7 @@
 }
 
 .topbar-btn:hover .topbar-icon {
-  opacity: 1;
+ opacity: 1;
 }
 
 /* -------------------------------------------------------

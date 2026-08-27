@@ -1,0 +1,177 @@
+.model-requirements-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.model-req-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.model-req-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.model-req-difficulty {
+  padding: 0.2rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #fff;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.model-req-difficulty-light { background: var(--color-success, #1f9d55); }
+.model-req-difficulty-medium { background: var(--color-warning, #d69e2e); }
+.model-req-difficulty-heavy { background: #dd6b20; }
+.model-req-difficulty-extreme { background: var(--color-danger, #c53030); }
+.model-req-difficulty-unknown { background: var(--color-muted, #718096); }
+
+.model-req-badges {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.model-req-badge {
+  padding: 0.3rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.model-req-badge-pass { background: var(--color-success, #1f9d55); }
+.model-req-badge-fail { background: var(--color-danger, #c53030); }
+.model-req-badge-unknown { background: var(--color-muted, #718096); }
+
+.model-req-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.25rem;
+}
+
+.model-req-column h4 {
+  margin: 0 0 0.4rem 0;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+.model-req-table {
+  display: flex;
+  flex-direction: column;
+}
+
+.model-req-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--color-border, #2d3748);
+  font-size: 0.85rem;
+}
+
+.model-req-label { opacity: 0.7; }
+.model-req-value { font-weight: 500; }
+
+.model-req-notes {
+  font-size: 0.8rem;
+  opacity: 0.7;
+  line-height: 1.4;
+}
+
+.model-req-compat-mount {
+  border-top: 1px solid var(--color-border, #2d3748);
+  padding-top: 0.75rem;
+}
+
+/* Pre-install popup */
+.preinstall-popup {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+}
+
+.preinstall-popup.hidden {
+  display: none;
+}
+
+.preinstall-popup-content {
+  background: var(--color-surface, #1a202c);
+  color: var(--color-text, #f7fafc);
+  border-radius: 8px;
+  padding: 1.25rem;
+  width: min(520px, 90vw);
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  border: 1px solid transparent;
+}
+
+.preinstall-popup-content h3 {
+  margin: 0;
+}
+
+.preinstall-popup-content.preinstall-blocked {
+  border-color: var(--color-danger, #c53030);
+}
+
+.preinstall-popup-content.preinstall-warning {
+  border-color: var(--color-warning, #d69e2e);
+}
+
+.preinstall-popup-content.preinstall-ok {
+  border-color: var(--color-success, #1f9d55);
+}
+
+.preinstall-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  background: var(--color-surface-alt, #2d3748);
+}
+
+.preinstall-blocked .preinstall-hint { color: var(--color-danger, #c53030); }
+.preinstall-warning .preinstall-hint { color: var(--color-warning, #d69e2e); }
+.preinstall-ok .preinstall-hint { color: var(--color-success, #1f9d55); }
+
+.preinstall-failed-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  font-size: 0.8rem;
+  color: var(--color-danger, #c53030);
+}
+
+.preinstall-failed-list:empty {
+  display: none;
+}
+
+.preinstall-popup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.preinstall-popup-actions button.primary {
+  background: var(--color-accent, #4a5568);
+  color: #fff;
+}
+
+.preinstall-popup-actions button.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--color-muted, #718096);
+}

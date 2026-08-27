@@ -1,4 +1,4 @@
-<section class="panel">
+<section class="panel" id="plugins-panel">
   <div class="plugins-header">
     <div class="plugins-title">Plugins</div>
   </div>
@@ -6,25 +6,87 @@
   <div class="plugins-content">
     <div class="plugins-section-title">Installed Plugins</div>
 
-    <div class="plugin-item active">
+    <div class="plugin-item active" data-name="Self‑Improvement Engine" data-version="1.2.0">
       <div>
         <div class="plugin-name">Self‑Improvement Engine</div>
         <div class="plugin-version">v1.2.0</div>
       </div>
       <div class="plugin-actions">
-        <button class="plugin-btn">Disable</button>
-        <button class="plugin-btn">Configure</button>
+        <button class="plugin-btn" id="plugin-disable-btn">Disable</button>
+        <button class="plugin-btn" id="plugin-configure-btn">Configure</button>
       </div>
     </div>
 
-    <div class="plugin-item">
+    <div class="plugin-item" data-name="Diagnostics Enhancer" data-version="0.9.3">
       <div>
         <div class="plugin-name">Diagnostics Enhancer</div>
         <div class="plugin-version">v0.9.3</div>
       </div>
       <div class="plugin-actions">
-        <button class="plugin-btn">Enable</button>
+        <button class="plugin-btn" id="plugin-enable-btn">Enable</button>
       </div>
     </div>
   </div>
 </section>
+
+<script>
+  function pluginLog(msg) {
+    try {
+      if (window.aria && typeof window.aria.log === "function") {
+        window.aria.log("PluginsPanel", msg);
+      }
+    } catch (err) {
+      console.error("[PluginsPanel LOG ERROR]", err);
+    }
+  }
+
+  pluginLog("Plugins panel inserted into DOM.");
+
+  // Track plugin item clicks
+  document.querySelectorAll(".plugin-item").forEach(item => {
+    item.addEventListener("click", () => {
+      const name = item.dataset.name;
+      const version = item.dataset.version;
+      pluginLog(`Plugin item clicked → ${name} (v${version})`);
+    });
+  });
+
+  // Disable button
+  document.getElementById("plugin-disable-btn")?.addEventListener("click", () => {
+    const item = document.querySelector(".plugin-item.active");
+    const name = item?.dataset?.name || "unknown";
+    pluginLog(`Disable clicked → ${name}`);
+
+    window.aria?.send("aria-command", {
+      module: "plugins",
+      command: "disable",
+      args: { name }
+    });
+  });
+
+  // Configure button
+  document.getElementById("plugin-configure-btn")?.addEventListener("click", () => {
+    const item = document.querySelector(".plugin-item.active");
+    const name = item?.dataset?.name || "unknown";
+    pluginLog(`Configure clicked → ${name}`);
+
+    window.aria?.send("aria-command", {
+      module: "plugins",
+      command: "configure",
+      args: { name }
+    });
+  });
+
+  // Enable button
+  document.getElementById("plugin-enable-btn")?.addEventListener("click", () => {
+    const item = document.querySelector(".plugin-item:not(.active)");
+    const name = item?.dataset?.name || "unknown";
+    pluginLog(`Enable clicked → ${name}`);
+
+    window.aria?.send("aria-command", {
+      module: "plugins",
+      command: "enable",
+      args: { name }
+    });
+  });
+</script>

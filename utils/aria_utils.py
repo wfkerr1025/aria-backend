@@ -6,6 +6,10 @@ import math
 from pathlib import Path
 from openai import OpenAI
 
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 
 # ============================================================
 # ADAPTIVE SCANNING (Unified)
@@ -76,7 +80,7 @@ def save_embedding_cache(cache):
     try:
         path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
     except Exception as e:
-        print(f"[ERROR] Failed to save embedding cache: {e}")
+        logger.exception(f"[ERROR] Failed to save embedding cache: {e}")
 
 
 # ============================================================
@@ -207,4 +211,4 @@ def save_project_index_raw(index_data):
     try:
         path.write_text(json.dumps(index_data, indent=2), encoding="utf-8")
     except Exception as e:
-        print(f"[ERROR] Failed to save project index: {e}")
+        logger.exception(f"[ERROR] Failed to save project index: {e}")

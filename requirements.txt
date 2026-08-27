@@ -4,3 +4,9 @@ websockets
 pydantic
 openai
 requests
+pip-system-certs
+keyring
+cryptography
+psutil
+py-cpuinfo
+nvidia-ml-py
