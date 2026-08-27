@@ -111,6 +111,16 @@ class ToolResult:
     summary: str
     payload: dict | None = None
 
+    # The findings, structured, as tool_executor.normalize_tool_value
+    # produced them. `summary` is the one-line rendering of these and is
+    # what the prompt shows a model; this is the same information with
+    # nothing flattened out, for the consumers that can use the fields --
+    # the evidence summary and the bundle.
+    #
+    # Default empty rather than None so a caller can iterate without
+    # checking, and so every existing constructor keeps working unchanged.
+    normalized: tuple = ()
+
     @property
     def ran(self) -> bool:
         """Whether this actually reached the tool."""

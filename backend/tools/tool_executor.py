@@ -429,13 +429,24 @@ class ToolExecutor:
             )
 
             if outcome.ok:
+                # Normalized once, here, and carried on the result --
+                # summarize() renders the same items to the line the
+                # prompt shows, so the two cannot describe different
+                # findings.
+                normalized = normalize_tool_value(invocation.tool_name, outcome.value)
                 results.append(
                     ToolResult(
                         tool_name=invocation.tool_name,
                         step_id=invocation.step_id,
                         status=STATUS_OK,
+                        # summarize() stays the renderer: it already runs
+                        # normalization for web_search (Arc 237), and for
+                        # the other tools it produces a better line than a
+                        # generic render would -- the weather line's "(via
+                        # open-meteo)" is provenance the generic form drops.
                         summary=summarize(invocation.tool_name, outcome.value),
                         payload=outcome.value if isinstance(outcome.value, dict) else None,
+                        normalized=tuple(normalized),
                     )
                 )
                 continue

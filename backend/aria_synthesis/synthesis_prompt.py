@@ -35,6 +35,13 @@ cannot see which evidence that is.
 
 from __future__ import annotations
 
+import re
+
+try:
+    from backend.tools.tool_registry import STATUS_OK
+except ImportError:  # running from inside the backend directory
+    from tools.tool_registry import STATUS_OK
+
 try:
     from backend.aria_synthesis.evidence_bundle import EvidenceBundle
 except ImportError:  # running from inside the backend directory
@@ -96,6 +103,75 @@ def _successful_tool_count(tool_results) -> int:
     )
 
 
+# How much of a lookup's own words the summary may carry.
+#
+# Extractive, and deliberately so: this line sits directly above evidence
+# the model is told to use and nothing else. A generated sentence here
+# would be an unsourced claim in the one place the prompt insists every
+# claim be sourced -- and a model reading its own summary as evidence is
+# how a paraphrase becomes a fact.
+SUMMARY_MAX_SENTENCES = 5
+SUMMARY_MAX_CHARS = 600
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def _structured_findings(tool_results) -> list:
+    """Every structured finding the lookups produced, in order.
+
+    Reads ToolResult.normalized, which the tool layer fills in. Falls back
+    to nothing rather than to the rendered line: a summary assembled from
+    a line that was itself assembled from these fields would be a copy of
+    a copy, and would silently lose whichever fields the line dropped.
+    """
+    findings = []
+    for result in tool_results or []:
+        if getattr(result, "status", None) != STATUS_OK:
+            continue
+        findings.extend(getattr(result, "normalized", ()) or ())
+    return findings
+
+
+def _extractive_summary(findings) -> str:
+    """The findings' own sentences, bounded, in the order they arrived.
+
+    Ordering is the tool's (rank), not a re-ranking, so the same evidence
+    always produces the same summary. Nothing is rewritten: sentences are
+    taken whole, and the only edit is where the budget runs out.
+    """
+    sentences: list[str] = []
+    seen: set[str] = set()
+
+    for finding in findings:
+        text = " ".join(str(getattr(finding, "snippet", "") or "").split())
+        if not text:
+            continue
+        for sentence in _SENTENCE_SPLIT.split(text):
+            sentence = sentence.strip()
+            key = sentence.lower()
+            if not sentence or key in seen:
+                continue
+            seen.add(key)
+            sentences.append(sentence)
+            if len(sentences) >= SUMMARY_MAX_SENTENCES:
+                break
+        if len(sentences) >= SUMMARY_MAX_SENTENCES:
+            break
+
+    if not sentences:
+        return ""
+
+    summary = " ".join(sentences)
+    if len(summary) <= SUMMARY_MAX_CHARS:
+        return summary
+
+    cut = summary[:SUMMARY_MAX_CHARS]
+    boundary = cut.rfind(" ")
+    if boundary > SUMMARY_MAX_CHARS // 2:
+        cut = cut[:boundary]
+    return cut.rstrip(" ,;:") + "\u2026"
+
+
 def _evidence_summary(bundle: EvidenceBundle, tool_results=None) -> str:
     """One line telling the model what it is about to read.
 
@@ -124,11 +200,13 @@ def _evidence_summary(bundle: EvidenceBundle, tool_results=None) -> str:
             # No notes or files, but the lookup below is real evidence and
             # has to be named as such -- the model is about to be told to
             # use only the evidence it was given.
-            return (
+            summary = (
                 f"{lookups} tool result{'s' if lookups != 1 else ''} below, "
                 "listed under Tool Results. Nothing was retrieved from notes "
                 "or files, so that lookup is the evidence for this query."
             )
+            found = _extractive_summary(_structured_findings(tool_results))
+            return f"{summary} They report: {found}" if found else summary
         return "No evidence was retrieved for this query."
 
     parts = []
@@ -145,6 +223,9 @@ def _evidence_summary(bundle: EvidenceBundle, tool_results=None) -> str:
             f" {lookups} tool result{'s' if lookups != 1 else ''} below "
             "count as evidence too."
         )
+        found = _extractive_summary(_structured_findings(tool_results))
+        if found:
+            summary += f" They report: {found}"
 
     dropped = bundle.meta.get("dropped") or {}
     held_back = int(dropped.get("notes") or 0) + int(dropped.get("files") or 0)
