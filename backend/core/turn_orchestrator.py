@@ -45,6 +45,7 @@ from backend.core import (
     turn_status,
     weather_nl,
 )
+from backend.core import search_activation
 from backend.core.conversation_manager import (
     INTENT_MODEL_SWITCH,
     INTENT_SEARCH_QUERY,
@@ -458,6 +459,18 @@ def orchestrate_turn(
         return _weather_reply("", request, telemetry)
 
     # --- 2. Intent.
+    #
+    # The classifier runs first, because detect_intent is one of the two
+    # consumers of its verdict and the other is the planner. Priming here
+    # is what makes them agree: one inference, read twice.
+    #
+    # It is skipped entirely for anything the vocabulary or the
+    # local-scope veto already settled, so an explicit "search the web
+    # for X" and a question about the user's own notes both cost nothing.
+    # What it costs is one short completion on a turn where neither
+    # applied -- which is every ordinary chat message.
+    search_activation.prime(text, generator)
+
     is_followup = request.multi_turn and len(request.messages) > 1
     intent = detect_intent(text, is_multi_turn_followup=is_followup)
     telemetry.append(_event("intent_detected", intent=intent))

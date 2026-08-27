@@ -640,7 +640,15 @@ def _match_tool_keywords(text: str, tool_name: str) -> bool:
     if tool_name == "web_search":
         # Delegated so the veto and the phrase list cannot be applied here
         # in one order and in the planner in another.
-        return search_intent.mentions_web_search(text)
+        #
+        # search_activation reads the same vocabulary and adds this
+        # turn's classifier verdict when the transport primed one. Called
+        # without a generator, so this never spends an inference of its
+        # own: it either finds the verdict already decided or falls back
+        # to the vocabulary, and either way agrees with the planner.
+        from backend.core import search_activation
+
+        return search_activation.wants_web_search(text)
 
     normalized = _normalize_for_keywords(text)
     return any(

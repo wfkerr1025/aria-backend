@@ -275,7 +275,14 @@ class PlanBuilder:
         the user's own material -- see SEARCH_WORDS and LOCAL_SCOPE_WORDS
         for why both halves are needed.
         """
-        if not _mentions(query, SEARCH_WORDS) or self.wants_local_material(query):
+        # search_activation, not _mentions, so a question the classifier
+        # claimed this turn plans the lookup that routing already decided
+        # on. It is called without a generator and spends no inference:
+        # with nothing primed it returns exactly what _mentions would, so
+        # the planner stays deterministic when nothing primed it.
+        from backend.core import search_activation
+
+        if not search_activation.wants_web_search(query) or self.wants_local_material(query):
             return None
 
         try:

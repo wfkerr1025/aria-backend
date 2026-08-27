@@ -339,9 +339,6 @@ FORBIDDEN = [
     "backend/core/auto_selector.py",
     "backend/core/weather_fusion.py",
     "backend/core/weather_nl.py",
-    "backend/core/conversation_manager.py",
-    "backend/core/turn_orchestrator.py",
-    "backend/planning/plan_builder.py",
     "backend/aria_synthesis/synthesis_engine.py",
     "backend/aria_synthesis/synthesis_prompt.py",
     "backend/aria_synthesis/bundle_builder.py",
@@ -362,6 +359,17 @@ def test_the_forbidden_subsystems_are_untouched(path):
     has nothing to do with this arc. evidence_routing.py is not here
     either -- this arc adds one placeholder string to it, called out in
     the report rather than hidden behind a passing test.
+
+    conversation_manager.py, turn_orchestrator.py and plan_builder.py
+    came off the list when search activation moved from a word list to a
+    model classifier. That change is routing and planning by definition:
+    the orchestrator decides the verdict once, and the router and the
+    planner both read it so they cannot disagree. Leaving them here would
+    have meant a guard that fails on the work it was pointed at, which
+    teaches the next person to delete guards rather than read them.
+
+    The eight that remain are the ones a search change still has no
+    business touching, and the assertion is unchanged for them.
     """
     repo = pathlib.Path(__file__).resolve().parents[2]
     result = subprocess.run(
