@@ -908,8 +908,38 @@ def test_search_intent_runs_the_tool_and_then_answers_with_a_model():
     and its output really reaches the prompt. Both are asserted below, so
     this remains a test about not fabricating an answer.
     """
-    from backend.core import tool_registry as core_reg
+    from backend.core import tool_registry as core_reg, turn_orchestrator
     from backend.websocket.handlers import WebSocketHandler
+
+    # The safety gate reads LIVE free RAM and CPU, and the model this
+    # turn resolves to is the 12B. So without this the test asserts
+    # "search routing works AND this machine currently has headroom for
+    # a 12-billion-parameter model", and the second half is not what it
+    # is for: measured 3 passes and 2 failures over five consecutive
+    # runs of identical code, flipping with nothing but memory pressure
+    # from the run itself.
+    #
+    # Quieted rather than removed. What this test exists to prove --
+    # the tool really runs, and its output really reaches the prompt --
+    # is asserted below and is untouched by this.
+    # A real SafetyDecision, built from the real gate's own reading of
+    # this machine, with only the verdict forced to "ok". Hand-rolling a
+    # stand-in got the shape wrong (no `severity`) and failed inside
+    # warning_manager -- a fake narrower than the thing it replaces tests
+    # the fake.
+    from backend.core import safety_manager
+
+    original_evaluate_safety = turn_orchestrator.evaluate_safety
+    _snapshot = safety_manager.get_resource_snapshot()
+
+    def _quiet(model_cfg):
+        return safety_manager.SafetyDecision(
+            safe_to_run=True, requires_warning=False, severity="ok",
+            message="", profile=safety_manager.select_profile(_snapshot, model_cfg),
+            snapshot=_snapshot,
+        )
+
+    turn_orchestrator.evaluate_safety = _quiet
 
     calls = []
 
@@ -951,6 +981,7 @@ def test_search_intent_runs_the_tool_and_then_answers_with_a_model():
         captured = _run(scenario())
     finally:
         core_reg.register_builtin_tools()
+        turn_orchestrator.evaluate_safety = original_evaluate_safety
 
     result = captured.get("result")
     assert result is not None, "a search turn must reach the model"

@@ -170,6 +170,28 @@ def prompt_carries_evidence(prompt: str) -> bool:
     return any(marker in lowered for marker in _EVIDENCE_MARKERS)
 
 
+def evidence_floor_available() -> bool:
+    """Whether this install has any model trusted to read evidence.
+
+    The ladder's floor for an evidence-bearing turn is MEDIUM_MODEL_ID,
+    and the tiers below it are the ones that cannot be trusted to answer
+    from supplied material rather than around it. Normally at least one
+    of the two at or above the floor is installed and the floor simply
+    holds.
+
+    When neither is, select_local_model_for_prompt falls below the floor
+    -- deliberately, because a weaker answer beats no answer -- and says
+    so in the log. This is the same question asked before the turn runs,
+    so the caller can decide to ask that model for less rather than
+    handing it evidence it will answer around.
+
+    A pure registry lookup: no prompt, no hardware probe, no model load,
+    and nothing that could put the turn in front of the safety gate.
+    """
+    floor_index = _LADDER.index(MEDIUM_MODEL_ID)
+    return any(_is_installed(model_id) for model_id in _LADDER[:floor_index + 1])
+
+
 def _pick_medium_tier(prompt: str) -> str:
     return SIMPLE_MODEL_ID if len(prompt.strip()) < _MEDIUM_BUCKET_SPLIT_CHARS else MEDIUM_MODEL_ID
 

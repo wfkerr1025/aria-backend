@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import pytest
 
+from backend.core import turn_orchestrator
 from tools.providers import (
     exchange_rate_api, news_mediastack, news_nytimes, web_langsearch,
 )
@@ -50,3 +51,24 @@ def no_machine_keys(monkeypatch):
     for module in KEYED_PROVIDERS:
         monkeypatch.delenv(module.ENV_VAR, raising=False)
         monkeypatch.setattr(module, "api_key", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def no_live_classifier(monkeypatch):
+    """The search classifier consults no model during the suite.
+
+    orchestrate_turn builds a real generator for it, so without this the
+    suite makes a live model call on every turn -- and whether that load
+    succeeds depends on how busy the machine is. Two runs of the same
+    characterization suite disagreed with each other for exactly that
+    reason, which is the failure mode these tests exist to detect, not to
+    exhibit.
+
+    Only the building is suppressed: a generator a test passes in
+    explicitly is still used, so tests of the classifier itself work
+    unchanged. Tests of the builder restore the real one.
+    """
+    monkeypatch.setattr(
+        turn_orchestrator, "_classifier_generator",
+        lambda request, default_local_model, supplied: supplied,
+    )

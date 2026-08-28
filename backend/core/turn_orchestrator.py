@@ -45,7 +45,9 @@ from backend.core import (
     turn_status,
     weather_nl,
 )
+from backend.core import complexity_router
 from backend.core import search_activation
+from backend.core.generation import make_generator
 from backend.core.conversation_manager import (
     INTENT_MODEL_SWITCH,
     INTENT_SEARCH_QUERY,
@@ -379,6 +381,51 @@ def _build_reasoning_prompt(request: TurnRequest, text: str, policy_info: dict, 
 # ======================================================
 # The sequence
 # ======================================================
+def _classifier_generator(request, default_local_model, supplied):
+    """A cheap `generate` for the search classifier, or None.
+
+    Built here rather than taken from the transport. `generator` is a
+    parameter both transports leave at its default -- its own docstring
+    says so ("unused until the Phase core is inserted at the two seams")
+    -- so wiring the classifier to it produced a turn that primed nothing
+    and searched exactly as it had before. Depending on two call sites to
+    each remember to pass an optional argument is how that happens twice.
+
+    Model resolution needs no intent: precedence is request field, then
+    session pin, then mode. So this can run before detect_intent, which
+    is where the verdict has to exist.
+
+    Any failure is None, and search_activation then returns the
+    deterministic verdict. A model that will not load is a reason to skip
+    the classifier, never a reason to fail the turn.
+    """
+    if supplied is not None:
+        return supplied
+
+    try:
+        model_id, _ = _resolve_model_id(request, default_local_model)
+        return make_generator(
+            model_id,
+            request.session.mode,
+            # A sink that discards, which is not a workaround but the
+            # path production takes. make_generator's no-sink branch
+            # calls provider.infer(); the provider protocol is
+            # run()/stream() and no wrapper implements infer(), so that
+            # branch raises on its first line. It has never executed --
+            # every transport supplies a sink -- and repairing it here
+            # would change what Engine B does on turns where no model
+            # can load, which is a blast radius this has no business
+            # having. Reported separately; the streaming path is the one
+            # that works and it returns the whole string either way.
+            stream_sink=lambda packet: None,
+            max_tokens=search_activation.MAX_TOKENS,
+            temperature=search_activation.TEMPERATURE,
+        )
+    except Exception:
+        logger.exception("could not build a generator for the search classifier")
+        return None
+
+
 def orchestrate_turn(
     request: TurnRequest,
     *,
@@ -469,7 +516,8 @@ def orchestrate_turn(
     # for X" and a question about the user's own notes both cost nothing.
     # What it costs is one short completion on a turn where neither
     # applied -- which is every ordinary chat message.
-    search_activation.prime(text, generator)
+    search_activation.prime(
+        text, _classifier_generator(request, default_local_model, generator))
 
     is_followup = request.multi_turn and len(request.messages) > 1
     intent = detect_intent(text, is_multi_turn_followup=is_followup)
@@ -550,11 +598,24 @@ def orchestrate_turn(
         intent == INTENT_SEARCH_QUERY or search_intent.mentions_web_search(text)
     )
     cloud_available = any(key_manager.list_configured_providers().values())
+    # Whether the deferral in Automatic mode has anything trustworthy to
+    # land on. A registry lookup, so it costs nothing and cannot put the
+    # turn in front of the safety gate.
+    try:
+        local_evidence_model_available = complexity_router.evidence_floor_available()
+    except Exception:
+        # A registry that cannot be read is not a reason to downgrade a
+        # turn; assume the normal case, which is what happened before
+        # this check existed.
+        logger.exception("could not check the local evidence floor; assuming available")
+        local_evidence_model_available = True
+
     route = evidence_routing.choose_route(
         expects_evidence=expects_evidence,
         model_id=model_id,
         mode=session.mode,
         cloud_available=cloud_available,
+        local_evidence_model_available=local_evidence_model_available,
     )
 
     if route != evidence_routing.ROUTE_NORMAL:
@@ -588,6 +649,7 @@ def orchestrate_turn(
         telemetry.append(_event(
             "model_routing", decision=evidence_routing.ROUTE_DEFERRED_TO_ROUTER,
             mode=session.mode, cloud_available=cloud_available,
+            local_evidence_model_available=local_evidence_model_available,
         ))
 
     if route == evidence_routing.ROUTE_CLOUD:

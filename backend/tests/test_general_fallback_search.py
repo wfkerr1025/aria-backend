@@ -24,7 +24,11 @@ from __future__ import annotations
 import pytest
 
 from backend.core import search_activation as sa
+from backend.core import turn_orchestrator as _orch
 from backend.planning.plan_builder import PlanBuilder
+
+# Captured at import, before conftest's autouse guard replaces it.
+REAL_BUILDER = _orch._classifier_generator
 
 
 @pytest.fixture(autouse=True)
@@ -268,3 +272,121 @@ def test_the_orchestrator_primes_the_verdict_before_routing():
     routed = source.index("intent = detect_intent")
 
     assert primed < routed, "the verdict is primed after routing has already read it"
+
+
+@pytest.fixture
+def real_builder(monkeypatch):
+    """conftest suppresses the builder suite-wide; this file tests it."""
+    from backend.core import turn_orchestrator as orch
+
+    monkeypatch.setattr(orch, "_classifier_generator", REAL_BUILDER)
+    return REAL_BUILDER
+
+
+def test_the_classifier_is_given_a_real_generator(monkeypatch, real_builder):
+    """Ordering was never the thing that broke.
+
+    The first version of this wiring read `generator`, an orchestrate_turn
+    parameter that both transports leave at its default -- its own
+    docstring says it is "unused until the Phase core is inserted". So
+    prime() was called on every turn with generate=None, returned the
+    deterministic verdict, and a live "Taco Bell's newest menu item?"
+    planned no lookup and answered from a 0.5B model's weights.
+
+    The test above passed throughout: it checked that two lines were in
+    the right order, not that anything arrived. This one checks what
+    actually has to be true.
+    """
+    from backend.core import turn_orchestrator as orch
+
+    built = []
+
+    def fake_make_generator(model_id, mode, **kwargs):
+        built.append({"model_id": model_id, "mode": mode, **kwargs})
+        return lambda prompt: "LOCAL"
+
+    monkeypatch.setattr(orch, "make_generator", fake_make_generator)
+
+    class Session:
+        mode = "local"
+        explicit_model_override = None
+
+    class Request:
+        session = Session()
+        requested_model_id = None
+
+    generate = real_builder(Request(), lambda: "nemo-12b-q5", None)
+
+    assert generate is not None, "the classifier would be handed None on every turn"
+    assert generate("anything") == "LOCAL"
+    assert built[0]["model_id"] == "nemo-12b-q5"
+    # Asked for one word, not a paragraph.
+    assert built[0]["max_tokens"] == sa.MAX_TOKENS
+    assert built[0]["temperature"] == sa.TEMPERATURE
+
+
+def test_a_generator_the_caller_supplied_is_used_as_is(monkeypatch, real_builder):
+    from backend.core import turn_orchestrator as orch
+
+    def boom(*args, **kwargs):
+        raise AssertionError("built one when the caller had already supplied it")
+
+    monkeypatch.setattr(orch, "make_generator", boom)
+    supplied = saying("WEB")
+
+    assert real_builder(object(), lambda: None, supplied) is supplied
+
+
+def test_a_model_that_will_not_load_is_not_a_failed_turn(monkeypatch, real_builder):
+    from backend.core import turn_orchestrator as orch
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("no model could be loaded")
+
+    monkeypatch.setattr(orch, "make_generator", unavailable)
+
+    class Session:
+        mode = "local"
+        explicit_model_override = None
+
+    class Request:
+        session = Session()
+        requested_model_id = None
+
+    # None, not an exception: the turn goes on and answers without a
+    # lookup, which is what it did before the classifier existed.
+    assert real_builder(Request(), lambda: None, None) is None
+
+
+# ------------------------------------------------------
+# The generator has to actually reach a provider
+# ------------------------------------------------------
+def test_the_provider_protocol_is_run_not_infer():
+    """A latent bug, recorded rather than fixed.
+
+    generation.make_generator's no-sink branch calls provider.infer().
+    infer() is LocalInferenceEngine's method; the provider protocol is
+    run()/stream(), and this asserts what all fifteen wrappers actually
+    implement. That branch raises AttributeError on its first line.
+
+    It has never executed -- every transport supplies a stream_sink -- so
+    nothing has ever depended on it. Repairing it was tried and reverted:
+    it changed what Engine B does on turns where no model can load, which
+    broke a characterization suite for reasons that had nothing to do
+    with search. The classifier passes a discarding sink instead and
+    takes the path production takes.
+
+    Pinned against the wrappers themselves, not against memory.
+    """
+    import pathlib
+
+    # __path__, not __file__: backend.llm.providers is a namespace
+    # package, so __file__ is None.
+    repo = pathlib.Path(__file__).resolve().parents[2]
+    providers_dir = repo / "backend" / "llm" / "providers"
+    assert providers_dir.is_dir()
+
+    for path in sorted(providers_dir.glob("*_wrapper.py")):
+        source = path.read_text(encoding="utf-8")
+        assert "def run(" in source, f"{path.name} has no run()"
+        assert "def infer(" not in source, f"{path.name} implements infer()"

@@ -134,6 +134,7 @@ def choose_route(
     model_id: str | None,
     mode: str,
     cloud_available: bool,
+    local_evidence_model_available: bool = True,
 ) -> str:
     """Which of the three fallbacks this turn needs, if any.
 
@@ -147,9 +148,35 @@ def choose_route(
     separation is not a preference to be traded against answer quality --
     a user in Local Mode has said their data does not leave the machine,
     and a better answer is not worth breaking that.
+
+    local_evidence_model_available answers "does this install have a local
+    model at or above the evidence floor" -- see
+    complexity_router.evidence_floor_available. It defaults True because
+    that is the normal case and because every existing caller predates the
+    parameter; it matters only in the one case below.
     """
-    if not expects_evidence or model_can_synthesize_evidence(model_id):
+    if not expects_evidence:
         return ROUTE_NORMAL
+
+    if model_can_synthesize_evidence(model_id):
+        # model_id None is not a model, it is a deferral: ProviderRouter
+        # will choose. Trusting it means trusting that it has something
+        # trustworthy to reach -- a cloud provider, or a local model at
+        # or above the evidence floor.
+        #
+        # On an install with neither, that deferral resolved to whatever
+        # was left, complexity_router logged "falling below the evidence
+        # floor", and the turn asked full synthesis of a model this
+        # module already says cannot do it. The deferral was believed
+        # over the allowlist because it had no id to check.
+        #
+        # Nothing is pinned here. Pinning a model was implemented,
+        # measured and removed once already: a concrete id puts the turn
+        # in front of the safety gate, which can refuse a turn that
+        # would otherwise have run. This changes what the model is asked
+        # for, not which model answers.
+        if model_id is not None or cloud_available or local_evidence_model_available:
+            return ROUTE_NORMAL
 
     if mode == "local":
         return ROUTE_SIMPLIFIED
