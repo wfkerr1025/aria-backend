@@ -286,6 +286,11 @@ def test_langsearch_treats_an_in_body_error_code_as_a_failure(monkeypatch, keyed
 
 
 def test_the_raw_logging_survives_whatever_comes_back(monkeypatch, keyed):
+    # Switched on explicitly. It ships off, and a test that left it off
+    # would exercise the early return and prove nothing about the
+    # logging it claims to cover.
+    monkeypatch.setattr(web_langsearch, "LOG_RAW_RESPONSE", True)
+
     class Unserializable:
         pass
 
@@ -521,3 +526,24 @@ def test_langsearch_normalizes_for_the_evidence_layer(monkeypatch, keyed, silent
     assert {item.source for item in normalized} == {"langsearch"}
     assert all(item.url for item in normalized)
     assert normalized[0].title == "pytest 8.2 release notes"
+
+
+def test_the_raw_body_dump_ships_off():
+    """It is INFO-level and unbounded; a search response is large.
+
+    Left on it buries the rest of the log -- measured at 24,000 lines
+    after an afternoon. It exists to be switched on for a query or two
+    when the provider returns something that does not parse.
+    """
+    assert web_langsearch.LOG_RAW_RESPONSE is False
+
+
+def test_nothing_is_logged_while_it_is_off(monkeypatch, keyed):
+    logged = []
+    monkeypatch.setattr(web_langsearch.logger, "info",
+                        lambda msg, *args: logged.append(msg))
+    stub(monkeypatch, web_langsearch, PAYLOAD)
+
+    web_langsearch.lookup(QUERY)
+
+    assert not any("RAW" in line for line in logged)

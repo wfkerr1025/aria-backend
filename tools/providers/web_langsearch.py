@@ -3,8 +3,10 @@
 The one general-web provider, replacing Brave and Tavily. It answers the
 questions no specialist claims -- documentation, release notes, how-tos,
 forums, general knowledge -- and it also backs up the news path: when
-NYTimes, Mediastack and GDELT all come back empty, this runs with the same
-query rather than letting a news question fail for want of a key.
+NYTimes and Mediastack both come back empty, this runs with the same
+query rather than letting a news question fail for want of a key. Since
+GDELT was removed, both remaining news providers need one, so on an
+install with neither key this tier is the whole news path.
 
 That fallback is conditional, not additive. A news question that the
 structured providers *did* answer does not also get a page of search
@@ -23,10 +25,11 @@ snippets come back pre-tokenized, with punctuation spaced out and the
 occasional U+FFFD where their extraction could not decode a character,
 which is what _repair_snippet exists to undo.
 
-LOG_RAW_RESPONSE is what found that. It puts the request, the transport
-status and the entire response body in the log at INFO, before anything
-is parsed, so a 404 reads as a 404 rather than as an empty result. It is
-temporary and noisy by design -- turn it off now that the shape is known.
+LOG_RAW_RESPONSE is what found all of that. It puts the request, the
+transport status and the entire response body in the log at INFO, before
+anything is parsed, so a 404 reads as a 404 rather than as an empty
+result. It is off now that the shape is known, and is one flag away the
+next time this provider returns something that does not parse.
 """
 
 from __future__ import annotations
@@ -55,15 +58,23 @@ _ENDPOINT = "https://api.langsearch.com/v1/web-search"
 
 MAX_RESULTS = 10
 
-# TEMPORARY. Logs the request and the whole response body at INFO on
-# every call, so the live payload can be read off the running server's
-# console without changing a log level or attaching a debugger.
+# Logs the request and the whole response body at INFO on every call, so
+# the live payload can be read off the running server's console without
+# changing a log level or attaching a debugger.
 #
-# This must come out once the shape is confirmed. It is INFO-level, it is
-# unbounded, and a search response is large -- left on, it will bury the
-# rest of the log. It also prints whatever the provider sent back, which
-# is fine for search results and would not be fine for anything else.
-LOG_RAW_RESPONSE = True
+# Off, its shape having been confirmed live on 2026-08-27: /v1/search
+# answers 404 and /v1/web-search serves data.webPages.value, which is
+# what _results() reads. It also showed displayUrl arriving as a whole
+# URL rather than a host, snippets pre-tokenized ("python 3 . 12 . 14"),
+# and U+FFFD where their extraction failed -- three defects that were
+# invisible until the body was on screen.
+#
+# Kept, rather than deleted, because the next time this provider returns
+# something unexpected the first question will be "what did it actually
+# send" and the answer should be one flag away. Turn it on for a query
+# or two, then turn it back off: it is INFO-level and unbounded, and a
+# search response is large enough to bury the rest of the log.
+LOG_RAW_RESPONSE = False
 
 # Weather never reaches a search provider -- the router short-circuits a
 # weather turn to the fusion engine before Phase 9 runs -- so this is a
@@ -127,11 +138,13 @@ def _results(payload: Any) -> list:
     A row inside `value` carries id / name / url / displayUrl / snippet /
     summary / siteName / siteIcon / datePublished / dateLastCrawled.
 
-    The looser branches below are a landing net, not a second contract:
-    they exist because the shape has not been seen live yet, and they
-    come out with the raw logging. What is never done is guessing at the
-    *fields* -- a row without a title and a URL is skipped, not
-    reconstructed from whatever else is lying around.
+    The looser branches below are a landing net, not a second contract.
+    They were written before the shape had been seen live; it has since
+    been confirmed to be the documented one, and they are kept only
+    because a provider that changes its envelope should degrade rather
+    than crash. What is never done is guessing at the *fields* -- a row
+    without a title and a URL is skipped, not reconstructed from
+    whatever else is lying around.
     """
     if not isinstance(payload, dict):
         return []
@@ -155,7 +168,7 @@ def _results(payload: Any) -> list:
 
 
 def _log_raw(request_body: dict, response: Any) -> None:
-    """TEMPORARY. The request and the whole response, at INFO.
+    """The request and the whole response, at INFO. Off by default.
 
     Logged before the status check, so an endpoint that answers 404 or
     401 shows up as the 404 or 401 it is rather than as an empty result
