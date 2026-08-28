@@ -347,3 +347,83 @@ def execute_plan(plan, current_goal=None, context: ExecutionContext | None = Non
     from backend.tools.tool_router import route_plan
 
     return execute_invocations(route_plan(plan, current_goal), context)
+
+
+# ======================================================
+# One call for a turn
+# ======================================================
+STATUS_SUCCESS = "success"
+STATUS_PARTIAL = "partial"
+
+# Which permissions an action run is allowed to use. edit_file and
+# run_tests are both filesystem tools; nothing here grants network, so a
+# model cannot turn an "action" into an outbound request.
+ACTION_PERMISSIONS = frozenset({PERMISSION_FILESYSTEM})
+
+
+def _report_status(outcome: OrchestrationResult) -> str:
+    """success / partial / failed / blocked, in that order of precedence."""
+    if outcome.failed:
+        return STATUS_FAILED if not outcome.rolled_back else STATUS_PARTIAL
+    if any(r.status == STATUS_BLOCKED for r in outcome.results):
+        return STATUS_BLOCKED
+    return STATUS_SUCCESS
+
+
+def run_answer_actions(answer_text: str, user_text: str) -> dict | None:
+    """Parse the actions in an answer and run them for one turn.
+
+    The seam a transport calls, kept here so wiring it in is one call
+    rather than a copy of this logic in each of the three chat entry
+    points -- which is how backend/rest/router.py and
+    backend/websocket/handlers.py came to have three independent
+    orchestrations of everything else.
+
+    Returns None when the answer asked for nothing, which is almost every
+    turn and is not a failure. A caller that gets None should behave
+    exactly as it did before actions existed.
+
+    Dry run unless the USER asked for a live one. The licence is read
+    from user_text and never from answer_text: a model that writes
+    "apply the changes" in its own answer has described an intention, not
+    granted itself one.
+    """
+    from backend.core.action_plan import parse_actions, requests_live_execution
+
+    actions = parse_actions(answer_text)
+    if not actions:
+        return None
+
+    live = requests_live_execution(user_text)
+
+    # Filesystem either way, and dry_run is what holds the line. A dry
+    # run still needs the permission, because edit_file's preview reads
+    # the file to build the diff -- so gating the grant on `live` would
+    # only turn every preview into a "blocked" and teach nobody anything.
+    # What stops a dry run writing is that confirm stays False.
+    #
+    # Network is never granted. A model cannot turn an "action" into an
+    # outbound request.
+    context = ExecutionContext(dry_run=not live)
+    context.allowed_permissions.update(ACTION_PERMISSIONS)
+
+    logger.info("running %d action(s) for this turn, live=%s", len(actions), live)
+    outcome = execute_invocations(actions, context)
+
+    return {
+        "actions": [
+            {"tool": a.tool_name, "args": a.args, "step_id": a.step_id}
+            for a in actions
+        ],
+        "results": [
+            {
+                "step_id": r.step_id, "tool": r.tool_name, "status": r.status,
+                "error": r.error, "preview": r.preview,
+            }
+            for r in outcome.results
+        ],
+        "rollback": list(outcome.rolled_back),
+        "status": _report_status(outcome),
+        "dry_run": outcome.dry_run,
+        "notes": list(context.errors),
+    }

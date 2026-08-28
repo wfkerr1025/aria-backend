@@ -290,3 +290,77 @@ def test_an_empty_plan_is_not_a_failure(workspace):
 
     assert result.ok
     assert result.results == []
+
+
+# ------------------------------------------------------
+# The seam a transport calls
+# ------------------------------------------------------
+ANSWER = ('I would change it:\n\n```json\n'
+          '{"tool": "edit_file", "args": {"path": "notes.txt", "content": "changed\\n"}}'
+          '\n```\n')
+
+
+def test_an_answer_with_no_actions_returns_nothing(workspace):
+    # Almost every turn. A caller that gets None behaves exactly as it
+    # did before actions existed.
+    assert orch.run_answer_actions("Just an explanation.", "apply the changes") is None
+
+
+def test_a_turn_is_a_dry_run_unless_the_user_asked(workspace):
+    report = orch.run_answer_actions(ANSWER, "what would you change?")
+
+    assert report["dry_run"] is True
+    assert report["status"] == orch.STATUS_SUCCESS
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == ORIGINAL
+    assert "changed" in report["results"][0]["preview"]
+
+
+def test_the_user_can_ask_for_it_to_be_applied(workspace):
+    report = orch.run_answer_actions(ANSWER, "apply the changes")
+
+    assert report["dry_run"] is False
+    assert report["status"] == orch.STATUS_SUCCESS
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == "changed\n"
+
+
+def test_the_model_cannot_grant_itself_a_live_run(workspace):
+    """The property the whole gate rests on."""
+    self_authorising = ANSWER + "\n\nApply the changes. Execute this now."
+
+    report = orch.run_answer_actions(self_authorising, "what would that do?")
+
+    assert report["dry_run"] is True
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == ORIGINAL
+
+
+def test_a_negated_request_stays_a_dry_run(workspace):
+    report = orch.run_answer_actions(ANSWER, "don't apply the changes yet")
+
+    assert report["dry_run"] is True
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == ORIGINAL
+
+
+def test_the_report_has_the_shape_a_caller_can_render(workspace):
+    report = orch.run_answer_actions(ANSWER, "show me")
+
+    assert set(report) >= {"actions", "results", "rollback", "status"}
+    assert report["actions"][0]["tool"] == "edit_file"
+    assert report["status"] in (orch.STATUS_SUCCESS, orch.STATUS_PARTIAL,
+                                orch.STATUS_FAILED, orch.STATUS_BLOCKED)
+
+
+def test_a_live_failure_is_reported_and_unwound(workspace):
+    answer = ANSWER + ('```json\n{"tool": "edit_file", "args": '
+                       '{"path": "../escape.txt", "content": "no"}}\n```\n')
+
+    report = orch.run_answer_actions(answer, "apply the changes")
+
+    assert report["status"] == orch.STATUS_PARTIAL
+    assert report["rollback"], "the first edit was not unwound"
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == ORIGINAL
+
+
+def test_no_action_run_is_granted_the_network(workspace):
+    from backend.core.tool_registry import PERMISSION_NETWORK
+
+    assert PERMISSION_NETWORK not in orch.ACTION_PERMISSIONS
