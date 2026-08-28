@@ -336,7 +336,6 @@ def test_both_providers_survive_normalization(providers):
 FORBIDDEN = [
     "backend/core/provider_router.py",
     "backend/core/safety_manager.py",
-    "backend/core/auto_selector.py",
     "backend/core/weather_fusion.py",
     "backend/core/weather_nl.py",
     "backend/aria_synthesis/synthesis_engine.py",
@@ -368,7 +367,14 @@ def test_the_forbidden_subsystems_are_untouched(path):
     have meant a guard that fails on the work it was pointed at, which
     teaches the next person to delete guards rather than read them.
 
-    The eight that remain are the ones a search change still has no
+    auto_selector.py came off next, when Automatic Mode was made to
+    prefer a trusted local model for evidence turns. Its success
+    predictor scores a prompt on length and complexity, and an evidence
+    prompt is long because it carries evidence -- so every search turn
+    escalated to cloud the moment the lookup worked. Correcting that is
+    a change to search behaviour by definition.
+
+    The seven that remain are the ones a search change still has no
     business touching, and the assertion is unchanged for them.
     """
     repo = pathlib.Path(__file__).resolve().parents[2]

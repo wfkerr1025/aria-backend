@@ -6,7 +6,8 @@ from backend.llm.providers.provider_registry import get_provider
 from backend.core.task_classifier import classify_task_complexity, classify_task_type, preferred_cloud_provider_for_task
 from backend.core.success_predictor import should_use_local
 from backend.core.local_model_selector import ensure_default_local_model
-from backend.core.complexity_router import select_local_model_for_prompt
+from backend.core.complexity_router import prompt_carries_evidence, select_local_model_for_prompt
+from backend.core.evidence_routing import model_can_synthesize_evidence
 from backend.core import key_manager
 from backend.core import model_selector
 
@@ -91,6 +92,62 @@ class AutoSelector:
         logger.debug(f"Active local model → {active_local_model}")
 
         local_provider = get_provider("local") if active_local_model else None
+
+        # -----------------------------------------------------
+        # Evidence turns prefer local, when local can be trusted with
+        # evidence at all.
+        #
+        # should_use_local scores a prompt on length and complexity, and
+        # an evidence-bearing prompt is long and complex BECAUSE it is
+        # carrying evidence -- not because the question is hard.
+        # Measured on the live "Taco Bell's newest menu item?" turn:
+        #
+        #     bare question               29 chars   score 100  -> local
+        #     same question + evidence  5609 chars   score  40  -> cloud
+        #
+        # threshold is 75, so every search turn escalated to cloud once
+        # the lookup succeeded, however capable the installed local
+        # models were. The better the search, the more certain the
+        # escalation.
+        #
+        # complexity_router already makes exactly this correction one
+        # layer down -- "evidence present; ignoring the length heuristic"
+        # -- and picks the strongest installed model at or above the
+        # evidence floor, stepping down on hardware pressure and never
+        # below the floor. Nobody had told the success predictor the same
+        # thing, so its verdict was reached before that ladder was ever
+        # consulted.
+        #
+        # Two conditions, both required. The prompt must actually carry
+        # evidence, and the model the ladder chose must be one the
+        # allowlist trusts to read it: preferring local is only an
+        # improvement if the local model can do the job. When it cannot,
+        # this does nothing and the cloud branch below runs exactly as
+        # before.
+        #
+        # Nothing here loads a model, pins one past the safety gate, or
+        # touches the evidence floor. It changes which branch is taken,
+        # and the branch it takes is the one that already knows how to
+        # choose safely.
+        if not use_local and local_provider and prompt_carries_evidence(prompt):
+            if model_can_synthesize_evidence(active_local_model):
+                logger.info(
+                    "select_provider() -> evidence-bearing prompt and %s is trusted "
+                    "with evidence; preferring local over cloud",
+                    active_local_model,
+                )
+                unified_log("auto_selector", "INFO",
+                            "Automatic Model Routing: local preferred for evidence", {
+                                "model_id": active_local_model,
+                                "predicted_score_said": "cloud",
+                            })
+                use_local = True
+            else:
+                logger.info(
+                    "select_provider() -> evidence-bearing prompt but %s is not trusted "
+                    "with evidence; leaving the cloud decision alone",
+                    active_local_model,
+                )
 
         # -----------------------------------------------------
         # Local preferred
