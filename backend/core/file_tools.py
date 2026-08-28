@@ -210,7 +210,18 @@ def edit_file(path: str, content: str, confirm: bool = False) -> dict:
     if not resolved.parent.is_dir():
         raise WorkspaceError(f"Directory does not exist: {_relative(resolved.parent)}")
 
-    resolved.write_text(str(content), encoding="utf-8")
+    # newline="" so writing is the exact inverse of reading. read_file
+    # decodes raw bytes and keeps whatever line endings the file had;
+    # write_text's default translates "\n" to os.linesep on Windows. A
+    # read-modify-write round trip therefore turned "\r\n" into "\r\r\n"
+    # and doubled every line ending -- which the tool_orchestrator's
+    # rollback was the first caller to exercise, restoring a "prior"
+    # version of a file that did not match the prior version.
+    #
+    # Also makes an edit deterministic across platforms: content written
+    # with "\n" stays "\n", rather than depending on which machine the
+    # assistant happened to be running on.
+    resolved.write_text(str(content), encoding="utf-8", newline="")
     logger.info("edit_file applied to %s (%d bytes)", name, len(encoded))
     return {
         "path": name, "applied": True, "changed": True,

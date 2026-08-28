@@ -60,6 +60,7 @@ PYTEST_TESTS = [
     "test_general_fallback_search.py",
     "test_evidence_floor_downgrade.py",
     "test_local_preferred_for_evidence.py",
+    "test_tool_orchestrator.py",
     "test_provider_stop_sequences.py",
     "test_upgrade_01_note_embeddings.py",
     "test_upgrade_02_semantic_index.py",
