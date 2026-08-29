@@ -112,6 +112,42 @@ class ThemeLoader {
     localStorage.setItem("aria-theme-name", name);
 
     themeLog("Semantic tokens activated for theme: " + name);
+    this.syncWindowChrome();
+  }
+
+  /* -------------------------------------------------------
+     WINDOW CHROME
+     -------------------------------------------------------
+     The title bar is hidden and the minimise/maximise/close buttons are
+     drawn by Electron as an overlay whose colours the app chooses. They
+     are chosen here, from the live stylesheet, because that is the only
+     place that knows what the active theme actually resolved to -- a
+     copy of the palette in the main process is one that goes stale the
+     first time a theme is edited, and ARIA has seven of them.
+
+     Deferred a frame: the stylesheet that defines these variables is
+     swapped immediately before this runs, and reading a custom property
+     in the same tick returns the OLD theme's value. */
+  syncWindowChrome() {
+    if (typeof window === "undefined" || !window.aria?.setWindowChrome) return;
+
+    requestAnimationFrame(() => {
+      const styles = getComputedStyle(document.documentElement);
+      const color = styles.getPropertyValue("--bg-app").trim();
+      const symbolColor = styles.getPropertyValue("--text-primary").trim();
+
+      // Only real colours. An unresolved variable reads as "", and
+      // handing that to setTitleBarOverlay throws rather than falling
+      // back -- so the window would keep whatever it had, which is the
+      // right outcome but a confusing way to reach it.
+      if (!color || !symbolColor) {
+        themeLog("window chrome not synced: theme variables did not resolve");
+        return;
+      }
+
+      themeLog(`Window chrome -> ${color} / ${symbolColor}`);
+      window.aria.setWindowChrome({ color, symbolColor });
+    });
   }
 
   /* -------------------------------------------------------

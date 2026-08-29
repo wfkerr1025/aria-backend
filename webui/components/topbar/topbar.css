@@ -294,3 +294,32 @@
   background: var(--topbar-divider);
   margin: 0 var(--space-sm);
 }
+
+/* ------------------------------------------------------------------
+   Window dragging.
+
+   The native title bar is hidden (main.js's titleBarStyle "hidden"), so
+   the window has no frame to drag by. Without a drag region the window
+   cannot be moved at all -- which is a worse bug than the white title
+   bar this replaced.
+
+   The top bar becomes that region. Its buttons are excluded: an element
+   inside a drag region is not clickable, so leaving them in would trade
+   a movable window for a Settings button that does nothing.
+
+   The right-hand padding keeps the bar's own content out from under the
+   minimise/maximise/close overlay, which Electron draws on top of the
+   page at the top right and which is not part of the layout.
+   ------------------------------------------------------------------ */
+#topbar {
+  -webkit-app-region: drag;
+  padding-right: 148px;
+}
+
+#topbar button,
+#topbar a,
+#topbar input,
+#topbar select,
+#topbar .topbar-actions {
+  -webkit-app-region: no-drag;
+}
