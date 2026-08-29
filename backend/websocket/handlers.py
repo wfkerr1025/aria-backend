@@ -13,6 +13,7 @@ from backend.core.local_inference_engine import InferenceRequest, InferenceMessa
 from backend.core.answer_stream import AnswerStream
 from backend.core import turn_status
 from backend.core.turn_orchestrator import orchestrate_turn
+from backend.core.tool_orchestrator import run_answer_actions
 from backend.core.turn_types import (
     KIND_CLARIFY,
     KIND_ERROR,
@@ -73,6 +74,12 @@ class WebSocketHandler:
         # Every connection starts as its own conversation; a context_reset
         # packet (or the client sending a fresh conversationId) rotates it.
         self.conversation_id = new_conversation_id()
+
+        # This turn's user message, kept for the action pass after
+        # streaming. Empty rather than absent so a stream that never went
+        # through _dispatch reads as "no consent given", which is the
+        # safe answer and the one a dry run needs.
+        self._turn_user_text = ""
 
         # Set by _handle_model_override ("Proceed Anyway") to the exact
         # model_id the user just accepted the warning for. Consumed
@@ -388,6 +395,11 @@ class WebSocketHandler:
         """
         conversation_id = packet.get("conversationId") or self.conversation_id
         self.conversation_id = conversation_id
+
+        # Kept for the action pass at the end of streaming. Consent to
+        # apply an action is read from what the USER said, and by the
+        # time the answer exists the packet is long out of scope.
+        self._turn_user_text = self._latest_user_text(packet)
 
         request = TurnRequest(
             messages=packet.get("messages", []),
@@ -899,6 +911,7 @@ class WebSocketHandler:
 
         try:
             await loop.run_in_executor(None, self.streamer.stream, request, send_packet_sync)
+            await self._run_answer_actions("".join(accumulated_tokens))
         except Exception as e:
             # streaming_engine.stream() catches its own errors internally
             # and emits a stream_error packet instead of raising, so this
@@ -911,6 +924,56 @@ class WebSocketHandler:
                 "type": "error",
                 "message": f"Inference error: {str(e)}"
             })
+
+    # -----------------------------------------------------
+    # Actions the answer asked for
+    # -----------------------------------------------------
+    async def _run_answer_actions(self, answer_text: str) -> None:
+        """Run the actions in a finished answer, and report what happened.
+
+        Here, and not earlier, because this is the first point at which
+        the answer exists. Planning, routing and tool execution all
+        happen inside Engine B while the prompt is being assembled; the
+        actions are in what the model then wrote, so nothing before
+        stream_end has them to run.
+
+        Additive in both directions. run_answer_actions returns None when
+        the answer asked for nothing -- which is almost every turn -- and
+        this sends no packet at all in that case, so a client that has
+        never heard of answer_actions sees exactly the traffic it saw
+        before. And it is a dry run unless the USER asked for a live one:
+        the consent is read from self._turn_user_text, never from
+        answer_text, so a model writing "apply the changes" in its own
+        answer has described an intention rather than granted itself one.
+
+        Blocking work -- reading files, writing them, running a test
+        suite -- so it goes to the executor for the same reason
+        generation does.
+
+        Never fails the turn. The answer has already been streamed and
+        the user has already read it; an action that could not run is
+        worth reporting, and is not worth turning a delivered answer into
+        an error.
+        """
+        try:
+            report = await asyncio.get_running_loop().run_in_executor(
+                None, run_answer_actions, answer_text, self._turn_user_text,
+            )
+        except Exception:
+            logger.exception("answer actions failed; the answer stands")
+            return
+
+        if report is None:
+            return
+
+        logger.info("answer actions: status=%s dry_run=%s",
+                    report.get("status"), report.get("dry_run"))
+        unified_log("websocket", "INFO", "Answer actions run", {
+            "status": report.get("status"),
+            "dry_run": report.get("dry_run"),
+            "conversation_id": self.conversation_id,
+        })
+        await self._send({"type": "answer_actions", **report})
 
     # -----------------------------------------------------
     # Send packet to frontend
