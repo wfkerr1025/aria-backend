@@ -1,0 +1,155 @@
+/* components/working_directory/working_directory.css
+ *
+ * The working-directory panel. Fixed and page-global, like the model
+ * indicator it sits above, so "which project am I in" and "do I have
+ * changes waiting" stay answerable while doing something else.
+ *
+ * Colours come from the app's own variables (webui/themes/variables.css)
+ * rather than being picked here, so the panel follows the theme instead
+ * of being a light patch in a dark UI.
+ */
+
+/* Bottom-RIGHT, not bottom-left. The sidebar runs the full height on
+   the left, so a fixed panel there covered the New Chat button and the
+   chat list -- measured: the panel spanned x 16-462 over a 260px
+   sidebar. A persistent panel that hides working controls is worse than
+   no panel. */
+#working-directory-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 56px;              /* clear of the System OK indicator */
+  z-index: 40;
+  max-width: 420px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 8px;
+  background: var(--panel-bg, #1b1b1b);
+  color: var(--text-color, #ddd);
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+#working-directory-panel .wd-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+  opacity: 0.85;
+}
+
+#working-directory-panel .wd-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+#working-directory-panel .wd-label {
+  flex: 0 0 116px;
+  opacity: 0.65;
+}
+
+#working-directory-panel .wd-value {
+  flex: 1 1 auto;
+  /* Paths are long and the middle matters least; wrapping beats a
+     truncation that hides which project this is. */
+  word-break: break-all;
+}
+
+#working-directory-panel .wd-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+#working-directory-panel .wd-ok {
+  background: var(--ok-bg, #1e3a24);
+  color: var(--ok-fg, #8fd39a);
+}
+
+#working-directory-panel .wd-warn {
+  background: var(--warn-bg, #4a3410);
+  color: var(--warn-fg, #f0c274);
+}
+
+/* The capability warning is prose, not a status line: it explains what
+   will happen instead, so it gets room to be read. */
+#working-directory-panel .wd-capability {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-left: 3px solid var(--warn-fg, #f0c274);
+  background: rgba(240, 194, 116, 0.08);
+}
+
+#working-directory-panel .wd-error {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-left: 3px solid var(--error-fg, #e08585);
+  background: rgba(224, 133, 133, 0.08);
+  white-space: pre-wrap;
+}
+
+#working-directory-panel .wd-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+#working-directory-panel .wd-actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 6px;
+  background: var(--button-bg, #262626);
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#working-directory-panel .wd-actions button:hover {
+  background: var(--button-hover-bg, #303030);
+}
+
+#working-directory-panel .wd-actions button:focus-visible {
+  outline: 2px solid var(--focus-color, #6aa9ff);
+  outline-offset: 1px;
+}
+
+
+/* Collapsed by default: one line that answers "which project, how many
+   changes waiting, can this model act". Expanded on click for the rest.
+   Persistent does not have to mean large. */
+#working-directory-panel.wd-collapsed .wd-row,
+#working-directory-panel.wd-collapsed .wd-capability,
+#working-directory-panel.wd-collapsed .wd-actions,
+#working-directory-panel.wd-collapsed .wd-error {
+  display: none;
+}
+
+#working-directory-panel .wd-title {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+#working-directory-panel .wd-summary {
+  font-weight: 400;
+  opacity: 0.7;
+  font-size: 11px;
+}
+
+
+/* Expanded, it moves to the top-right. Bottom-right is where the chat
+   composer lives: measured at 1280x720, the expanded panel spanned
+   y 425-664 over a Send button at y 585-615, so opening the panel took
+   the Send button away. The top-right strip is transcript, which
+   scrolls and holds no controls -- and the panel is one click from
+   closing again. */
+#working-directory-panel:not(.wd-collapsed) {
+  top: 60px;
+  bottom: auto;
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
+}

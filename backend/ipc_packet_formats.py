@@ -250,6 +250,16 @@ def diagnostics_models_result(data: Dict[str, Any]) -> Dict[str, Any]:
 # convention as every other diagnostics_*_result above.
 # ---------------------------------------------------------------------------
 
+def workspace_status_result(data: Dict[str, Any]) -> Dict[str, Any]:
+    """What the working-directory panel renders.
+
+    One packet for both the status request and the change request: a
+    change is only interesting because of the state it produces, and
+    returning that state means the panel never has to ask twice.
+    """
+    return _packet(schema.WORKSPACE_STATUS_RESULT, data)
+
+
 def diagnostics_providers_result(data: Dict[str, Any]) -> Dict[str, Any]:
     return _packet(schema.DIAGNOSTICS_PROVIDERS_RESULT, data)
 

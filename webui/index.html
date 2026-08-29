@@ -62,6 +62,7 @@
   <link rel="stylesheet" href="pages/models/models.css" />
   <link rel="stylesheet" href="pages/debug/debug.css" />
   <link rel="stylesheet" href="components/statusbar/statusbar.css" />
+  <link rel="stylesheet" href="components/working_directory/working_directory.css" />
   <link rel="stylesheet" href="components/warning_banner/warning_banner.css" />
   <link rel="stylesheet" href="components/routing_log/routing_log.css" />
 
@@ -78,6 +79,7 @@
   <script type="module" src="core/app.js"></script>
   <script type="module" src="components/toast/toast.js"></script>
   <script type="module" src="components/statusbar/statusbar.js"></script>
+  <script type="module" src="components/working_directory/working_directory.js"></script>
   <script type="module" src="components/warning_banner/warning_banner.js"></script>
 </head>
 
@@ -195,6 +197,12 @@
        the connection-status widget above; not inside #panel-container,
        so it's always visible on every page regardless of router
        navigation. -->
+  <!-- The working directory, staging root and model capability.
+       Outside #panel-container for the same reason as the model
+       indicator below it: staging is per-project, so "which
+       project am I in" has to survive navigation. -->
+  <div id="working-directory-panel"></div>
+
   <div id="active-model-container">
     <div id="active-model-status">Model: —</div>
     <button id="auto-balance-chip" class="auto-balance-chip" style="display:none" type="button" title="View auto-balance diagnostics">Balanced</button>

@@ -148,6 +148,12 @@ PROVIDER_KEY_SET_RESULT = "provider_key_set_result"
 PROVIDER_KEY_DELETE_REQUEST = "provider_key_delete_request"
 PROVIDER_KEY_DELETE_RESULT = "provider_key_delete_result"
 MODULES_LIST_REQUEST = "modules_list_request"
+
+# The working directory panel: which project ARIA is in, where it stages,
+# and whether the active model can be asked for a structured action.
+WORKSPACE_STATUS_REQUEST = "workspace_status_request"
+WORKSPACE_STATUS_RESULT = "workspace_status_result"
+WORKSPACE_SET_REQUEST = "workspace_set_request"
 MODULES_LIST_RESULT = "modules_list_result"
 MODULE_KEY_SET_REQUEST = "module_key_set_request"
 MODULE_KEY_SET_RESULT = "module_key_set_result"

@@ -11,6 +11,7 @@ import Toast from "../components/toast/toast.js";
 import Topbar from "../components/topbar/topbar.js";
 import Chat from "../components/chat/chat.js";
 import Statusbar from "../components/statusbar/statusbar.js";
+import WorkingDirectory from "../components/working_directory/working_directory.js";
 import WarningBanner from "../components/warning_banner/warning_banner.js";
 import ConnectionGuard from "../components/connection_guard/connection_guard.js";
 
@@ -292,6 +293,10 @@ document.addEventListener("DOMContentLoaded", () => {
   Statusbar.init();
   window.Statusbar = Statusbar;
   appLog("Statusbar initialized.");
+
+  WorkingDirectory.init();
+  window.WorkingDirectory = WorkingDirectory;
+  appLog("Working directory panel initialized.");
 
   ConnectionGuard.init();
   window.ConnectionGuard = ConnectionGuard;

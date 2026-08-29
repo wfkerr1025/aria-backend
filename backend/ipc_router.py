@@ -645,6 +645,37 @@ def _handle_provider_key_delete(payload: Dict[str, Any]) -> Dict[str, Any]:
     return fmt.provider_key_delete_result({"ok": True, "provider": provider})
 
 
+def _handle_workspace_status(payload: Dict[str, Any]) -> Dict[str, Any]:
+    logger.debug("ipc_router: workspace_status_request")
+    from backend.core import workspace_manager
+
+    return fmt.workspace_status_result(workspace_manager.describe_workspace())
+
+
+def _handle_workspace_set(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Point ARIA at a different project.
+
+    Returns the same shape as a status request, so the panel renders one
+    response either way and never has to ask twice for the state its own
+    change produced.
+
+    A rejected path is an error the user sees, not a silent no-op: the
+    whole point of a visible working directory is that it says where
+    ARIA actually is.
+    """
+    path = payload.get("path")
+    logger.info("ipc_router: workspace_set_request -> %r", path)
+
+    from backend.core import workspace_manager
+
+    try:
+        workspace_manager.set_project_root(path)
+    except workspace_manager.WorkspaceError as error:
+        return fmt.error_response(str(error), schema.WORKSPACE_SET_REQUEST)
+
+    return fmt.workspace_status_result(workspace_manager.describe_workspace())
+
+
 def _handle_modules_list(payload: Dict[str, Any]) -> Dict[str, Any]:
     logger.debug("ipc_router: modules_list_request")
     return fmt.modules_list_result(module_manager.list_modules())
@@ -761,6 +792,8 @@ _HANDLERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     schema.PROVIDER_KEY_SET_REQUEST: _handle_provider_key_set,
     schema.PROVIDER_KEY_DELETE_REQUEST: _handle_provider_key_delete,
     schema.MODULES_LIST_REQUEST: _handle_modules_list,
+    schema.WORKSPACE_STATUS_REQUEST: _handle_workspace_status,
+    schema.WORKSPACE_SET_REQUEST: _handle_workspace_set,
     schema.MODULE_KEY_SET_REQUEST: _handle_module_key_set,
     schema.MODULE_KEY_DELETE_REQUEST: _handle_module_key_delete,
     schema.MODE_STATUS_REQUEST: _handle_mode_status,

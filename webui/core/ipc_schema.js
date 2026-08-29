@@ -80,6 +80,13 @@ export const IPC = Object.freeze({
   PROVIDER_KEY_DELETE_REQUEST: "provider_key_delete_request",
   PROVIDER_KEY_DELETE_RESULT: "provider_key_delete_result",
   MODULES_LIST_REQUEST: "modules_list_request",
+
+  // The working-directory panel. One result shape for both
+  // requests: a change is only interesting because of the state
+  // it produces.
+  WORKSPACE_STATUS_REQUEST: "workspace_status_request",
+  WORKSPACE_STATUS_RESULT: "workspace_status_result",
+  WORKSPACE_SET_REQUEST: "workspace_set_request",
   MODULES_LIST_RESULT: "modules_list_result",
   MODULE_KEY_SET_REQUEST: "module_key_set_request",
   MODULE_KEY_SET_RESULT: "module_key_set_result",

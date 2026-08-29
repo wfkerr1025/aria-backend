@@ -232,3 +232,50 @@ def test_the_evidence_floor_already_lands_action_turns_on_a_capable_model():
     floor = cr._LADDER.index(cr.MEDIUM_MODEL_ID)
     for model_id in cr._LADDER[:floor + 1]:
         assert mc.supports_tool_use(model_id), model_id
+
+
+# ------------------------------------------------------
+# The packets the panel speaks
+# ------------------------------------------------------
+def test_a_status_request_returns_what_the_panel_renders(elsewhere):
+    from backend import ipc_router, ipc_schema as schema
+
+    result = ipc_router.dispatch({"type": schema.WORKSPACE_STATUS_REQUEST, "payload": {}})
+    payload = result.get("payload", result)
+
+    assert result["type"] == schema.WORKSPACE_STATUS_RESULT
+    assert payload["project_root"] == str(elsewhere)
+    assert "ghost_root" in payload and "tool_capable" in payload
+
+
+def test_a_set_request_returns_the_same_shape(elsewhere, tmp_path):
+    from backend import ipc_router, ipc_schema as schema
+
+    target = tmp_path / "another_project"
+    target.mkdir()
+
+    result = ipc_router.dispatch({
+        "type": schema.WORKSPACE_SET_REQUEST, "payload": {"path": str(target)},
+    })
+    payload = result.get("payload", result)
+
+    # One shape for both requests: a change is only interesting because
+    # of the state it produces, so the panel never asks twice.
+    assert result["type"] == schema.WORKSPACE_STATUS_RESULT
+    assert payload["project_root"] == str(target)
+    assert wm.get_project_root() == target
+
+
+def test_a_bad_path_is_an_error_the_user_sees(elsewhere, tmp_path):
+    from backend import ipc_router, ipc_schema as schema
+
+    before = wm.get_project_root()
+    result = ipc_router.dispatch({
+        "type": schema.WORKSPACE_SET_REQUEST,
+        "payload": {"path": str(tmp_path / "no_such_directory")},
+    })
+
+    # Not a silent no-op: the point of a visible working directory is
+    # that it says where ARIA actually is.
+    assert result["type"] == "error"
+    assert wm.get_project_root() == before
