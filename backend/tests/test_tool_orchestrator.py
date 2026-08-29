@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 
 from backend.core import file_tools
+from backend.core import ghost_workspace as ghost
 from backend.core import tool_orchestrator as orch
 from backend.core.tool_registry import PERMISSION_FILESYSTEM
 from backend.tools.tool_registry import ToolInvocation
@@ -91,11 +92,17 @@ def test_a_dry_run_does_not_run_the_tests(workspace):
 # ------------------------------------------------------
 # A live run means it
 # ------------------------------------------------------
-def test_a_live_edit_actually_writes(workspace):
+def test_a_live_edit_writes_to_staging_and_not_the_project(workspace):
     result = orch.execute_invocations([edit()], live())
 
     assert result.ok
-    assert (workspace / "notes.txt").read_text(encoding="utf-8") == REPLACEMENT
+    # The project is untouched. An edit the user has seen only as a
+    # sentence should not already be on disk where they keep their work.
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == ORIGINAL
+    # It is a proposal, sitting in the ghost workspace with a diff.
+    assert ghost.staged_files() == ["notes.txt"]
+    staged = ghost.staging_root() / "notes.txt"
+    assert "line two changed" in staged.read_text(encoding="utf-8")
 
 
 def test_a_live_edit_is_not_silently_a_preview(workspace):
@@ -107,7 +114,9 @@ def test_a_live_edit_is_not_silently_a_preview(workspace):
     """
     orch.execute_invocations([edit()], live())
 
-    assert (workspace / "notes.txt").read_text(encoding="utf-8") != ORIGINAL
+    staged = ghost.staging_root() / "notes.txt"
+    assert staged.is_file()
+    assert staged.read_text(encoding="utf-8") != ORIGINAL
 
 
 # ------------------------------------------------------
@@ -190,26 +199,36 @@ def test_a_read_needs_no_undo(workspace):
 # ------------------------------------------------------
 # What a rollback will not do
 # ------------------------------------------------------
-def test_creating_a_file_records_no_undo_that_would_delete_it(workspace):
+def test_a_staged_file_this_run_created_is_removed_on_rollback(workspace):
     context = live()
 
     result = orch.execute_invocations(
         [edit(path="brand_new.txt", content="hello", step_id="s1")], context)
 
     assert result.ok
-    assert (workspace / "brand_new.txt").exists()
-    # Undoing a creation means deleting, and "no deletion without
-    # confirmation" is a rule this layer keeps rather than quietly
-    # working around.
-    assert context.rollback_stack == []
-    assert any("delete" in e for e in context.errors)
+    # Staged, not created in the project.
+    assert not (workspace / "brand_new.txt").exists()
+    assert (ghost.staging_root() / "brand_new.txt").is_file()
+
+    # And undoable. Deleting a staged file this run created is ARIA's own
+    # scratch, not the user's work -- leaving half a proposal behind
+    # after a failed run is the state nobody designed, moved into
+    # staging. "No deletion without confirmation" still holds for the
+    # project, which is why the branch checks where the path is.
+    assert context.rollback_stack
+    context.rollback_stack[0][1]()
+    assert not (ghost.staging_root() / "brand_new.txt").exists()
 
 
 def test_a_file_too_large_to_capture_records_no_undo(workspace, monkeypatch):
+    # Stage it once so the ghost copy exists; the second edit is the one
+    # whose undo would have to capture it.
+    orch.execute_invocations([edit()], live())
+
     monkeypatch.setattr(file_tools, "MAX_READ_BYTES", 8)
     context = live()
 
-    orch.execute_invocations([edit()], context)
+    orch.execute_invocations([edit(content="something else")], context)
 
     # Restoring a truncated copy would not undo the edit, it would
     # destroy the tail of the file.
@@ -315,12 +334,14 @@ def test_a_turn_is_a_dry_run_unless_the_user_asked(workspace):
     assert "changed" in report["results"][0]["preview"]
 
 
-def test_the_user_can_ask_for_it_to_be_applied(workspace):
+def test_the_user_can_ask_for_it_to_be_staged(workspace):
     report = orch.run_answer_actions(ANSWER, "apply the changes")
 
     assert report["dry_run"] is False
     assert report["status"] == orch.STATUS_SUCCESS
-    assert (workspace / "notes.txt").read_text(encoding="utf-8") == "changed\n"
+    # Staged, not applied. The project still needs a commit.
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == ORIGINAL
+    assert ghost.staged_files() == ["notes.txt"]
 
 
 def test_the_model_cannot_grant_itself_a_live_run(workspace):

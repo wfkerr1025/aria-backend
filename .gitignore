@@ -56,3 +56,6 @@ AriaLauncher/**/bin/
 AriaLauncher/**/obj/
 AriaLauncher/**/WebView2Data/
 AriaLauncher/**/*.csproj.user
+
+# ARIA's staging area: proposed edits, not project files.
+.aria_staging/

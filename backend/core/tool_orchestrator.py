@@ -50,9 +50,11 @@ NOT IN THIS PASS, and the reason:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from backend.core import file_tools
+from backend.core import ghost_workspace
 from backend.core.tool_registry import (
     PERMISSION_FILESYSTEM,
     PERMISSION_NETWORK,
@@ -164,17 +166,24 @@ def _permission_for(tool_name: str) -> str:
     return schema.permission if schema else PERMISSION_FILESYSTEM
 
 
-def _record_undo(context: ExecutionContext, invocation) -> None:
+def _record_undo(context: ExecutionContext, tool_name: str, path: str | None) -> None:
     """Capture what it would take to undo this action, before it runs.
+
+    Takes the EFFECTIVE path -- the one the write will actually use --
+    rather than reading it back off the invocation. Since edits are
+    redirected into the ghost workspace, the invocation still carries the
+    project path, and an undo built from that would restore a file in the
+    project: a write to the project during a rollback, from the one layer
+    whose whole purpose is that the project is not written to until a
+    commit.
 
     Only for tools that change something. A read has nothing to undo, and
     inventing an undo for it would put entries on the stack that do
     nothing but obscure the ones that matter.
     """
-    if invocation.tool_name not in _MUTATING_TOOLS:
+    if tool_name not in _MUTATING_TOOLS:
         return
 
-    path = invocation.args.get("path")
     if not path:
         return
 
@@ -188,9 +197,26 @@ def _record_undo(context: ExecutionContext, invocation) -> None:
         truncated = bool(before.get("truncated"))
     except file_tools.WorkspaceError:
         # The file does not exist yet, so this edit creates it and the
-        # undo is a deletion. Deleting is not something this layer does
-        # without being asked -- "no deletion without confirmation" --
-        # so the undo is recorded as unavailable and said out loud.
+        # undo is a deletion.
+        #
+        # Inside the ghost workspace that is fine and is the right thing:
+        # a staged file this run created is ARIA's own scratch, not the
+        # user's work, and leaving half a proposal behind after a failed
+        # run is the "state nobody designed" this unwinding exists to
+        # prevent -- just moved into staging.
+        #
+        # Anywhere else it is not. "No deletion without confirmation"
+        # holds for the project, so the gap is recorded and said out loud
+        # rather than worked around.
+        target = Path(path)
+        if ghost_workspace.staging_root() in target.parents:
+            def undo_created() -> None:
+                target.unlink(missing_ok=True)
+                logger.info("removed staged file %s", target.name)
+
+            context.rollback_stack.insert(0, (str(target), undo_created))
+            return
+
         logger.info("%s does not exist; a rollback would have to delete it, "
                     "which this layer does not do unasked", path)
         context.errors.append(f"no rollback for {path}: it would have to be deleted")
@@ -276,7 +302,31 @@ def _run_one(invocation, context: ExecutionContext) -> ActionResult:
         # that reports success and changes nothing.
         args["confirm"] = True
 
-    _record_undo(context, invocation)
+        # And it lands in the ghost workspace, not the project. An edit
+        # the user has seen only as a sentence should not already be on
+        # disk where they keep their work; staged, it is a proposal with
+        # a diff attached, and ghost_workspace.commit() is what makes it
+        # real.
+        #
+        # Redirected here rather than inside edit_file. Staging every
+        # write at the primitive would be the stronger boundary, and is
+        # what to do if this ever needs defence in depth -- but it would
+        # also change what edit_file means for every existing caller and
+        # test, which is a large blast radius for a change whose whole
+        # point is to be reviewable. This is the only path that writes
+        # during a turn, and a test asserts it never hands edit_file a
+        # path outside staging.
+        try:
+            args["path"] = ghost_workspace.stage_path(args.get("path", ""))
+        except Exception as error:
+            logger.warning("refusing to stage %r: %s", args.get("path"), error)
+            return ActionResult(
+                step_id=invocation.step_id, tool_name=tool_name,
+                status=STATUS_FAILED, error=str(error),
+            )
+
+    # The staged path, not the invocation's. See _record_undo.
+    _record_undo(context, tool_name, args.get("path"))
 
     result = execute_tool(tool_name, args, context.allowed_permissions)
     if not result.ok:

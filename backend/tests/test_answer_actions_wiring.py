@@ -130,11 +130,24 @@ def test_the_default_is_set_before_any_dispatch():
 # ------------------------------------------------------
 # Live, when the user asked
 # ------------------------------------------------------
-def test_explicit_consent_applies_the_change(workspace, handler):
+def test_explicit_consent_stages_the_change(workspace, handler):
+    from backend.core import ghost_workspace as ghost
+
     packet = run(handler, ACTION_ANSWER, "apply the changes")[0]
 
     assert packet["dry_run"] is False
     assert packet["status"] == "success"
+    # Staged, not applied. Consent to run an action and consent to write
+    # it into the project are two different sentences, and the second one
+    # is a commit.
+    assert ghost.staged_files() == ["notes.txt"]
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == ORIGINAL
+
+    # And a commit is what makes it real -- a second sentence from the
+    # user, with its own consent check.
+    report = ghost.commit("commit the changes")
+
+    assert report["status"] == "committed"
     assert (workspace / "notes.txt").read_text(encoding="utf-8") == "changed\n"
 
 
