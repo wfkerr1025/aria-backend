@@ -55,16 +55,40 @@ function shouldFollow(metrics, state, reason) {
     return { follow: true, pinned: true };
   }
 
-  if (reason === "stream_end") {
-    // A single catch-up at the end, and only for a reader who never left.
-    // "Optionally scroll once, but never yank the user away from where
-    // they are reading" -- so being away is what decides it, not the fact
-    // that a turn finished.
+  if (reason === "assistant_message") {
+    // A new answer arriving. Worth positioning for -- the reader wants
+    // to see it start -- but only for a reader who is still at the
+    // bottom. Someone who scrolled up to re-read something has taken
+    // over, and a new message is not a reason to take it back.
     return { follow: atBottom, pinned: atBottom };
   }
 
-  // reason === "token", the common case.
-  return { follow: atBottom, pinned: atBottom };
+  if (reason === "stream_end") {
+    // No catch-up. It used to scroll a reader who was still at the
+    // bottom down to the end of the finished answer, which is the jump
+    // this change exists to remove: they are reading from the top of
+    // the message, and arriving at its last line the moment it finishes
+    // is exactly the yank being fixed.
+    return { follow: false, pinned: atBottom };
+  }
+
+  // reason === "token", the common case, and now never a scroll.
+  //
+  // Following the tail of a long answer means the reader is always
+  // looking at its last line, and has to scroll UP to read the thing
+  // from the start -- which is what "I have to scroll every message"
+  // was describing. It was not that nothing scrolled; it was that the
+  // scroll landed in the wrong place.
+  //
+  // So the view is positioned once, at the top of the new message
+  // (chat.js's scrollToMessageTop), and then left alone while the text
+  // arrives underneath. That is what Claude and Copilot do, and it is
+  // the only arrangement where a long answer is readable as it is
+  // written.
+  //
+  // pinned is still tracked, because stream_end and the next message
+  // need to know whether the reader stayed.
+  return { follow: false, pinned: atBottom };
 }
 
 /* Node (tests) and the browser both, without a build step. */

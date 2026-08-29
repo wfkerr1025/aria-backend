@@ -276,28 +276,61 @@ def test_streaming_does_not_scroll_a_reader_who_has_moved_up():
     assert result["pinned"] is False
 
 
-def test_streaming_follows_a_reader_who_is_at_the_bottom():
-    [result] = run_policy([
+def test_streaming_never_scrolls():
+    """Changed contract, and the point of the change.
+
+    Following the tail meant the reader always looked at the answer's
+    last line and had to scroll UP to read it from the start -- which is
+    what "I have to scroll every message" was describing. It was not
+    that nothing scrolled; the scroll landed at the wrong end.
+
+    The view is positioned once, at the top of the new message
+    (chat.js's scrollToMessageTop), and left alone while the text
+    arrives underneath.
+    """
+    results = run_policy([
         {"metrics": at_bottom(), "state": {"pinned": True}, "reason": "token"},
+        {"metrics": scrolled_up(), "state": {"pinned": False}, "reason": "token"},
     ])
-    assert result["follow"] is True
+    assert [r["follow"] for r in results] == [False, False]
 
 
-def test_scrolling_back_down_resumes_following():
-    """Recomputed per token, so coming back does not need a new turn."""
+def test_streaming_still_tracks_whether_the_reader_stayed():
+    """follow is gone; pinned is not.
+
+    A new message still has to know whether the reader is at the bottom,
+    and that is recomputed from the live position on every token -- so
+    someone who scrolls back down is picked up by the next message
+    without waiting for a new turn.
+    """
     results = run_policy([
         {"metrics": scrolled_up(), "state": {"pinned": True}, "reason": "token"},
         {"metrics": at_bottom(), "state": {"pinned": False}, "reason": "token"},
     ])
-    assert [r["follow"] for r in results] == [False, True]
+    assert [r["pinned"] for r in results] == [False, True]
+
+
+def test_an_answer_arriving_scrolls_only_for_a_reader_at_the_bottom():
+    """The new message positions the view; a reader who left keeps it."""
+    results = run_policy([
+        {"metrics": at_bottom(), "state": {"pinned": True}, "reason": "assistant_message"},
+        {"metrics": scrolled_up(), "state": {"pinned": False}, "reason": "assistant_message"},
+    ])
+    assert [r["follow"] for r in results] == [True, False]
 
 
 def test_stream_end_does_not_yank_a_reader_back():
-    """"Optionally scroll once at the end, but never yank the user away."""
-    [result] = run_policy([
+    """Now for a reader at the bottom too.
+
+    It used to scroll someone still at the bottom down to the end of the
+    finished answer. They are reading it from the top; arriving at its
+    last line the moment it finishes is exactly the jump this removes.
+    """
+    results = run_policy([
         {"metrics": scrolled_up(), "state": {"pinned": False}, "reason": "stream_end"},
+        {"metrics": at_bottom(), "state": {"pinned": True}, "reason": "stream_end"},
     ])
-    assert result["follow"] is False
+    assert [r["follow"] for r in results] == [False, False]
 
 
 def test_sending_a_message_always_scrolls():
@@ -324,12 +357,18 @@ def test_the_decision_is_stable_across_a_long_response():
 
 
 def test_a_hair_from_the_bottom_still_counts_as_the_bottom():
-    """Fractional layout values must not read as "the reader scrolled up"."""
+    """Fractional layout values must not read as "the reader scrolled up".
+
+    Asserted on `pinned` rather than `follow`: a token no longer scrolls
+    at all, so the thing this protects is the flag the NEXT message
+    reads. The property is unchanged -- a reader who has not moved must
+    not be treated as one who has.
+    """
     [result] = run_policy([
         {"metrics": {"scrollTop": 899.6, "scrollHeight": 1000, "clientHeight": 100},
          "state": {"pinned": True}, "reason": "token"},
     ])
-    assert result["follow"] is True
+    assert result["pinned"] is True
 
 # ======================================================
 # The legacy typing indicator is gone

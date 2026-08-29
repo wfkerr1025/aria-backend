@@ -835,8 +835,43 @@ const Chat = {
     };
   },
 
-  // Scroll to the bottom only if the reader has not moved away.
-  _maybeScroll(reason) {
+  /* Put the top of a message at the top of the view.
+   *
+   * The replacement for `scrollTop = scrollHeight`. Scrolling to the
+   * bottom of a long answer leaves the reader looking at its last line
+   * with the whole thing above them, which is what "I have to scroll
+   * every message" meant: not that nothing moved, but that it moved to
+   * the wrong end.
+   *
+   * Offset arithmetic rather than scrollIntoView(): the transcript is a
+   * scroll container inside a page that also scrolls, and
+   * scrollIntoView moves whichever ancestor it likes -- which is how a
+   * transcript scroll turns into the whole app jumping.
+   */
+  scrollToMessageTop(element) {
+    if (!this.history || !element) return;
+
+    // Measured against the container's CONTENT box, not its border box.
+    // getBoundingClientRect().top is the outer edge; the first line of
+    // text sits below the border and the padding, so aligning to the
+    // outer edge leaves the message that far down the view -- measured
+    // at 17px with a 1px border and 10px of padding.
+    const box = this.history.getBoundingClientRect();
+    const paddingTop = parseFloat(getComputedStyle(this.history).paddingTop) || 0;
+    const contentTop = box.top + this.history.clientTop + paddingTop;
+
+    const messageTop = element.getBoundingClientRect().top;
+    const target = this.history.scrollTop + (messageTop - contentTop);
+
+    // Clamped: a short final message cannot be brought to the top of the
+    // view, and asking for it would otherwise scroll past the end.
+    const maxScroll = this.history.scrollHeight - this.history.clientHeight;
+    this.history.scrollTop = Math.max(0, Math.min(target, maxScroll));
+  },
+
+  // Scroll only if the reader has not moved away, and only to the top of
+  // the message that prompted it.
+  _maybeScroll(reason, element) {
     if (!this.history) return;
 
     const { follow, pinned } = this._scrollPolicy().shouldFollow(
@@ -850,7 +885,13 @@ const Chat = {
     );
 
     this._scrollPinned = pinned;
-    if (follow) {
+    if (!follow) return;
+
+    if (element) {
+      this.scrollToMessageTop(element);
+    } else {
+      // No element to aim at -- the old behaviour, kept for any caller
+      // that has nothing better to offer.
       this.history.scrollTop = this.history.scrollHeight;
     }
   },
@@ -1032,7 +1073,10 @@ const Chat = {
     // A message the reader sent is the one case that always scrolls --
     // they just acted, and their own words are at the bottom. Anything
     // else respects where they are reading.
-    this._maybeScroll(sender === "user" ? "new_message" : "token");
+    // Aimed at the message that just arrived, from either side. The
+    // user's own message always scrolls; an answer scrolls only for a
+    // reader who is still at the bottom.
+    this._maybeScroll(sender === "user" ? "new_message" : "assistant_message", group);
 
     return { group, line };
   },
