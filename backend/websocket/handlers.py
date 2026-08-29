@@ -447,6 +447,15 @@ class WebSocketHandler:
         if result.model_cfg is not None and result.safety_decision is not None:
             await self._emit_warnings(result.model_cfg, result.safety_decision)
 
+        # Notices accompany a turn rather than replacing it: today, the
+        # chat capability gate saying it moved this turn onto a model that
+        # can follow the protocol. Sent before the answer, so the reason
+        # is on screen by the time the different model's text arrives --
+        # otherwise the switch looks like ARIA ignoring the model the user
+        # picked.
+        for notice in result.notices:
+            await self._send({"type": "warning_event", **notice})
+
         if result.kind == KIND_SAFETY_WARNING:
             await self._send(result.warning)
             await self._emit_status(turn_status.IDLE)

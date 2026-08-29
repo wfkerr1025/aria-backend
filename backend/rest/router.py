@@ -766,6 +766,7 @@ async def _prepare_chat_turn(payload: ChatRequest, loop: asyncio.AbstractEventLo
 
     Returns a dict:
       {"short_circuit": {...} | None, "inference_request": InferenceRequest | None,
+       "notices": [ {id, level, message, model_id}, ... ],
        "model_id": str | None, "conversation_id": str | None}
 
     short_circuit, when set, is one of:
@@ -809,12 +810,22 @@ async def _prepare_chat_turn(payload: ChatRequest, loop: asyncio.AbstractEventLo
     # stored. A model switch is not one of these: it is persistent state,
     # and _apply_model_switch below writes it through ModeManager.
 
+    # A notice accompanies the turn rather than replacing it -- today,
+    # the chat capability gate saying it moved this turn onto a model that
+    # can follow the protocol. REST has no banner to push it to, so it
+    # rides on the turn and is logged: an HTTP caller that gets an answer
+    # from a model other than the one it named should be able to find out
+    # why without reading the server's mind.
+    for notice in result.notices:
+        unified_log("rest", "INFO", notice.get("message", ""), dict(notice))
+
     def turn(short_circuit, model_id, inference_request=None):
         return {
             "short_circuit": short_circuit,
             "inference_request": inference_request,
             "model_id": model_id,
             "conversation_id": conversation_id,
+            "notices": list(result.notices),
         }
 
     if result.kind == KIND_SAFETY_WARNING:

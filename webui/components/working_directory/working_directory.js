@@ -57,16 +57,26 @@ const WorkingDirectory = {
 
   summary() {
     const s = this.state || {};
+    // Three counts, always all three, in a fixed order. The previous
+    // version dropped "0 staged" and dropped the capability note when it
+    // was fine, which read as tidier and was worse: a line whose fields
+    // come and go has to be re-read to be understood, and the reason to
+    // glance at it is to confirm nothing changed.
+    //
+    // workspace_count comes from the packet rather than being counted
+    // here -- the Control Center holds the list and is usually closed.
+    const workspaces = Number(s.workspace_count || 0);
+    const staged = Number(s.staged_count || 0);
+    const capable = s.tool_capable === false ? "No" : "Yes";
+    return `Workspaces: ${workspaces} · Staged: ${staged} · Tool-capable: ${capable}`;
+  },
+
+  projectName() {
     // Both separators: these paths come from a Windows backend, so
     // splitting on "/" alone returns the whole path as one segment and
     // the line reads as the full directory instead of its name.
-    const project = String(s.project_root || "").split(/[\\/]/).filter(Boolean).pop() || "—";
-    const staged = Number(s.staged_count || 0);
-
-    const bits = [project];
-    if (staged) bits.push(`${staged} staged`);
-    if (s.tool_capable === false) bits.push("not tool-capable");
-    return bits.join(" · ");
+    const root = String(this.state?.project_root || "");
+    return root.split(/[\\/]/).filter(Boolean).pop() || "—";
   },
 
   render() {
@@ -76,7 +86,7 @@ const WorkingDirectory = {
     this.el.title = "Open the ARIA Control Center";
     this.el.innerHTML = `
       <div class="wd-title" data-wd="open" role="button" tabindex="0">
-        <span>ARIA Working Directory</span>
+        <span>${escapeHtml(this.projectName())}</span>
         <span class="wd-summary">${escapeHtml(this.summary())}</span>
       </div>`;
 

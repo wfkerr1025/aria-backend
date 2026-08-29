@@ -136,6 +136,12 @@ def describe_workspace() -> dict:
         "active_model": active,
         "tool_capable": model_capability.supports_tool_use(active),
         "capability_warning": model_capability.capability_warning(active),
+        # How many projects are registered, so the one-line status can say
+        # "Workspaces: 2" without a second round trip. Counted here rather
+        # than in the UI: the page that owns the list is not always open,
+        # and a status line that has to wait for another packet shows a
+        # wrong number until it arrives.
+        "workspace_count": len(_state.workspaces),
     }
 
 

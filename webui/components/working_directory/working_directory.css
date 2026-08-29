@@ -32,8 +32,10 @@
 
 #working-directory-panel .wd-title {
   font-weight: 600;
-  margin-bottom: 6px;
   opacity: 0.85;
+  /* No margin-bottom: it separated this from the rows underneath, and
+     there are no rows underneath any more -- it was 6px of empty space
+     below the only line the panel has. */
 }
 
 #working-directory-panel .wd-row {

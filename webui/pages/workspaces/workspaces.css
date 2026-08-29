@@ -75,3 +75,127 @@
   margin: 0; padding: 8px 10px; max-height: 320px; overflow: auto;
   font-size: 11px; line-height: 1.45; background: var(--panel-bg-alt, rgba(255,255,255,.03));
 }
+
+
+/* ==============================================================
+   Refresh feedback
+
+   Refresh always sent its packet; when the state came back identical
+   -- the normal case -- nothing on screen moved, so a working button
+   was indistinguishable from a dead one. These three say so: the
+   spinner while the request is out, the timestamp when it lands, and
+   a flash on the cards it rendered.
+   ============================================================== */
+.ws-spinner {
+  display: none;
+  width: 11px;
+  height: 11px;
+  margin-right: 6px;
+  vertical-align: -1px;
+  border: 2px solid var(--border-color, #444);
+  border-top-color: var(--accent-color, #6aa9ff);
+  border-radius: 50%;
+  animation: ws-spin 0.7s linear infinite;
+}
+
+#ws-refresh.is-busy .ws-spinner { display: inline-block; }
+
+@keyframes ws-spin { to { transform: rotate(360deg); } }
+
+.ws-refreshed {
+  margin-left: auto;         /* pushed to the far end of the toolbar */
+  font-size: 11px;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;   /* the clock must not jitter */
+}
+
+.ws-flash { animation: ws-flash 0.6s ease-out; }
+
+@keyframes ws-flash {
+  from { background: var(--accent-soft, rgba(106, 169, 255, 0.18)); }
+  to   { background: transparent; }
+}
+
+/* An animation whose only job is to confirm a click is exactly the kind
+   a reduced-motion setting means. The timestamp still says it happened. */
+@media (prefers-reduced-motion: reduce) {
+  .ws-spinner { animation: none; }
+  .ws-flash { animation: none; }
+}
+
+
+/* ==============================================================
+   The dialog
+
+   Replaces window.prompt(), which an Electron renderer does not
+   implement -- it throws, which is why the buttons that called it sent
+   nothing at all.
+   ============================================================== */
+.ws-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.ws-dialog-backdrop[hidden] { display: none; }
+
+.ws-dialog {
+  width: min(460px, calc(100vw - 48px));
+  padding: 18px 20px;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 10px;
+  background: var(--panel-bg, #1b1b1b);
+  color: var(--text-color, #ddd);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.ws-dialog-title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.ws-dialog-message {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0.75;
+}
+
+.ws-dialog-message[hidden], .ws-dialog-label[hidden], .ws-dialog-input[hidden] {
+  display: none;
+}
+
+.ws-dialog-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  opacity: 0.65;
+}
+
+.ws-dialog-input {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 6px;
+  background: var(--input-bg, #141414);
+  color: inherit;
+  font-family: var(--mono-font, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+}
+
+.ws-dialog-input:focus-visible {
+  outline: 2px solid var(--focus-color, #6aa9ff);
+  outline-offset: 1px;
+}
+
+.ws-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}

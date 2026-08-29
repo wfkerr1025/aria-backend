@@ -28,18 +28,37 @@ const Workspaces = {
   workspaces: [],
   selectedId: null,
   details: null,
+  // A request is in flight. Drives the Refresh button's spinner, and
+  // stops a second click queueing a second answer to the same question.
+  busy: false,
+  // Set when the user asked for a refresh, cleared when the cards flash.
+  // Without it every arriving packet would flash the list, including the
+  // one that renders the page, and a highlight that fires constantly
+  // stops meaning "this just changed".
+  flashPending: false,
+  bound: false,
 
   init() {
     this.bind();
-    window.addEventListener("backend-packet", (evt) => this.onPacket(evt.detail));
+    // Router.navigate() re-imports this module on every visit, but an ES
+    // module is cached: init() runs again on the SAME object. Without
+    // this guard the window listener accumulates, and after three visits
+    // one packet renders the page three times.
+    if (!this.bound) {
+      window.addEventListener("backend-packet", (evt) => this.onPacket(evt.detail));
+      this.bound = true;
+    }
     this.refresh();
   },
 
   bind() {
+    // The elements are new on every navigation (the router replaces
+    // panel-container's innerHTML), so these are re-attached each time --
+    // unlike the window listener above, which is not.
     document.getElementById("ws-add")
       ?.addEventListener("click", () => this.addWorkspace());
     document.getElementById("ws-refresh")
-      ?.addEventListener("click", () => this.refresh());
+      ?.addEventListener("click", () => { this.flashPending = true; this.refresh(); });
   },
 
   onPacket(packet) {
@@ -55,61 +74,109 @@ const Workspaces = {
         this.details = null;
       }
       this.renderList();
+      this.markRefreshed();
+      this.flashCards();
       if (this.selectedId && !this.details) this.loadDetails(this.selectedId);
     } else if (packet.type === IPC.WORKSPACE_DETAILS_RESULT) {
       this.details = payload;
       this.selectedId = payload.id;
       this.renderDetails();
       this.renderList();
+      this.markRefreshed();
     } else if (packet.type === "error" && String(payload.request || "").startsWith("workspace_")) {
+      // Clears the spinner too. A refused operation that left the button
+      // spinning would read as "still working" forever.
+      this.setBusy(false);
       this.showError(payload.message || "That workspace operation was refused.");
     }
   },
 
-  refresh() { bridge.send(IPC.WORKSPACE_LIST_REQUEST, {}); },
-  loadDetails(id) { bridge.send(IPC.WORKSPACE_DETAILS_REQUEST, { id }); },
+  refresh() {
+    this.setBusy(true);
+    bridge.send(IPC.WORKSPACE_LIST_REQUEST, {});
+  },
 
-  addWorkspace() {
-    const path = window.prompt("Project directory:");
+  loadDetails(id) {
+    this.setBusy(true);
+    bridge.send(IPC.WORKSPACE_DETAILS_REQUEST, { id });
+  },
+
+  async addWorkspace() {
+    const path = await dialog.text({
+      title: "Add Workspace",
+      message: "ARIA will stage its edits inside this directory and write "
+             + "into it only when you commit them.",
+      label: "Project directory",
+      placeholder: "D:\\projects\\my-app",
+    });
     if (path === null) return;      // cancelled, not cleared
     // Sent as typed. Validation belongs to the backend, which knows what
     // the file tools will accept; a check here could pass while the real
     // one fails.
+    this.setBusy(true);
     bridge.send(IPC.WORKSPACE_ADD_REQUEST, { path });
   },
 
-  removeWorkspace(id) {
+  async removeWorkspace(id) {
     const workspace = this.workspaces.find((w) => w.id === id);
     const staged = Number(workspace?.staged_count || 0);
-    const warning = staged
-      ? `\n\n${staged} staged change${staged === 1 ? "" : "s"} will be left on disk, not deleted.`
-      : "";
-    if (!window.confirm(`Stop tracking "${workspace?.name}"?${warning}`)) return;
+    // Says what survives it. Removing is bookkeeping -- ARIA stops
+    // tracking the project -- and never a delete, so a user who reads
+    // "Remove" as "throw the staged work away" should be corrected before
+    // they decide, not after.
+    const consequence = staged
+      ? `Its ${staged} staged change${staged === 1 ? "" : "s"} will be left on disk, not deleted.`
+      : "Nothing is staged in it.";
 
+    const confirmed = await dialog.confirm({
+      title: `Stop tracking "${workspace?.name}"?`,
+      message: consequence,
+      confirmLabel: "Remove",
+    });
+    if (!confirmed) return;
+
+    this.setBusy(true);
     bridge.send(IPC.WORKSPACE_REMOVE_REQUEST, { id });
   },
 
-  setPrimary(id) { bridge.send(IPC.WORKSPACE_PRIMARY_REQUEST, { id }); },
+  setPrimary(id) {
+    this.setBusy(true);
+    bridge.send(IPC.WORKSPACE_PRIMARY_REQUEST, { id });
+  },
 
-  // Commit, discard and rollback all carry the user's own words, because
-  // that is what the backend checks for consent. Asking here rather than
-  // sending a canned phrase is the difference between the user
-  // authorising the change and this page authorising it for them.
-  commit(id, files) {
-    const user_text = window.prompt(
-      "Type what you want to happen (for example: commit the changes):", "");
+  // Commit and discard carry the user's own words, because that is what
+  // the backend checks for consent. Asking here rather than sending a
+  // canned phrase is the difference between the user authorising the
+  // change and this page authorising it for them -- so the field starts
+  // EMPTY. A pre-filled "commit the changes" would be this page writing
+  // the consent and the user pressing OK.
+  async commit(id, files) {
+    const user_text = await dialog.text({
+      title: files ? "Commit this file" : "Commit all staged changes",
+      message: "This writes the staged version into the project. "
+             + "Say what you want to happen, in your own words.",
+      label: "For example: commit the changes",
+    });
     if (user_text === null) return;
+    this.setBusy(true);
     bridge.send(IPC.WORKSPACE_COMMIT_REQUEST, { id, files, user_text });
   },
 
-  discard(id, files) {
-    const user_text = window.prompt(
-      "Type what you want to happen (for example: discard the changes):", "");
+  async discard(id, files) {
+    const user_text = await dialog.text({
+      title: files ? "Discard this file" : "Discard all staged changes",
+      message: "This throws the staged version away. The project is not touched.",
+      label: "For example: discard the changes",
+    });
     if (user_text === null) return;
+    this.setBusy(true);
     bridge.send(IPC.WORKSPACE_DISCARD_REQUEST, { id, files, user_text });
   },
 
-  rollback(id, files) { bridge.send(IPC.WORKSPACE_ROLLBACK_REQUEST, { id, files }); },
+  rollback(id, files) {
+    this.setBusy(true);
+    bridge.send(IPC.WORKSPACE_ROLLBACK_REQUEST, { id, files });
+  },
 
   showError(message) {
     const banner = document.getElementById("ws-error");
@@ -117,6 +184,59 @@ const Workspaces = {
     banner.textContent = message;
     banner.style.display = "block";
     setTimeout(() => { banner.style.display = "none"; }, 6000);
+  },
+
+  /* --------------------------------------------------------------
+     Saying that something happened
+
+     Refresh sends a packet and always did; what it never did was look
+     like it. When the state comes back identical -- which is the normal
+     case -- nothing on the page changed, so a working button and a dead
+     one were indistinguishable. All three of these exist to tell those
+     apart: the spinner while the request is out, the timestamp when the
+     answer lands, and the flash on the cards it rendered.
+     -------------------------------------------------------------- */
+  setBusy(busy) {
+    this.busy = busy;
+    const button = document.getElementById("ws-refresh");
+    if (!button) return;
+    button.classList.toggle("is-busy", busy);
+    // Shown, never disabled.
+    //
+    // The first version disabled it, and that was a trap found by
+    // clicking it: a list result clears the flag and then immediately
+    // arms it again for the details request behind it, so any request
+    // that never gets an answer leaves Refresh permanently dead -- and
+    // Refresh is the one control that would have recovered the page.
+    //
+    // A refresh is an idempotent read. There is nothing to protect
+    // against by blocking a second one, and everything to lose by making
+    // the escape hatch the thing that jams.
+  },
+
+  markRefreshed() {
+    this.setBusy(false);
+    const stamp = document.getElementById("ws-refreshed");
+    if (stamp) stamp.textContent = `Refreshed at ${new Date().toLocaleTimeString()}`;
+  },
+
+  flashCards() {
+    if (!this.flashPending) return;
+    this.flashPending = false;
+    document.querySelectorAll("#ws-list .ws-card").forEach((card) => {
+      card.classList.add("ws-flash");
+
+      // animationend, with a timer behind it. The event is the accurate
+      // signal and the timer is the one that always arrives: under
+      // prefers-reduced-motion the animation is `none` and animationend
+      // never fires at all, and in a hidden tab animations do not
+      // advance -- which is how this was found. Either way the class
+      // would stick, and a stale .ws-flash means every card flashes at
+      // once the moment animations resume.
+      const clear = () => card.classList.remove("ws-flash");
+      card.addEventListener("animationend", clear, { once: true });
+      setTimeout(clear, 1000);
+    });
   },
 
   /* --------------------------------------------------------------
@@ -218,6 +338,83 @@ const Workspaces = {
       button.addEventListener("click", () => this[act](d.id, [file]));
     });
   },
+};
+
+/* ----------------------------------------------------------------
+   The dialog
+
+   window.prompt() throws in an Electron renderer -- it is not
+   implemented and will not be. Every button on this page that asked a
+   question through it therefore threw inside its own click handler,
+   sent no packet, and looked from the outside like a button that was
+   never wired up. That is the whole of the "Add Workspace does
+   nothing" bug.
+
+   Promise-based so the callers read the way they did before: `const
+   path = await dialog.text(...)`, null for cancelled. The distinction
+   between null and "" is kept deliberately -- cancelling and clearing
+   are different answers, and only one of them should send a packet.
+   ---------------------------------------------------------------- */
+const dialog = {
+  open({ title, message, label, placeholder, confirmLabel, withInput }) {
+    const backdrop = document.getElementById("ws-dialog");
+    const input = document.getElementById("ws-dialog-input");
+    const labelEl = document.getElementById("ws-dialog-label");
+    const ok = document.getElementById("ws-dialog-ok");
+    const cancel = document.getElementById("ws-dialog-cancel");
+    const titleEl = document.getElementById("ws-dialog-title");
+    const messageEl = document.getElementById("ws-dialog-message");
+
+    // No dialog in the DOM means the page was replaced mid-flight.
+    // Resolving as cancelled is the safe direction: it sends nothing.
+    if (!backdrop || !input || !ok || !cancel) return Promise.resolve(null);
+
+    titleEl.textContent = title || "";
+    messageEl.textContent = message || "";
+    messageEl.hidden = !message;
+    labelEl.textContent = label || "";
+    labelEl.hidden = !withInput;
+    input.hidden = !withInput;
+    input.value = "";
+    input.placeholder = placeholder || "";
+    ok.textContent = confirmLabel || "OK";
+    backdrop.hidden = false;
+
+    if (withInput) input.focus();
+    else ok.focus();
+
+    return new Promise((resolve) => {
+      const finish = (value) => {
+        backdrop.hidden = true;
+        // Removed by hand rather than left to the elements being
+        // replaced: this dialog is reused, so a listener left behind
+        // would resolve the NEXT dialog's promise as well.
+        ok.removeEventListener("click", onOk);
+        cancel.removeEventListener("click", onCancel);
+        backdrop.removeEventListener("click", onBackdrop);
+        document.removeEventListener("keydown", onKey);
+        resolve(value);
+      };
+      const onOk = () => finish(withInput ? input.value : true);
+      const onCancel = () => finish(withInput ? null : false);
+      const onBackdrop = (event) => { if (event.target === backdrop) onCancel(); };
+      const onKey = (event) => {
+        if (event.key === "Escape") onCancel();
+        // Enter confirms from the field only. On a confirmation there is
+        // no field, and a stray Enter accepting a destructive default is
+        // exactly the accident this dialog should not enable.
+        else if (event.key === "Enter" && withInput && document.activeElement === input) onOk();
+      };
+
+      ok.addEventListener("click", onOk);
+      cancel.addEventListener("click", onCancel);
+      backdrop.addEventListener("click", onBackdrop);
+      document.addEventListener("keydown", onKey);
+    });
+  },
+
+  text(options) { return this.open({ ...options, withInput: true }); },
+  confirm(options) { return this.open({ ...options, withInput: false }); },
 };
 
 function describeReport(report) {

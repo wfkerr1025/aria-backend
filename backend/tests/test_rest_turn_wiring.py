@@ -358,11 +358,23 @@ def test_a_rejected_model_switch_says_so_instead_of_claiming_success(offline, mo
 # ======================================================
 # The returned contract, which both routes depend on
 # ======================================================
-def test_every_result_carries_the_four_documented_keys(offline):
+def test_every_result_carries_the_documented_keys(offline):
+    # Exact, not a superset: both routes read this dict by name, and a key
+    # appearing here that the docstring above prepare() does not mention is
+    # a contract that drifted. `notices` was added with the chat capability
+    # gate -- an HTTP caller whose named model was substituted learns it
+    # here, since REST has no banner to push a warning to.
     for message in ("hello", "what model are you", "what is the weather in Paris",
                     "explain the build pipeline"):
         result = prepare(message)
-        assert set(result) == {"short_circuit", "inference_request", "model_id", "conversation_id"}
+        assert set(result) == {"short_circuit", "inference_request", "model_id",
+                               "conversation_id", "notices"}
+
+
+def test_an_ordinary_turn_carries_no_notices(offline):
+    # The gate is silent unless it acts. A notice on every turn would train
+    # the user to ignore the one turn it matters on.
+    assert prepare("explain the build pipeline")["notices"] == []
 
 
 def test_the_session_id_comes_back_as_the_conversation_id(offline):

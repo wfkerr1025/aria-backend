@@ -18,8 +18,13 @@
 
   <div class="ws-toolbar">
     <button id="ws-add" class="ws-btn ws-btn-primary" type="button">Add Workspace</button>
-    <button id="ws-refresh" class="ws-btn" type="button">Refresh</button>
+    <button id="ws-refresh" class="ws-btn" type="button">
+      <span class="ws-spinner" aria-hidden="true"></span><span>Refresh</span>
+    </button>
     <span id="ws-summary" class="ws-summary"></span>
+    <!-- Proof the click did something. A refresh that returns identical
+         state used to look exactly like a refresh that never fired. -->
+    <span id="ws-refreshed" class="ws-refreshed" role="status" aria-live="polite"></span>
   </div>
 
   <!-- Errors are shown, never swallowed: a refused directory or an
@@ -30,5 +35,26 @@
   <div class="ws-layout">
     <div id="ws-list" class="ws-list" aria-label="Workspaces"></div>
     <div id="ws-details" class="ws-details"></div>
+  </div>
+
+  <!-- ARIA runs inside Electron, and Electron's renderer does not
+       implement window.prompt() -- it throws. Every button here that
+       asked a question through it therefore threw inside its own click
+       handler and sent nothing, which is exactly what "the button renders
+       but no packet leaves" looked like from the outside. This dialog
+       replaces it. confirm() does work in Electron, but it is replaced
+       too: one dialog is less to keep working than two, and the removal
+       warning has more to say than a single line of text. -->
+  <div id="ws-dialog" class="ws-dialog-backdrop" hidden>
+    <div class="ws-dialog" role="dialog" aria-modal="true" aria-labelledby="ws-dialog-title">
+      <h2 id="ws-dialog-title" class="ws-dialog-title"></h2>
+      <p id="ws-dialog-message" class="ws-dialog-message"></p>
+      <label id="ws-dialog-label" class="ws-dialog-label" for="ws-dialog-input"></label>
+      <input id="ws-dialog-input" class="ws-dialog-input" type="text" autocomplete="off" spellcheck="false" />
+      <div class="ws-dialog-actions">
+        <button id="ws-dialog-cancel" class="ws-btn" type="button">Cancel</button>
+        <button id="ws-dialog-ok" class="ws-btn ws-btn-primary" type="button">OK</button>
+      </div>
+    </div>
   </div>
 </section>

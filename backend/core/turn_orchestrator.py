@@ -38,6 +38,7 @@ from __future__ import annotations
 from typing import Callable
 
 from backend.core import (
+    chat_capability_gate,
     evidence_routing,
     key_manager,
     search_intent,
@@ -52,6 +53,7 @@ from backend.core.conversation_manager import (
     INTENT_MODEL_SWITCH,
     INTENT_SEARCH_QUERY,
     INTENT_WEATHER_QUERY,
+    INTENT_WORKSPACE_QUERY,
     SELF_QUERY_INTENTS,
     apply_history_policy,
     detect_intent,
@@ -93,6 +95,10 @@ __all__ = ["orchestrate_turn"]
 
 SKR_MODEL = "skr"
 SEARCH_MODEL = "search"
+# Same convention as the two above: a marker in modelId telling the
+# client this text came from a registry, not from a model, so the UI
+# never attributes a read fact to whichever model happens to be loaded.
+WORKSPACE_MODEL = "workspace"
 
 # Cloud Mode with no key configured anywhere. Shaped like every other
 # safety warning so both transports' existing warning branch renders it
@@ -243,6 +249,75 @@ def _search_reply(request: TurnRequest, telemetry: list) -> TurnResult:
         conversation_id=request.conversation_id,
         session_updates={"last_turn_was_weather": False},
         telemetry=telemetry + [_event("tool_query_answered_directly", intent=INTENT_SEARCH_QUERY)],
+    )
+
+
+def _workspace_reply(request: TurnRequest, telemetry: list) -> TurnResult:
+    """Where ARIA is actually working. No model is invoked.
+
+    Read from workspace_manager, which is the same authority file_tools
+    enforces its boundary against -- so this cannot report a directory
+    ARIA would not actually write in.
+
+    The reason it is a short-circuit rather than a prompt hint is the
+    failure it replaces. Asked "what is your working directory?", a small
+    model invents a path: confident, well-formed, and wrong. Of all the
+    questions to hallucinate an answer to, this is the worst one, because
+    the answer is what the user then acts on. A fact with an authority
+    behind it should never be routed through a model at all.
+    """
+    from backend.core import workspace_manager
+
+    try:
+        described = workspace_manager.describe_workspace()
+        workspaces = workspace_manager.get_workspace_list()
+    except Exception:
+        logger.exception("could not read the workspace for a workspace query")
+        return TurnResult(
+            kind=KIND_TEXT,
+            text="I could not read my working directory just now.",
+            model_id=WORKSPACE_MODEL,
+            conversation_id=request.conversation_id,
+            session_updates={"last_turn_was_weather": False},
+            telemetry=telemetry + [_event("workspace_query_failed")],
+        )
+
+    staged = int(described.get("staged_count") or 0)
+    lines = [
+        f"My active workspace is: {described.get('project_root')}",
+        f"Ghost workspace: {described.get('ghost_root')}",
+        f"Staged files: {staged}",
+    ]
+
+    # Named, not summarised as a number: with more than one project
+    # registered, "which one is active" is the actual question behind the
+    # question, and a count does not answer it.
+    others = [w for w in workspaces if str(w.get("root_path")) != str(described.get("project_root"))]
+    if others:
+        lines.append("")
+        lines.append("Also registered:")
+        lines.extend(
+            f"  - {w.get('name')} ({w.get('root_path')}) - {int(w.get('staged_count') or 0)} staged"
+            for w in others
+        )
+
+    if staged:
+        lines.append("")
+        lines.append(
+            "Staged edits live in the ghost workspace and reach the project "
+            "only when you commit them."
+        )
+
+    return TurnResult(
+        kind=KIND_TEXT,
+        text="\n".join(lines),
+        model_id=WORKSPACE_MODEL,
+        conversation_id=request.conversation_id,
+        session_updates={"last_turn_was_weather": False},
+        telemetry=telemetry + [_event(
+            "workspace_query_answered_directly", staged_count=staged,
+            workspace_count=len(workspaces),
+        )],
     )
 
 
@@ -524,6 +599,9 @@ def orchestrate_turn(
     telemetry.append(_event("intent_detected", intent=intent))
 
     # --- 3. Short-circuits. Any other message ends the weather window.
+    if intent == INTENT_WORKSPACE_QUERY:
+        return _workspace_reply(request, telemetry)
+
     if intent in SELF_QUERY_INTENTS:
         return _self_knowledge_reply(intent, request, mode_manager, telemetry)
 
@@ -665,6 +743,54 @@ def orchestrate_turn(
         )
         model_id = None
 
+    # --- 5c. Can this model hold a chat turn at all?
+    #
+    # A 0.5B answers by inventing a system prompt and replying to a
+    # question nobody asked. The evidence ladder above already keeps an
+    # evidence-bearing turn off one; ORDINARY chat had no such floor, so
+    # an explicit pin onto a small model reached the provider and came
+    # back as noise.
+    #
+    # Placed here on purpose: after the evidence route has had its say
+    # (so a cloud-routed turn, model_id None, is left alone) and BEFORE
+    # the safety gate, so the model that gets evaluated is the model that
+    # will actually be loaded. The gate is not skipped for a substituted
+    # model and there is no switch_model() ahead of it -- see
+    # backend/core/chat_capability_gate.py for why that distinction is
+    # the whole design.
+    notices: list[dict] = []
+    capability = chat_capability_gate.ensure_tool_capable(model_id, mode=session.mode)
+
+    if capability.refused:
+        # Nothing installed can follow the protocol. Answered, not
+        # generated: asking the incapable model anyway produces text that
+        # looks like an answer and is not.
+        return TurnResult(
+            kind=KIND_TEXT,
+            text=chat_capability_gate.UNABLE_TO_PROCESS,
+            model_id=None,
+            conversation_id=request.conversation_id,
+            session_updates={"last_turn_was_weather": False},
+            telemetry=telemetry + [_event(
+                "chat_capability_refused", model_id=model_id, mode=session.mode,
+            )],
+        )
+
+    if capability.switched:
+        notices.append({
+            # Keyed by the pair, so the banner shows it once per
+            # connection for a given switch rather than on every turn.
+            "id": f"chat_capability_switch:{capability.switched_from}->{capability.model_id}",
+            "level": "normal",
+            "message": capability.warning,
+            "model_id": capability.model_id,
+        })
+        telemetry.append(_event(
+            "chat_capability_switch",
+            requested=capability.switched_from, model_id=capability.model_id,
+        ))
+        model_id = capability.model_id
+
     # --- 6. Safety.
     #
     # Two bypasses, and neither is the packet's allowOverride: that flag
@@ -695,6 +821,7 @@ def orchestrate_turn(
             model_id=model_id,
             conversation_id=request.conversation_id,
             warning=warning_packet,
+            notices=notices,
             safety_decision=decision,
             model_cfg=model_cfg,
             telemetry=telemetry + [_event(
@@ -805,6 +932,7 @@ def orchestrate_turn(
             session_updates=session_updates,
             metadata={"tool_runs": tool_runs},
             evidence_missing=True,
+            notices=notices,
             model_resolution_trace=_trace(
                 request, initial_model_id, route, model_id, None,
             ),
@@ -840,6 +968,7 @@ def orchestrate_turn(
                     session_updates=session_updates,
                     metadata={"tool_runs": tool_runs},
                     synthesis_mode=evidence_routing.SYNTHESIS_RAW_EVIDENCE,
+                    notices=notices,
                     model_resolution_trace=_trace(
                         request, initial_model_id, route, model_id, None,
                     ),
@@ -885,6 +1014,7 @@ def orchestrate_turn(
     return TurnResult(
         kind=KIND_INFERENCE,
         inference_request=inference_request,
+        notices=notices,
         model_id=model_id,
         conversation_id=request.conversation_id,
         policy_info=policy_info,

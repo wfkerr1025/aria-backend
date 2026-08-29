@@ -100,15 +100,31 @@ test("commit and discard carry the user's own words", () => {
   // The backend checks them against the same negation table action_plan
   // uses. Sending a canned phrase would be this page authorising the
   // change instead of the user.
-  assert.match(pageJs, /commit\(id, files\)[\s\S]{0,400}window\.prompt/);
-  assert.match(pageJs, /discard\(id, files\)[\s\S]{0,400}window\.prompt/);
+  //
+  // Asserted as "it asks, and sends what it was told" rather than
+  // naming the function it asks with. The first version pinned
+  // window.prompt, which then had to be replaced -- Electron's renderer
+  // does not implement it -- and a test that pins the mechanism fails
+  // for the fix as loudly as it would for a regression.
+  assert.match(pageJs, /async commit\(id, files\)[\s\S]{0,600}dialog\.text\(/);
+  assert.match(pageJs, /async discard\(id, files\)[\s\S]{0,600}dialog\.text\(/);
   assert.ok(pageJs.includes("user_text"));
+  assert.ok(pageJs.includes("WORKSPACE_COMMIT_REQUEST, { id, files, user_text }"));
+});
+
+test("the consent field starts empty", () => {
+  // A pre-filled "commit the changes" would be this page writing the
+  // consent and the user pressing OK. The example belongs in the label,
+  // where it cannot be submitted.
+  assert.ok(pageJs.includes('label: "For example: commit the changes"'));
+  assert.ok(pageJs.includes("input.value = \"\";"),
+            "the dialog reuses one input; not clearing it carries the last answer forward");
 });
 
 test("a cancelled prompt sends nothing", () => {
-  // window.prompt returns null on cancel and "" on an empty box; only
-  // the first means "I did not mean this".
-  const commits = pageJs.split("commit(id, files)")[1] || "";
+  // null is cancelled and "" is a cleared box; only the first means "I
+  // did not mean this". Collapsing them would make Cancel commit.
+  const commits = pageJs.split("async commit(id, files)")[1] || "";
   assert.ok(commits.includes("=== null) return"));
 });
 

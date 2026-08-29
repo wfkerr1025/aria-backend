@@ -326,6 +326,20 @@ INTENT_CONFIGURATION_QUERY = "configuration_query"
 # self_knowledge.suggest_improvements().
 INTENT_SELF_IMPROVEMENT_QUERY = "self_improvement_query"
 
+# "what is your working directory?" -- a question about where ARIA is
+# actually working, which has a true answer sitting in workspace_manager.
+# Deliberately NOT in SELF_QUERY_INTENTS below: those all resolve through
+# self_knowledge.answer_self_query(), which knows about models, modes and
+# providers and nothing about workspaces. This gets its own short-circuit
+# in turn_orchestrator for the same reason weather does -- the answer is
+# read, not generated.
+#
+# It exists because the alternative was letting a model answer it. A
+# small model asked where it is working invents a plausible path, and a
+# plausible wrong path is the worst possible answer to this particular
+# question: it is the one the user will act on.
+INTENT_WORKSPACE_QUERY = "workspace_query"
+
 SELF_QUERY_INTENTS = frozenset({
     INTENT_MODEL_QUERY, INTENT_TOOL_QUERY, INTENT_VERSION_QUERY,
     INTENT_SELF_IMPROVEMENT_QUERY,
@@ -352,6 +366,31 @@ _QUESTION_STARTERS = (
     "is", "are", "can", "could", "does", "do", "did", "should", "would",
 )
 
+# Kept narrow on purpose. A bare "what directory" also fits "what
+# directory should I put this in?", which is a question about the user's
+# code and not about ARIA -- answering that with a status report would be
+# worse than the hallucination this replaces. Every phrase here names
+# ARIA as the subject ("your", "are you") or is unambiguous on its own
+# ("working directory", "ghost workspace").
+# "how do I change the working directory in python" contains "working
+# directory" and is not a question about ARIA at all -- it is a request
+# for instructions, and answering it with a status report would be worse
+# than the hallucination this intent exists to replace. Instructional
+# phrasing is the discriminator: a status question asks what IS, a
+# how-to asks what to DO.
+_INSTRUCTIONAL_VETO = [
+    "how do i", "how do you", "how can i", "how would i", "how to ",
+    "how does one", "show me how",
+]
+_WORKSPACE_QUERY_PHRASES = [
+    "working directory", "work directory", "ghost workspace",
+    "your workspace", "active workspace", "current workspace",
+    "which workspace", "what workspace", "project root",
+    "where are you working", "what directory are you",
+    "which directory are you", "tell me the directory",
+    "tell me your directory", "your staged files", "what is staged",
+    "what's staged", "staged changes",
+]
 _MODEL_QUERY_PHRASES = [
     "what model", "which model", "what llm", "which llm",
     "model are you", "model is this", "what are you running on",
@@ -545,6 +584,9 @@ def detect_intent(latest_user_message: str, is_multi_turn_followup: bool = False
     # generic "question" bucket, and specific phrasings (model/tool/
     # version/persona/environment/configuration) are checked before the
     # broader "what can you do" capability catch-all.
+    if (any(phrase in text for phrase in _WORKSPACE_QUERY_PHRASES)
+            and not any(veto in text for veto in _INSTRUCTIONAL_VETO)):
+        return INTENT_WORKSPACE_QUERY
     if any(phrase in text for phrase in _MODEL_QUERY_PHRASES):
         return INTENT_MODEL_QUERY
     if any(phrase in text for phrase in _TOOL_QUERY_PHRASES):

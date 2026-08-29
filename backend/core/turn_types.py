@@ -121,6 +121,17 @@ class TurnResult:
     session_updates: dict = field(default_factory=dict)
     telemetry: list[dict] = field(default_factory=list)
 
+    # Things the user should be told about this turn that are not the
+    # answer to it -- currently only the chat capability gate saying it
+    # moved the turn onto a different model. Each entry is a
+    # warning_event payload ({id, level, message, model_id}), because
+    # that packet and its banner already exist; described here and sent
+    # by the transport, like everything else in this dataclass.
+    #
+    # Separate from `warning`, which is the safety gate's refusal and
+    # REPLACES the turn. A notice accompanies a turn that still runs.
+    notices: list[dict] = field(default_factory=list)
+
     # Facts about how this turn was produced, for a caller that needs to
     # check rather than assume. Observability only -- nothing routes on
     # it, and an empty dict is always valid.
