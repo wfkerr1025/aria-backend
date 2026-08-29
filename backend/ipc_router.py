@@ -645,6 +645,124 @@ def _handle_provider_key_delete(payload: Dict[str, Any]) -> Dict[str, Any]:
     return fmt.provider_key_delete_result({"ok": True, "provider": provider})
 
 
+def _workspace_error(error, request_type):
+    """A refusal the user sees, rather than a silent no-op.
+
+    Every handler here can be told to act on a workspace that does not
+    exist or a directory that is not one. Answering with the unchanged
+    list would look exactly like success.
+    """
+    return fmt.error_response(str(error), request_type)
+
+
+def _handle_workspace_list(payload: Dict[str, Any]) -> Dict[str, Any]:
+    logger.debug("ipc_router: workspace_list_request")
+    from backend.core import workspace_manager
+
+    workspace_manager.ensure_default_workspace()
+    return fmt.workspace_list_result(workspace_manager.get_workspace_list())
+
+
+def _handle_workspace_details(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from backend.core import workspace_manager
+
+    workspace_id = payload.get("id")
+    logger.debug("ipc_router: workspace_details_request -> %r", workspace_id)
+    try:
+        return fmt.workspace_details_result(
+            workspace_manager.get_workspace_details(workspace_id))
+    except workspace_manager.WorkspaceError as error:
+        return _workspace_error(error, schema.WORKSPACE_DETAILS_REQUEST)
+
+
+def _handle_workspace_add(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from backend.core import workspace_manager
+
+    path = payload.get("path")
+    logger.info("ipc_router: workspace_add_request -> %r", path)
+    try:
+        workspace_manager.add_workspace(path, payload.get("name"))
+    except workspace_manager.WorkspaceError as error:
+        return _workspace_error(error, schema.WORKSPACE_ADD_REQUEST)
+
+    return fmt.workspace_list_result(workspace_manager.get_workspace_list())
+
+
+def _handle_workspace_remove(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from backend.core import workspace_manager
+
+    workspace_id = payload.get("id")
+    logger.info("ipc_router: workspace_remove_request -> %r", workspace_id)
+
+    # Bookkeeping, never a delete: the project's files and its staged
+    # changes are left exactly where they are.
+    workspace_manager.remove_workspace(workspace_id)
+    return fmt.workspace_list_result(workspace_manager.get_workspace_list())
+
+
+def _handle_workspace_primary(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from backend.core import workspace_manager
+
+    workspace_id = payload.get("id")
+    logger.info("ipc_router: workspace_primary_request -> %r", workspace_id)
+    try:
+        workspace_manager.set_primary_workspace(workspace_id)
+    except workspace_manager.WorkspaceError as error:
+        return _workspace_error(error, schema.WORKSPACE_PRIMARY_REQUEST)
+
+    return fmt.workspace_list_result(workspace_manager.get_workspace_list())
+
+
+def _workspace_action(payload, request_type, action):
+    """Commit, discard or rollback, then report the workspace's new state.
+
+    The consent text travels with the request and is checked inside
+    ghost_workspace, not here: one negation table, one place that decides
+    whether the user asked. A refusal comes back as a normal result whose
+    report says "refused", because being told no is an outcome rather
+    than an error.
+    """
+    from backend.core import workspace_manager
+
+    workspace_id = payload.get("id")
+    files = payload.get("files") or None
+
+    try:
+        report = action(workspace_manager, workspace_id, files)
+        details = workspace_manager.get_workspace_details(workspace_id)
+    except workspace_manager.WorkspaceError as error:
+        return _workspace_error(error, request_type)
+
+    details["report"] = report
+    return fmt.workspace_details_result(details)
+
+
+def _handle_workspace_commit(payload: Dict[str, Any]) -> Dict[str, Any]:
+    logger.info("ipc_router: workspace_commit_request -> %r", payload.get("id"))
+    return _workspace_action(
+        payload, schema.WORKSPACE_COMMIT_REQUEST,
+        lambda wm, wid, files: wm.commit_workspace(
+            wid, str(payload.get("user_text") or ""), files),
+    )
+
+
+def _handle_workspace_discard(payload: Dict[str, Any]) -> Dict[str, Any]:
+    logger.info("ipc_router: workspace_discard_request -> %r", payload.get("id"))
+    return _workspace_action(
+        payload, schema.WORKSPACE_DISCARD_REQUEST,
+        lambda wm, wid, files: wm.discard_workspace(
+            wid, str(payload.get("user_text") or ""), files),
+    )
+
+
+def _handle_workspace_rollback(payload: Dict[str, Any]) -> Dict[str, Any]:
+    logger.info("ipc_router: workspace_rollback_request -> %r", payload.get("id"))
+    return _workspace_action(
+        payload, schema.WORKSPACE_ROLLBACK_REQUEST,
+        lambda wm, wid, files: wm.rollback_workspace(wid, files),
+    )
+
+
 def _handle_workspace_status(payload: Dict[str, Any]) -> Dict[str, Any]:
     logger.debug("ipc_router: workspace_status_request")
     from backend.core import workspace_manager
@@ -794,6 +912,14 @@ _HANDLERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     schema.MODULES_LIST_REQUEST: _handle_modules_list,
     schema.WORKSPACE_STATUS_REQUEST: _handle_workspace_status,
     schema.WORKSPACE_SET_REQUEST: _handle_workspace_set,
+    schema.WORKSPACE_LIST_REQUEST: _handle_workspace_list,
+    schema.WORKSPACE_DETAILS_REQUEST: _handle_workspace_details,
+    schema.WORKSPACE_ADD_REQUEST: _handle_workspace_add,
+    schema.WORKSPACE_REMOVE_REQUEST: _handle_workspace_remove,
+    schema.WORKSPACE_PRIMARY_REQUEST: _handle_workspace_primary,
+    schema.WORKSPACE_COMMIT_REQUEST: _handle_workspace_commit,
+    schema.WORKSPACE_DISCARD_REQUEST: _handle_workspace_discard,
+    schema.WORKSPACE_ROLLBACK_REQUEST: _handle_workspace_rollback,
     schema.MODULE_KEY_SET_REQUEST: _handle_module_key_set,
     schema.MODULE_KEY_DELETE_REQUEST: _handle_module_key_delete,
     schema.MODE_STATUS_REQUEST: _handle_mode_status,

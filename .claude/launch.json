@@ -4,7 +4,13 @@
     {
       "name": "webui-static-preview",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8842", "--directory", "webui"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8842",
+        "--directory",
+        "webui"
+      ],
       "port": 8842
     }
   ]

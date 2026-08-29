@@ -115,9 +115,9 @@
 }
 
 
-/* Collapsed by default: one line that answers "which project, how many
-   changes waiting, can this model act". Expanded on click for the rest.
-   Persistent does not have to mean large. */
+/* One line, always. The rest of what this used to show lives in the
+   Control Center now, and the class is kept because it is what render()
+   sets and what the layout below is written against. */
 #working-directory-panel.wd-collapsed .wd-row,
 #working-directory-panel.wd-collapsed .wd-capability,
 #working-directory-panel.wd-collapsed .wd-actions,
@@ -140,16 +140,3 @@
   font-size: 11px;
 }
 
-
-/* Expanded, it moves to the top-right. Bottom-right is where the chat
-   composer lives: measured at 1280x720, the expanded panel spanned
-   y 425-664 over a Send button at y 585-615, so opening the panel took
-   the Send button away. The top-right strip is transcript, which
-   scrolls and holds no controls -- and the panel is one click from
-   closing again. */
-#working-directory-panel:not(.wd-collapsed) {
-  top: 60px;
-  bottom: auto;
-  max-height: calc(100vh - 140px);
-  overflow-y: auto;
-}

@@ -36,6 +36,7 @@ const indexHtml = read(webui, "index.html");
 const appJs = read(webui, "core/app.js");
 const uiSchema = read(webui, "core/ipc_schema.js");
 const backendSchema = read(repo, "backend/ipc_schema.py");
+const routerJs = read(webui, "core/router.js");
 
 const results = [];
 function test(name, fn) {
@@ -86,15 +87,14 @@ test("the container is page-global, beside the model indicator", () => {
 // ------------------------------------------------------
 test("the UI and the backend name the same packets", () => {
   for (const name of ["workspace_status_request", "workspace_status_result",
-                      "workspace_set_request"]) {
+                      "workspace_list_request", "workspace_details_request"]) {
     assert.ok(uiSchema.includes(`"${name}"`), `webui schema is missing ${name}`);
     assert.ok(backendSchema.includes(`"${name}"`), `backend schema is missing ${name}`);
   }
 });
 
-test("the panel asks for its state and can change the directory", () => {
+test("the line asks for its own state", () => {
   assert.ok(componentJs.includes("IPC.WORKSPACE_STATUS_REQUEST"));
-  assert.ok(componentJs.includes("IPC.WORKSPACE_SET_REQUEST"));
 });
 
 // ------------------------------------------------------
@@ -108,34 +108,38 @@ test("the panel computes no path of its own", () => {
             "the panel builds a staging path itself instead of reading ghost_root");
 });
 
-test("a rejected directory change is shown, not swallowed", () => {
-  // The whole point of a visible working directory is that it says
-  // where ARIA actually is; a refused change must not leave the old
-  // path on screen looking accepted.
-  assert.ok(componentJs.includes("showError"));
-  assert.ok(componentJs.includes('packet.type === "error"'));
-});
-
-test("paths and warnings are escaped before they reach innerHTML", () => {
+test("the project name is escaped before it reaches innerHTML", () => {
   assert.ok(componentJs.includes("function escapeHtml"));
-  assert.ok(componentJs.includes("escapeHtml(s.project_root"));
-  assert.ok(componentJs.includes("escapeHtml(s.ghost_root"));
+  assert.ok(componentJs.includes("escapeHtml(this.summary())"));
 });
 
 // ------------------------------------------------------
 // It does not cover the controls
 // ------------------------------------------------------
-test("collapsed by default", () => {
-  assert.ok(/expanded:\s*false/.test(componentJs));
+test("it is one line and never expands", () => {
+  // It used to expand in place, which put it over the composer's Send
+  // button at 1280x720. The Control Center owns those fields now, and
+  // two places showing the same staged count is one place too many.
+  assert.ok(!componentCss.includes(":not(.wd-collapsed)"),
+            "the expanded layout is still defined");
+  assert.ok(!/expanded/.test(componentJs), "the component still tracks an expanded state");
+  assert.ok(componentJs.includes('this.el.className = "wd-collapsed"'));
 });
 
-test("expanded, it moves away from the composer", () => {
-  // Measured at 1280x720: bottom-right and expanded, the panel spanned
-  // y 425-664 over a Send button at y 585-615, so opening it took the
-  // Send button away.
-  assert.ok(componentCss.includes(":not(.wd-collapsed)"));
-  assert.ok(/:not\(\.wd-collapsed\)\s*\{[^}]*top:/.test(componentCss));
-  assert.ok(/:not\(\.wd-collapsed\)\s*\{[^}]*bottom:\s*auto/.test(componentCss));
+test("clicking it opens the Control Center", () => {
+  assert.ok(componentJs.includes("openControlCenter"));
+  // Checked against the router's real API rather than a remembered
+  // name: the first version of this asserted Router.load, which does
+  // not exist, so it passed while the click did nothing.
+  assert.ok(componentJs.includes('Router.navigate("settings/workspaces")'),
+            "it navigates with the router rather than an href");
+  assert.ok(routerJs.includes("async navigate("),
+            "the router no longer has the method this calls");
+});
+
+test("it is reachable without a mouse", () => {
+  assert.ok(componentJs.includes('tabindex="0"'));
+  assert.ok(componentJs.includes("keydown"));
 });
 
 test("it sits clear of the full-height sidebar", () => {

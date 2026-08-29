@@ -87,6 +87,19 @@ export const IPC = Object.freeze({
   WORKSPACE_STATUS_REQUEST: "workspace_status_request",
   WORKSPACE_STATUS_RESULT: "workspace_status_result",
   WORKSPACE_SET_REQUEST: "workspace_set_request",
+
+  // The Control Center. Two result shapes only: a mutation answers with
+  // the state it produced, so nothing asks twice for its own change.
+  WORKSPACE_LIST_REQUEST: "workspace_list_request",
+  WORKSPACE_LIST_RESULT: "workspace_list_result",
+  WORKSPACE_DETAILS_REQUEST: "workspace_details_request",
+  WORKSPACE_DETAILS_RESULT: "workspace_details_result",
+  WORKSPACE_ADD_REQUEST: "workspace_add_request",
+  WORKSPACE_REMOVE_REQUEST: "workspace_remove_request",
+  WORKSPACE_PRIMARY_REQUEST: "workspace_primary_request",
+  WORKSPACE_COMMIT_REQUEST: "workspace_commit_request",
+  WORKSPACE_DISCARD_REQUEST: "workspace_discard_request",
+  WORKSPACE_ROLLBACK_REQUEST: "workspace_rollback_request",
   MODULES_LIST_RESULT: "modules_list_result",
   MODULE_KEY_SET_REQUEST: "module_key_set_request",
   MODULE_KEY_SET_RESULT: "module_key_set_result",

@@ -1,0 +1,77 @@
+/* pages/workspaces/workspaces.css
+ * Colours come from the app's own tokens, so the page follows whichever
+ * of the seven themes is active rather than being a patch of its own.
+ */
+#workspaces-page { padding: 20px 24px; }
+#workspaces-page .page-subtitle { opacity: .7; margin-top: 4px; max-width: 62ch; }
+
+.ws-toolbar { display: flex; gap: 8px; align-items: center; margin: 16px 0; }
+.ws-summary { opacity: .65; font-size: 12px; margin-left: 4px; }
+
+.ws-btn, .ws-card-actions button, .ws-actions button {
+  padding: 5px 12px; border: 1px solid var(--border-color, #333); border-radius: 6px;
+  background: var(--button-bg, #262626); color: inherit; font-size: 12px; cursor: pointer;
+}
+.ws-btn:hover, .ws-card-actions button:hover, .ws-actions button:hover {
+  background: var(--button-hover-bg, #303030);
+}
+.ws-card-actions button:disabled, .ws-actions button:disabled { opacity: .45; cursor: default; }
+.ws-btn-primary { border-color: var(--accent, #6aa9ff); }
+
+.ws-error {
+  margin: 12px 0; padding: 8px 10px;
+  border-left: 3px solid var(--error-fg, #e08585);
+  background: rgba(224,133,133,.08); white-space: pre-wrap;
+}
+
+/* Two columns on a wide window, stacked on a narrow one. The diff needs
+   the room more than the list does. */
+.ws-layout { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 16px; }
+@media (max-width: 980px) { .ws-layout { grid-template-columns: 1fr; } }
+
+.ws-card {
+  padding: 10px 12px; margin-bottom: 10px;
+  border: 1px solid var(--border-color, #333); border-radius: 8px;
+  background: var(--panel-bg, #1b1b1b);
+}
+.ws-card.ws-selected { border-color: var(--accent, #6aa9ff); }
+.ws-card-title { font-weight: 600; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.ws-card-actions { display: flex; gap: 6px; margin-top: 10px; }
+
+.ws-line { display: flex; gap: 8px; font-size: 12px; margin-top: 4px; }
+.ws-line > span:first-child { flex: 0 0 92px; opacity: .6; }
+/* Paths are long and the middle matters least; wrapping beats a
+   truncation that hides which project this is. */
+.ws-line code { word-break: break-all; opacity: .9; }
+
+.ws-tag {
+  padding: 1px 6px; border-radius: 999px; font-size: 11px; font-weight: 400;
+  background: var(--panel-bg-hover, #2a2a2a);
+}
+.ws-tag-primary { background: var(--accent, #6aa9ff); color: #0d1117; }
+.ws-tag-ok { background: var(--ok-bg, #1e3a24); color: var(--ok-fg, #8fd39a); }
+.ws-tag-warn, .ws-tag-modified { background: var(--warn-bg, #4a3410); color: var(--warn-fg, #f0c274); }
+.ws-tag-new { background: var(--ok-bg, #1e3a24); color: var(--ok-fg, #8fd39a); }
+
+.ws-details { padding: 4px 2px; }
+.ws-details h2 { margin: 0 0 10px; }
+.ws-details h3 { margin: 18px 0 8px; font-size: 13px; opacity: .75; }
+.ws-actions { display: flex; gap: 6px; margin: 12px 0; }
+.ws-empty { opacity: .55; font-size: 12px; }
+
+.ws-capability, .ws-report {
+  margin: 10px 0; padding: 6px 8px; font-size: 12px;
+  border-left: 3px solid var(--warn-fg, #f0c274);
+  background: rgba(240,194,116,.08);
+}
+.ws-report-committed, .ws-report-discarded, .ws-report-rolled_back {
+  border-left-color: var(--ok-fg, #8fd39a); background: rgba(143,211,154,.08);
+}
+
+.ws-change { margin-bottom: 6px; border: 1px solid var(--border-color, #333); border-radius: 6px; }
+.ws-change summary { padding: 6px 10px; cursor: pointer; display: flex; gap: 8px; align-items: center; }
+/* The diff scrolls inside itself; the page must not scroll sideways. */
+.ws-diff {
+  margin: 0; padding: 8px 10px; max-height: 320px; overflow: auto;
+  font-size: 11px; line-height: 1.45; background: var(--panel-bg-alt, rgba(255,255,255,.03));
+}

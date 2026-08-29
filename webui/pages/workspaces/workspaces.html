@@ -1,0 +1,34 @@
+<!-- pages/workspaces/workspaces.html
+     ARIA Control Center: every project ARIA is working in, what is
+     staged in each, and whether the model can be asked to act.
+
+     Markup only. Every value on this page comes from the backend
+     (workspace_list_result / workspace_details_result) and every button
+     sends a packet -- the page computes no paths and keeps no second
+     opinion about where a project is. -->
+
+<section id="workspaces-page" class="page">
+  <header class="page-header">
+    <h1>ARIA Control Center</h1>
+    <p class="page-subtitle">
+      The projects ARIA is working in. Edits are staged inside each
+      project and reach it only when you commit them.
+    </p>
+  </header>
+
+  <div class="ws-toolbar">
+    <button id="ws-add" class="ws-btn ws-btn-primary" type="button">Add Workspace</button>
+    <button id="ws-refresh" class="ws-btn" type="button">Refresh</button>
+    <span id="ws-summary" class="ws-summary"></span>
+  </div>
+
+  <!-- Errors are shown, never swallowed: a refused directory or an
+       unknown workspace must not leave the old list on screen looking
+       like the change was accepted. -->
+  <div id="ws-error" class="ws-error" style="display:none"></div>
+
+  <div class="ws-layout">
+    <div id="ws-list" class="ws-list" aria-label="Workspaces"></div>
+    <div id="ws-details" class="ws-details"></div>
+  </div>
+</section>

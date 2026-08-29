@@ -38,6 +38,7 @@ const Router = {
     "settings/cloud-llms": "pages/cloud_llms/cloud_llms.html",
     "settings/modules": "pages/modules/modules.html",
     "settings/local-models": "pages/local_models/local_models.html",
+    "settings/workspaces": "pages/workspaces/workspaces.html",
   },
 
   init() {

@@ -37,6 +37,7 @@ __all__ = [
     "WorkspaceError",
     "describe_workspace",
     "reset_registry",
+    "ensure_default_workspace",
     "rollback_workspace",
     "discard_workspace",
     "commit_workspace",
@@ -384,6 +385,22 @@ def touch_workspace(workspace_id: str) -> None:
     info = _state.workspaces.get(workspace_id)
     if info is not None:
         info.last_used = time.time()
+
+
+def ensure_default_workspace() -> None:
+    """Seed the registry with the directory ARIA is already in.
+
+    The registry starts empty, but ARIA is always working somewhere --
+    file_tools has a root whether or not anyone registered it. An empty
+    Control Center would say "no workspaces" about a session that is
+    demonstrably editing files in one.
+    """
+    if _state.workspaces:
+        return
+    try:
+        add_workspace(get_project_root())
+    except WorkspaceError:  # pragma: no cover - the cwd is always a directory
+        logger.exception("could not seed the workspace registry")
 
 
 def reset_registry() -> None:

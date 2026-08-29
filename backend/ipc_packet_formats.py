@@ -250,6 +250,16 @@ def diagnostics_models_result(data: Dict[str, Any]) -> Dict[str, Any]:
 # convention as every other diagnostics_*_result above.
 # ---------------------------------------------------------------------------
 
+def workspace_list_result(workspaces: list) -> Dict[str, Any]:
+    """Every registered project. The answer to every mutation, too."""
+    return _packet(schema.WORKSPACE_LIST_RESULT, {"workspaces": workspaces})
+
+
+def workspace_details_result(data: Dict[str, Any]) -> Dict[str, Any]:
+    """One project, with its pending changes and their diffs."""
+    return _packet(schema.WORKSPACE_DETAILS_RESULT, data)
+
+
 def workspace_status_result(data: Dict[str, Any]) -> Dict[str, Any]:
     """What the working-directory panel renders.
 
