@@ -301,3 +301,114 @@ def test_a_safety_refusal_still_reaches_the_user_after_a_switch(offline, monkeyp
     # The switch is still reported, so the user can see why the warning
     # names a model they did not choose.
     assert result.notices
+
+
+# ======================================================
+# Where a redirected turn lands
+#
+# The gate used to send every redirected turn to the strongest installed
+# model, which is correct and needlessly slow: "hello" on the 0.5B became
+# "hello" on the 12B. It now asks the routing layer what the turn is FOR
+# and lands it on the model for that job.
+#
+# The floor itself is untouched. Which model a redirect goes to is a
+# preference; whether a redirect happens at all is still the parameter
+# floor and nothing else.
+# ======================================================
+def test_a_chat_turn_redirected_off_the_smallest_model_lands_on_the_chat_model(offline):
+    from backend.config.model_roles import installed_model_for
+
+    result = orchestrate_turn(
+        turn("hello, how are you", requested_model_id=WEAK),
+        default_local_model=lambda: WEAK,
+    )
+
+    assert result.kind == KIND_INFERENCE
+    assert result.model_id == installed_model_for("phi-3-mini-4k-instruct-q4")
+    assert result.inference_request.model_id == result.model_id
+
+
+def test_a_tool_turn_redirected_off_the_smallest_model_lands_on_the_tool_model(offline):
+    from backend.config.model_roles import installed_model_for
+
+    result = orchestrate_turn(
+        turn("edit the file src/main.py and add logging", requested_model_id=WEAK),
+        default_local_model=lambda: WEAK,
+    )
+
+    assert result.kind == KIND_INFERENCE
+    assert result.model_id == installed_model_for("mistral-7b")
+
+
+def test_a_redirect_still_emits_the_notice_whichever_model_it_lands_on(offline):
+    for text in ("hello, how are you", "edit the file src/main.py"):
+        result = orchestrate_turn(
+            turn(text, requested_model_id=WEAK), default_local_model=lambda: WEAK,
+        )
+
+        assert len(result.notices) == 1, f"no notice for {text!r}"
+        notice = result.notices[0]
+        assert "cannot follow ARIA's chat protocol" in notice["message"]
+        assert notice["model_id"] == result.model_id
+        assert set(notice) == {"id", "level", "message", "model_id"}
+
+
+def test_the_routing_layer_does_not_shadow_the_gate(offline):
+    # The bug this pins. The router knows the 0.5B's role says it cannot
+    # chat, and for one revision it acted on that -- moving the model
+    # aside before the gate ever saw it. The redirect still happened, so
+    # nothing looked broken, but the gate's notice and telemetry both
+    # disappeared and the floor stopped being the authority it is.
+    result = orchestrate_turn(
+        turn("hello", requested_model_id=WEAK), default_local_model=lambda: WEAK,
+    )
+
+    events = [record["event"] for record in result.telemetry]
+    assert "chat_capability_switch" in events
+
+
+def test_an_unknown_pinned_model_is_left_where_the_user_put_it(offline):
+    # Neither layer touches it: the role table defaults an unknown model
+    # to can_chat, and the floor has no parameter count to judge it by.
+    # A model the user installed on purpose keeps its turn.
+    result = orchestrate_turn(
+        turn("hello", requested_model_id="some-model-nobody-registered"),
+        default_local_model=lambda: CAPABLE,
+    )
+
+    assert result.model_id == "some-model-nobody-registered"
+    assert result.notices == []
+
+
+@pytest.mark.parametrize("turn_kind,family", [
+    ("chat", "phi-3-mini-4k-instruct-q4"),
+    ("tools", "mistral-7b"),
+    ("heavy_reasoning", "mistral-nemo-12b"),
+])
+def test_the_gate_honours_the_turn_kind_directly(turn_kind, family):
+    from backend.config.model_roles import installed_model_for
+
+    outcome = gate.ensure_tool_capable(WEAK, turn_kind=turn_kind)
+
+    assert outcome.model_id == installed_model_for(family)
+
+
+def test_an_unroutable_turn_kind_falls_back_rather_than_refusing():
+    # A preference, not an authority. Not knowing where to send a turn is
+    # a reason to pick the ladder's answer, never a reason to tell the
+    # user their turn cannot run.
+    outcome = gate.ensure_tool_capable(WEAK, turn_kind="something-invented-later")
+
+    assert outcome.refused is False
+    assert outcome.switched is True
+    assert gate.too_weak_for_chat(outcome.model_id) is False
+
+
+def test_a_preferred_replacement_that_is_not_installed_falls_back(monkeypatch):
+    monkeypatch.setattr(
+        "backend.config.model_roles.installed_model_for", lambda family: None)
+
+    outcome = gate.ensure_tool_capable(WEAK, turn_kind="chat")
+
+    assert outcome.switched is True
+    assert outcome.model_id is not None

@@ -72,3 +72,36 @@ def no_live_classifier(monkeypatch):
         turn_orchestrator, "_classifier_generator",
         lambda request, default_local_model, supplied: supplied,
     )
+
+
+@pytest.fixture(autouse=True)
+def quiet_safety_gate(monkeypatch):
+    """The safety gate answers "safe" unless a test says otherwise.
+
+    The gate projects a model's RAM against the machine's CURRENT free
+    memory, so its verdict depends on what else happens to be running.
+    That was harmless while the suite routed turns to fake model ids the
+    gate had no config for and skipped -- and stopped being harmless the
+    moment turns started resolving to real installed models, which is
+    what the routing layer does. Whole files then passed or failed with
+    the developer's browser.
+
+    This suite has already lost time to exactly that: an evidence test
+    that put a 12B in front of the live gate passed three runs out of
+    five on unchanged code. A characterization suite whose verdict moves
+    with machine load is not characterizing the code.
+
+    Only the ambient case is quieted. Every test whose subject IS the
+    gate monkeypatches evaluate_safety itself, and a fixture applied here
+    is replaced by one applied in the test body -- so refusal, bypass and
+    warning-shape tests all still exercise the real branch.
+    """
+    from backend.core.safety_manager import PerformanceProfile, ResourceSnapshot, SafetyDecision
+
+    def _safe(model_cfg):
+        return SafetyDecision(
+            safe_to_run=True, requires_warning=False, severity="ok",
+            message="", profile=None, snapshot=None,
+        )
+
+    monkeypatch.setattr(turn_orchestrator, "evaluate_safety", _safe)

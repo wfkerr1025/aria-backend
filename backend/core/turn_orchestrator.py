@@ -46,6 +46,7 @@ from backend.core import (
     turn_status,
     weather_nl,
 )
+from backend.chat import model_router
 from backend.core import complexity_router
 from backend.core import search_activation
 from backend.core.generation import make_generator
@@ -478,7 +479,22 @@ def _classifier_generator(request, default_local_model, supplied):
         return supplied
 
     try:
-        model_id, _ = _resolve_model_id(request, default_local_model)
+        # The 0.5B, when it is installed and the turn is local. This is the
+        # one job it is genuinely good at and the only one it is allowed:
+        # nobody reads its output, the verdict is a single token, and
+        # running it here means the classifier costs a fraction of a second
+        # instead of a share of the chat model's load.
+        #
+        # Falling back to the turn's own model is deliberate. A classifier
+        # that cannot run returns None and search_activation uses its
+        # deterministic verdict -- correct, but blunter. Using the model
+        # already resolved for this turn keeps the sharper answer on an
+        # install that has no small model.
+        routed = model_router.select_model_for_turn(request, classification_only=True)
+        model_id = routed.model_id
+        if model_id is None:
+            model_id, _ = _resolve_model_id(request, default_local_model)
+
         return make_generator(
             model_id,
             request.session.mode,
@@ -643,6 +659,35 @@ def orchestrate_turn(
     model_id, explicit = _resolve_model_id(request, default_local_model)
     initial_model_id = model_id
 
+    # --- 4b. Which of the installed models should actually take this
+    # turn. Precedence above answers "what did the user or the mode
+    # say"; this answers "what is this turn going to DO", which is a
+    # different question and the one that keeps ordinary chat off the
+    # 12B and tool turns off the 3.8B.
+    #
+    # It defers in two cases, both of which mean "the older answer is
+    # better than mine": Cloud or Automatic mode, where naming a local
+    # model would break absolute mode separation, and a local install
+    # missing the ideal model. Both return None from the router, and
+    # None is never written over a resolved id here.
+    notices: list[dict] = []
+    routing = model_router.select_model_for_turn(
+        # The pin AFTER mode separation, not the one the packet asked
+        # for -- see select_model_for_turn's `pin`.
+        request, intent=intent, pin=model_id if explicit else None,
+    )
+
+    if routing.model_id is not None and routing.model_id != model_id and not explicit:
+        # Only an UNPINNED turn is re-routed. A pinned model that cannot
+        # chat is redirected a few lines below by chat_capability_gate,
+        # which is the one authority on that question -- doing it here as
+        # well would mean the gate never fires for the case it exists for.
+        telemetry.append(_event(
+            "turn_routing", turn_kind=routing.turn_kind, reason=routing.reason,
+            model_id=routing.model_id, was=model_id,
+        ))
+        model_id = routing.model_id
+
     # Cloud Mode, nothing asked for by name, and no cloud provider
     # configured anywhere. "Must NOT silently fall back to local" -- so
     # this is a structured refusal rather than a request that fails deep
@@ -758,8 +803,9 @@ def orchestrate_turn(
     # model and there is no switch_model() ahead of it -- see
     # backend/core/chat_capability_gate.py for why that distinction is
     # the whole design.
-    notices: list[dict] = []
-    capability = chat_capability_gate.ensure_tool_capable(model_id, mode=session.mode)
+    capability = chat_capability_gate.ensure_tool_capable(
+        model_id, mode=session.mode, turn_kind=routing.turn_kind,
+    )
 
     if capability.refused:
         # Nothing installed can follow the protocol. Answered, not

@@ -95,6 +95,8 @@ from backend.core.conversation_manager import (
 )
 from backend.core.answer_stream import AnswerStream
 from backend.core import turn_status
+from backend.chat import supervisor_layer
+from backend.config import model_roles
 from backend.core.turn_orchestrator import orchestrate_turn
 from backend.core.turn_types import (
     KIND_CLARIFY,
@@ -925,6 +927,27 @@ async def post_chat(payload: ChatRequest) -> Dict[str, Any]:
 
     reply, optimize_info = optimize_response(raw_reply)
     log_response_optimized("rest", optimize_info, turn["conversation_id"])
+
+    # The full supervision pass, which only this route can run honestly:
+    # /chat buffers the whole reply before responding, so the user has
+    # not seen the unsupervised text and there is something left to fix.
+    # The WebSocket path has already streamed its tokens by this point
+    # and gets the deterministic half only -- see
+    # backend/chat/supervisor_layer.py.
+    if supervisor_layer.needs_supervision(turn["model_id"]):
+        supervised = supervisor_layer.supervise_chat_output(
+            reply,
+            {"role": model_roles.describe_role(turn["model_id"])},
+            generate=supervisor_layer.supervisor_generator(
+                _stream_engine.mode_manager.get_mode()),
+        )
+        if supervised.changed:
+            unified_log("rest", "INFO", "supervisor revised the reply", {
+                "model_id": turn["model_id"], "repairs": supervised.repairs,
+                "supervised": supervised.supervised, "rejected": supervised.rejected,
+                "conversation_id": turn["conversation_id"],
+            })
+        reply = supervised.text
 
     unified_log("rest", "INFO", "Outgoing chat_response", {
         "model_id": turn["model_id"], "reply_len": len(reply),

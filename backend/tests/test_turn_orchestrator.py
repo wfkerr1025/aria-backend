@@ -189,14 +189,23 @@ def test_the_corpus_is_stable(offline):
     weather and search bodies come from stubs here and their wording is
     not what this is protecting.
     """
+    # CHAT is the chat-role model, not the injected default: an unpinned
+    # turn is routed by what it will do (backend/chat/model_router.py),
+    # and every plain-conversation line below is a chat turn. Written as
+    # a name rather than pasted four times so that moving the chat role
+    # to another model updates this snapshot in one place.
+    from backend.config.model_roles import installed_model_for
+
+    CHAT = installed_model_for("phi-3-mini-4k-instruct-q4")
+
     shape = {
         text: (r.kind, r.model_id)
         for text in CORPUS
         for r in [orchestrate_turn(turn(text), default_local_model=local())]
     }
     assert shape == {
-        "hello": (KIND_INFERENCE, "test-local-model"),
-        "hi there, how are you": (KIND_INFERENCE, "test-local-model"),
+        "hello": (KIND_INFERENCE, CHAT),
+        "hi there, how are you": (KIND_INFERENCE, CHAT),
         "what model are you running": (KIND_TEXT, "skr"),
         "what is the weather in Paris": (KIND_TEXT, turn_orchestrator.weather_nl.WEATHER_MODEL_SENTINEL),
         "forecast for Oslo": (KIND_TEXT, turn_orchestrator.weather_nl.WEATHER_MODEL_SENTINEL),
@@ -206,11 +215,11 @@ def test_the_corpus_is_stable(offline):
         # of handing a model an empty envelope to answer from.
         "search the web for pytest release notes": (KIND_TEXT, None),
         "Search the latest world news.": (KIND_TEXT, None),
-        "explain the build pipeline": (KIND_INFERENCE, "test-local-model"),
-        "why is the shader failing": (KIND_INFERENCE, "test-local-model"),
-        "summarize the deployment process": (KIND_INFERENCE, "test-local-model"),
-        "search my notes for the pipeline": (KIND_INFERENCE, "test-local-model"),
-        "fix the mismatch between the docs": (KIND_INFERENCE, "test-local-model"),
+        "explain the build pipeline": (KIND_INFERENCE, CHAT),
+        "why is the shader failing": (KIND_INFERENCE, CHAT),
+        "summarize the deployment process": (KIND_INFERENCE, CHAT),
+        "search my notes for the pipeline": (KIND_INFERENCE, CHAT),
+        "fix the mismatch between the docs": (KIND_INFERENCE, CHAT),
     }
 
 
@@ -272,8 +281,39 @@ def test_the_session_pin_is_used_when_no_request(offline):
     assert result.model_id == "pinned-model"
 
 
-def test_local_mode_falls_back_to_the_default(offline):
+def test_local_mode_with_no_pin_routes_by_what_the_turn_will_do(offline):
+    # It used to land on default_local_model() -- whatever the install
+    # calls its default, which on this machine is the 12B. An unpinned
+    # turn is now routed by backend/chat/model_router.py from what the
+    # turn is for, so "hello" gets the chat model rather than the
+    # heaviest thing installed.
+    #
+    # The injected default still matters: it is what _resolve_model_id
+    # produces, and it is what the turn falls back to when the routing
+    # layer has nothing better to offer (see the next test).
+    from backend.chat.model_router import TURN_CHAT
+    from backend.config.model_roles import installed_model_for
+
     result = orchestrate_turn(turn("hello"), default_local_model=local("the-default"))
+
+    assert result.model_id == installed_model_for("phi-3-mini-4k-instruct-q4")
+    assert result.model_id != "the-default"
+
+
+def test_a_turn_keeps_the_resolved_model_when_routing_has_nothing_better(offline, monkeypatch):
+    # The router returns None for "I have no opinion" -- Cloud Mode, or a
+    # local install missing the ideal model. None must never be written
+    # over a model that precedence already resolved, or the turn loses
+    # the only id it had.
+    from backend.chat import model_router
+
+    monkeypatch.setattr(
+        model_router, "installed_model_for", lambda family: None, raising=False)
+    monkeypatch.setattr(
+        model_router.model_roles, "installed_model_for", lambda family: None)
+
+    result = orchestrate_turn(turn("hello"), default_local_model=local("the-default"))
+
     assert result.model_id == "the-default"
 
 

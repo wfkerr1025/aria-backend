@@ -12,6 +12,7 @@ from backend.core.local_inference_engine import InferenceRequest, InferenceMessa
 
 from backend.core.answer_stream import AnswerStream
 from backend.core import turn_status
+from backend.chat import supervisor_layer
 from backend.core.turn_orchestrator import orchestrate_turn
 from backend.core.tool_orchestrator import run_answer_actions
 from backend.core.turn_types import (
@@ -920,7 +921,9 @@ class WebSocketHandler:
 
         try:
             await loop.run_in_executor(None, self.streamer.stream, request, send_packet_sync)
-            await self._run_answer_actions("".join(accumulated_tokens))
+            await self._run_answer_actions(self._supervise(
+                "".join(accumulated_tokens), request.model_id,
+            ))
         except Exception as e:
             # streaming_engine.stream() catches its own errors internally
             # and emits a stream_error packet instead of raising, so this
@@ -933,6 +936,35 @@ class WebSocketHandler:
                 "type": "error",
                 "message": f"Inference error: {str(e)}"
             })
+
+    # -----------------------------------------------------
+    # Checking the answer before acting on it
+    # -----------------------------------------------------
+    def _supervise(self, answer_text: str, model_id: str | None) -> str:
+        """Repair a heavier model's answer before its actions are run.
+
+        Deterministic repairs only, and deliberately: the tokens above
+        have already been sent, so nothing here can improve what the user
+        read. What it CAN still change is what gets executed -- an action
+        block is parsed out of this text and run, and a nearly-JSON block
+        that parse_actions cannot read is an edit that silently does not
+        happen. Repairing it costs no time and no model.
+
+        The model stage is skipped here for that reason: rewriting prose
+        the user has already seen would add a second inference to every
+        turn to change nothing. The full two-stage pass runs on the REST
+        path, where the reply is buffered and the user has not seen it.
+        """
+        if not answer_text or not supervisor_layer.needs_supervision(model_id):
+            return answer_text
+
+        result = supervisor_layer.repair_deterministically(answer_text)
+        if result.repairs:
+            unified_log("websocket", "INFO", "supervisor repaired the answer", {
+                "model_id": model_id, "repairs": result.repairs,
+                "conversation_id": self.conversation_id,
+            })
+        return result.text
 
     # -----------------------------------------------------
     # Actions the answer asked for

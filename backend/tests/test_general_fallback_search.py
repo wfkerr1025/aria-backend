@@ -319,7 +319,15 @@ def test_the_classifier_is_given_a_real_generator(monkeypatch, real_builder):
 
     assert generate is not None, "the classifier would be handed None on every turn"
     assert generate("anything") == "LOCAL"
-    assert built[0]["model_id"] == "nemo-12b-q5"
+    # The 0.5B, not the chat model. The classifier's whole output is a
+    # one-word verdict nobody reads, and it used to load the 12B to
+    # produce it -- the single most expensive way to answer the cheapest
+    # question in the turn. backend/chat/model_router.py routes a
+    # classification turn to the router model, which is the one job the
+    # 0.5B is genuinely good at.
+    from backend.config.model_roles import installed_model_for
+
+    assert built[0]["model_id"] == installed_model_for("qwen2.5-0.5b")
     # Asked for one word, not a paragraph.
     assert built[0]["max_tokens"] == sa.MAX_TOKENS
     assert built[0]["temperature"] == sa.TEMPERATURE

@@ -36,6 +36,25 @@ from backend.rest.router import ChatMessage, ChatRequest
 
 LOCAL_MODEL = "test-local-model"
 
+# What an UNPINNED chat turn actually lands on.
+#
+# LOCAL_MODEL above is what get_default_model_id() is stubbed to return,
+# and it used to be the answer for every ordinary turn. It is not any
+# more: backend/chat/model_router.py routes an unpinned turn by what the
+# turn will do, and plain conversation goes to the chat-role model. The
+# stub still matters -- it is what precedence resolves before routing
+# runs, and what a turn falls back to when routing has no opinion.
+#
+# Read from the role table rather than hard-coded, so moving the chat
+# role to another model does not silently leave this asserting the old
+# one.
+from backend.config.model_roles import installed_model_for  # noqa: E402
+
+CHAT_MODEL = installed_model_for("phi-3-mini-4k-instruct-q4")
+# A lookup is a tool turn, and a tool turn routes to the tool model --
+# which is also where the evidence floor would have put it anyway.
+TOOL_MODEL = installed_model_for("mistral-7b")
+
 
 def prepare(message: str, **kw):
     """One turn through REST's resolution step."""
@@ -131,7 +150,7 @@ def stub_search_tool():
 # ======================================================
 def test_a_plain_message_reaches_the_model(offline):
     result = prepare("explain the build pipeline")
-    assert shape(result) == (None, LOCAL_MODEL)
+    assert shape(result) == (None, CHAT_MODEL)
     assert result["inference_request"] is not None
 
 
@@ -165,7 +184,7 @@ def test_a_search_query_reaches_the_tool_through_the_plan(offline, stub_search_t
     reply.
     """
     result = prepare("search the web for pytest release notes")
-    assert shape(result) == (None, LOCAL_MODEL)
+    assert shape(result) == (None, TOOL_MODEL)
     assert stub_search_tool, "the planned lookup did not reach the tool"
 
     # Not the section heading: the prompt shape depends on whether the
@@ -203,7 +222,7 @@ def test_a_correction_without_a_weather_turn_behind_it_is_ordinary_chat(offline)
         history=[("user", "explain the pipeline"),
                  ("assistant", "The pipeline compiles shaders first.")],
     )
-    assert shape(result) == (None, LOCAL_MODEL)
+    assert shape(result) == (None, CHAT_MODEL)
 
 
 # ======================================================
@@ -230,7 +249,7 @@ def test_a_model_from_the_wrong_registry_is_ignored(offline, monkeypatch):
             lambda model_id, mode: model_id == "gpt-4o", raising=False,
         )
     result = prepare("explain the build pipeline", model_id="gpt-4o")
-    assert shape(result) == (None, LOCAL_MODEL)
+    assert shape(result) == (None, CHAT_MODEL)
 
 
 def test_cloud_mode_with_no_explicit_model_passes_none_through(offline):
@@ -257,7 +276,7 @@ def test_the_safety_gate_short_circuits_with_the_documented_shape(offline, monke
     assert sc["kind"] == "safety_warning"
     assert sc["payload"]["severity"] == "caution"
     assert sc["payload"]["projected"] == {"cpu": 50.0, "ram": 90.0, "vram": 0.0}
-    assert sc["payload"]["model_id"] == LOCAL_MODEL
+    assert sc["payload"]["model_id"] == CHAT_MODEL
 
 
 def test_skip_safety_check_bypasses_the_gate_and_allows_override(offline, monkeypatch):

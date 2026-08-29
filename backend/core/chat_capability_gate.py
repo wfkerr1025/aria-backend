@@ -104,6 +104,19 @@ __all__ = [
 # is the right way round to be wrong.
 CHAT_PARAM_FLOOR = 3_000_000_000
 
+# Where a redirected turn should land, by what the turn is for. Keyed by
+# backend.chat.model_router's turn kinds and valued with
+# backend.config.model_roles' families; both are imported lazily so this
+# module stays importable on its own.
+_FAMILY_FOR_TURN = {
+    "chat": "phi-3-mini-4k-instruct-q4",
+    "tools": "mistral-7b",
+    "heavy_reasoning": "mistral-nemo-12b",
+    # A classification turn that is somehow gated has nowhere sensible to
+    # go: the 0.5B is the only model meant for it. Absent from this map
+    # on purpose, so it falls through to the ladder.
+}
+
 # The exact sentence the user sees when nothing on this machine can run a
 # chat turn. Deliberately short and without blame: the cause is which
 # models are installed, not anything they typed.
@@ -117,8 +130,8 @@ def switch_warning(model_id: str) -> str:
     )
 
 
-def _replacement_for(model_id: str) -> str | None:
-    """The strongest installed model that clears the floor, or None.
+def _replacement_for(model_id: str, turn_kind: str | None = None) -> str | None:
+    """The model this turn should move to, or None if there is none.
 
     Asked of the same floor that condemned the original, rather than
     delegating to model_capability.recommended_tool_model(): that one
@@ -126,13 +139,33 @@ def _replacement_for(model_id: str) -> str | None:
     and repairs with another can talk itself into recommending a model it
     would then reject.
 
+    `turn_kind` is the routing layer's classification. With it, a chat
+    turn moves to the chat model and a tool turn to the tool model --
+    rather than every redirected turn landing on the heaviest thing
+    installed, which is correct but needlessly slow for "hello". Without
+    it the old behaviour is kept exactly: the strongest installed model
+    that clears the floor.
+
     None when nothing installed clears the floor. Naming a model that is
     not there would send the caller to a load that cannot succeed.
     """
     from backend.core.complexity_router import _LADDER, _is_installed
 
+    def usable(candidate: str | None) -> bool:
+        return bool(candidate) and candidate != model_id and _is_installed(candidate)             and not too_weak_for_chat(candidate)
+
+    if turn_kind is not None:
+        from backend.config.model_roles import installed_model_for
+
+        preferred = installed_model_for(_FAMILY_FOR_TURN.get(turn_kind, ""))
+        if usable(preferred):
+            return preferred
+        # Falls through rather than refusing. The preferred model not
+        # being installed is a reason to pick another one, never a reason
+        # to tell the user their turn cannot run.
+
     for candidate in _LADDER:
-        if candidate != model_id and _is_installed(candidate) and not too_weak_for_chat(candidate):
+        if usable(candidate):
             return candidate
     return None
 
@@ -190,7 +223,8 @@ class CapabilityGateOutcome:
         return self.switched_from is not None
 
 
-def ensure_tool_capable(model_id: str | None, *, mode: str = "local") -> CapabilityGateOutcome:
+def ensure_tool_capable(model_id: str | None, *, mode: str = "local",
+                        turn_kind: str | None = None) -> CapabilityGateOutcome:
     """Move a turn onto a model that can follow the chat protocol.
 
     Returns the model the turn should use. Three outcomes:
@@ -204,11 +238,16 @@ def ensure_tool_capable(model_id: str | None, *, mode: str = "local") -> Capabil
 
     `mode` is used only to reject a substitute that would cross the
     local/cloud boundary. It is not used to choose one.
+
+    `turn_kind` says what the turn is for, so a redirected chat turn
+    lands on the chat model rather than on the heaviest model installed.
+    It is a preference, not an authority: an unroutable turn_kind falls
+    back to the ladder rather than refusing.
     """
     if not too_weak_for_chat(model_id):
         return CapabilityGateOutcome(model_id=model_id)
 
-    replacement = _replacement_for(model_id)
+    replacement = _replacement_for(model_id, turn_kind)
 
     if replacement is None:
         # Nothing installed can do this. Said out loud rather than
