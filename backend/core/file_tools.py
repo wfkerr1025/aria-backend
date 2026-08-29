@@ -133,11 +133,28 @@ def read_file(path: str) -> dict:
     pointed at, and the replacement character is visible in the output.
     """
     resolved = resolve_in_workspace(path)
-    if not resolved.is_file():
+
+    # Staged first. A model that edits a file and then reads it back
+    # should see its own edit; reading the project's copy instead is how
+    # it concludes the change did not happen and does it again.
+    #
+    # Imported lazily because ghost_workspace imports this module -- and
+    # deliberately here rather than inside resolve_in_workspace, so the
+    # confinement check still runs against the path the caller asked for.
+    # The reported path stays the project one: what the reader wants to
+    # know is which file this is, not which copy of it was on disk.
+    try:
+        from backend.core.ghost_workspace import get_effective_file
+
+        effective = get_effective_file(str(resolved))
+    except Exception:  # pragma: no cover - staging must never break a read
+        effective = resolved
+
+    if not effective.is_file():
         raise WorkspaceError(f"Not a file: {_relative(resolved)}")
 
-    size = resolved.stat().st_size
-    data = resolved.read_bytes()[:MAX_READ_BYTES]
+    size = effective.stat().st_size
+    data = effective.read_bytes()[:MAX_READ_BYTES]
     text = data.decode("utf-8", errors="replace")
 
     return {

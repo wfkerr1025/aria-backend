@@ -25,7 +25,12 @@ ORIGINAL = "one\ntwo\n"
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     monkeypatch.setenv(file_tools.ENV_WORKSPACE, str(tmp_path))
-    (tmp_path / "notes.txt").write_text(ORIGINAL, encoding="utf-8")
+    # newline="" so the fixture writes exactly these bytes. write_text's
+    # default translates "\n" to "\r\n" on Windows, which edit_file no
+    # longer does -- so a fixture left on the default seeds a file whose
+    # line endings differ from anything staged over it, and every
+    # comparison between the two reads as a change nobody made.
+    (tmp_path / "notes.txt").write_text(ORIGINAL, encoding="utf-8", newline="")
     (tmp_path / "backend").mkdir()
     return tmp_path
 
@@ -230,3 +235,190 @@ def test_the_model_cannot_commit_by_writing_the_words():
     assert "commit_changes" not in ACTION_TOOLS
     assert "discard_staged_changes" not in ACTION_TOOLS
     assert ACTION_TOOLS == frozenset({"edit_file", "run_tests"})
+
+
+# ------------------------------------------------------
+# Staged reads
+# ------------------------------------------------------
+def test_a_read_sees_the_staged_version(project):
+    stage("notes.txt", "one\nchanged\n")
+
+    # A model that edits a file and then reads it back should see its own
+    # edit. Reading the project's copy is how it concludes the change did
+    # not happen and does it again.
+    assert file_tools.read_file("notes.txt")["text"] == "one\nchanged\n"
+
+
+def test_an_unstaged_file_reads_from_the_project(project):
+    assert file_tools.read_file("notes.txt")["text"] == ORIGINAL
+
+
+def test_a_read_reports_the_project_path_not_the_staged_one(project):
+    stage("notes.txt", "one\nchanged\n")
+
+    # What the reader wants to know is which file this is, not which copy
+    # of it happened to be on disk.
+    assert file_tools.read_file("notes.txt")["path"] == "notes.txt"
+
+
+def test_get_effective_file_prefers_staging(project):
+    assert ghost.get_effective_file("notes.txt") == project / "notes.txt"
+
+    stage("notes.txt", "one\nchanged\n")
+
+    assert ghost.get_effective_file("notes.txt") == ghost.staging_root() / "notes.txt"
+
+
+def test_a_path_outside_the_project_is_returned_unchanged(project):
+    # Confinement is file_tools' job and it has already ruled. This layer
+    # does not get a second opinion on where a file may be.
+    outside = str(project.parent / "elsewhere.txt")
+
+    assert str(ghost.get_effective_file(outside)) == outside
+
+
+# ------------------------------------------------------
+# The merged directory view
+# ------------------------------------------------------
+def test_a_listing_merges_staged_and_real(project):
+    stage("backend/api.py", "x = 1\n")
+
+    listing = ghost.list_effective_directory("backend")
+
+    assert listing == ["api.py"]
+
+
+def test_a_file_in_both_places_appears_once(project):
+    stage("notes.txt", "one\nchanged\n")
+
+    listing = ghost.list_effective_directory("")
+
+    assert listing.count("notes.txt") == 1
+
+
+def test_the_staging_directory_is_not_project_content(project):
+    stage("notes.txt", "one\nchanged\n")
+
+    assert ghost.STAGING_DIRNAME not in ghost.list_effective_directory("")
+
+
+# ------------------------------------------------------
+# Snapshots
+# ------------------------------------------------------
+def test_the_first_staging_of_a_file_has_nothing_to_snapshot(project):
+    stage("notes.txt", "first\n")
+
+    assert ghost.rollback_staged_changes()["status"] == "no_snapshot"
+
+
+def test_restaging_snapshots_the_previous_version(project):
+    stage("notes.txt", "first\n")
+    stage("notes.txt", "second\n")
+
+    report = ghost.rollback_staged_changes()
+
+    assert report["status"] == "rolled_back"
+    assert (ghost.staging_root() / "notes.txt").read_text(encoding="utf-8") == "first\n"
+
+
+def test_a_rollback_never_touches_the_project(project):
+    stage("notes.txt", "first\n")
+    stage("notes.txt", "second\n")
+
+    ghost.rollback_staged_changes()
+
+    assert (project / "notes.txt").read_text(encoding="utf-8") == ORIGINAL
+
+
+def test_snapshots_are_not_staged_files(project):
+    stage("notes.txt", "first\n")
+    stage("notes.txt", "second\n")
+
+    # Listing them would put .snapshots/index.json in the pending list,
+    # show it a diff, and commit ARIA's own bookkeeping into the project.
+    assert ghost.staged_files() == ["notes.txt"]
+    for entry in ghost.get_pending_changes():
+        assert ghost.SNAPSHOT_DIRNAME not in entry["path"]
+
+
+def test_a_commit_never_writes_the_snapshot_directory(project):
+    stage("notes.txt", "first\n")
+    stage("notes.txt", "second\n")
+
+    ghost.commit_changes("commit the changes")
+
+    assert not (project / ghost.SNAPSHOT_DIRNAME).exists()
+
+
+# ------------------------------------------------------
+# Pending changes
+# ------------------------------------------------------
+def test_pending_changes_describe_each_staged_file(project):
+    stage("notes.txt", "one\nchanged\n")
+    stage("backend/api.py", "x = 1\n")
+
+    by_path = {entry["path"]: entry for entry in ghost.get_pending_changes()}
+
+    assert by_path["notes.txt"]["status"] == ghost.STATUS_STAGED_MODIFIED
+    assert by_path["backend/api.py"]["status"] == ghost.STATUS_STAGED_NEW
+    assert "-two" in by_path["notes.txt"]["diff"]
+
+
+def test_a_staged_file_identical_to_the_project_says_so(project):
+    stage("notes.txt", ORIGINAL)
+
+    # Worth reporting rather than hiding: a proposal that turned out to
+    # be a no-op is something a reviewer should see.
+    assert ghost.get_pending_changes()[0]["status"] == ghost.STATUS_STAGED_UNCHANGED
+
+
+# ------------------------------------------------------
+# Selective commit and discard
+# ------------------------------------------------------
+def test_a_selective_commit_writes_only_what_was_named(project):
+    stage("notes.txt", "one\nchanged\n")
+    stage("backend/api.py", "x = 1\n")
+
+    report = ghost.commit_changes("commit the changes", files=["notes.txt"])
+
+    assert report["files"] == ["notes.txt"]
+    assert (project / "notes.txt").read_text(encoding="utf-8") == "one\nchanged\n"
+    assert not (project / "backend" / "api.py").exists()
+    # And the one not committed is still staged.
+    assert "backend/api.py" in ghost.staged_files()
+
+
+def test_naming_a_file_that_is_not_staged_is_reported(project):
+    stage("notes.txt", "one\nchanged\n")
+
+    report = ghost.commit_changes("commit the changes", files=["nope.txt"])
+
+    # Rather than a successful-looking report about nothing.
+    assert report["unknown"] == ["nope.txt"]
+    assert report["files"] == []
+
+
+def test_a_selective_discard_keeps_the_rest(project):
+    stage("notes.txt", "one\nchanged\n")
+    stage("backend/api.py", "x = 1\n")
+
+    report = ghost.discard_changes("discard the changes", files=["notes.txt"])
+
+    assert report["files"] == ["notes.txt"]
+    assert ghost.staged_files() == ["backend/api.py"]
+
+
+def test_a_selective_discard_never_touches_the_project(project):
+    stage("notes.txt", "one\nchanged\n")
+
+    ghost.discard_changes("discard the changes", files=["notes.txt"])
+
+    assert (project / "notes.txt").read_text(encoding="utf-8") == ORIGINAL
+
+
+def test_the_new_commands_take_the_same_consent(project):
+    stage("notes.txt", "one\nchanged\n")
+
+    assert ghost.commit_changes("don't apply the changes yet")["status"] == "refused"
+    assert ghost.discard_changes("not yet")["status"] == "refused"
+    assert ghost.staged_files() == ["notes.txt"]
