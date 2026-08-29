@@ -65,6 +65,7 @@ PYTEST_TESTS = [
     "test_planner_actions.py",
     "test_answer_actions_wiring.py",
     "test_ghost_workspace.py",
+    "test_workspace_and_capability.py",
     "test_provider_stop_sequences.py",
     "test_upgrade_01_note_embeddings.py",
     "test_upgrade_02_semantic_index.py",
