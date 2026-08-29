@@ -39,6 +39,7 @@ __all__ = [
     "KINDS",
     "LOOKUP_KINDS",
     "CONVERSATION_TARGET",
+    "KIND_ACTION",
     "Plan",
     "PlanStep",
     "step_id",
@@ -65,10 +66,25 @@ LOOKUP_KINDS = (KIND_WEATHER, KIND_SEARCH)
 # this" -- and giving it a kind of its own keeps "did planning decide this
 # was simple?" a question with a one-word answer.
 KIND_ANSWER = "answer"
+# A step that asks for something to happen to a file or a test suite,
+# rather than for something to be said about it.
+#
+# Distinct from KIND_EDIT, which is a step the model performs by writing
+# prose: "describe the change to make". An action step names a registered
+# tool and a target the orchestrator can execute against, and carries the
+# structured block in `action`.
+#
+# What it deliberately does not carry is the new contents of a file. The
+# planner runs before the model generates anything -- build_prompt()
+# plans, routes, runs its tools and only then assembles the prompt -- so
+# at plan time the text to write does not exist and cannot. The planner
+# names what to act on; the model supplies what to write, and
+# backend/core/action_plan.py reads it back out of the answer.
+KIND_ACTION = "action"
 
 KINDS = frozenset({
     KIND_READ, KIND_ANALYZE, KIND_EDIT, KIND_TEST, KIND_SUMMARIZE, KIND_ANSWER,
-    KIND_SEARCH, KIND_WEATHER,
+    KIND_SEARCH, KIND_WEATHER, KIND_ACTION,
 })
 
 # The target for a step that works on what was said rather than on a
@@ -90,6 +106,14 @@ class PlanStep:
     target: str
     description: str
     depends_on: list[str] = field(default_factory=list)
+    # The structured action a KIND_ACTION step asks for, and None for
+    # every other kind. Additive and defaulted, so every step built
+    # before this field existed is unchanged and every reader that does
+    # not know about it keeps working.
+    #
+    # Shape: tool / target / content / args / preconditions /
+    # postconditions. `content` is always None here -- see KIND_ACTION.
+    action: dict | None = None
     # Arguments a lookup step needs that its target cannot carry: the
     # location for a weather step, the query for a search one. Empty for
     # every other kind, whose target is the whole of what the step is about.

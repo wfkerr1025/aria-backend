@@ -42,6 +42,7 @@ No model, no clock, no I/O.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
 try:
     from backend.core import search_intent as _search_intent
@@ -50,7 +51,8 @@ try:
         CONVERSATION_TARGET,
         KIND_ANALYZE,
         KIND_ANSWER,
-        KIND_EDIT,
+        KIND_ACTION,
+    KIND_EDIT,
         KIND_READ,
         KIND_SEARCH,
         KIND_SUMMARIZE,
@@ -95,6 +97,16 @@ EDIT_WORDS = (
     "refactor", "fix", "change", "update", "modify", "rewrite", "patch",
     "implement", "add", "remove", "delete", "rename", "migrate", "port",
     "clean up", "correct", "repair", "adjust",
+    # "edit" was missing, which is the plainest way to ask for one.
+    # "Edit README.md to add an install section" only classified as an
+    # edit because it also happened to say "add"; "edit setup.py to pin
+    # the version" classified as a summary.
+    "edit",
+    # As a phrase, never as the bare verb. "Apply the changes" is a
+    # request to act; "how does this apply", "apply the filter" and
+    # "applying for a licence" are not, and a bare "apply" would read all
+    # four the same way.
+    "apply the change", "apply the changes",
 )
 
 # A request to explain something. Listed for readability and for the goal
@@ -217,6 +229,96 @@ class PlanBuilder:
             if _mentions(goal, EDIT_WORDS):
                 return KIND_EDIT
         return KIND_SUMMARIZE
+
+    # --------------------------------------------------------------
+    # Actions
+    # --------------------------------------------------------------
+    # An action step names a registered tool and a target the
+    # orchestrator can execute against. Two things it never does, and
+    # both are the point:
+    #
+    #   It does not carry the new contents of a file. This method runs
+    #   inside build(), which synthesis_engine calls BEFORE the model has
+    #   generated anything -- plan, route, run tools, then assemble the
+    #   prompt. At plan time the text to write does not exist. The model
+    #   supplies it, and backend/core/action_plan.py reads it back out of
+    #   the answer.
+    #
+    #   It does not invent a path. The target has to be a document the
+    #   evidence bundle actually produced, so a plan cannot name a file
+    #   nobody has seen. A request to act on something not in evidence
+    #   gets no action step, which leaves the turn to answer in prose --
+    #   the behaviour it had before actions existed.
+    #
+    # Deterministic, like the rest of this class: a vocabulary and a
+    # lookup, no model and no I/O.
+    def action_step(self, query: str, bundle, position: int, current_goal=None):
+        """The action this query asks for, or None.
+
+        None is the common case and is not a failure: most turns ask for
+        an explanation, and an explanation is not an action.
+        """
+        documents = self.documents(bundle)
+
+        if self.terminal_kind(query, current_goal) == KIND_EDIT:
+            target = self._named_document(query, documents)
+            if target is None:
+                # Asked for an edit, named nothing that exists. Silent
+                # here rather than guessing: picking "the first document
+                # in the bundle" would write to a file the user did not
+                # name.
+                return None
+            return PlanStep(
+                id=step_id(position),
+                kind=KIND_ACTION,
+                target=target,
+                description=f"Edit {target} as described above.",
+                action={
+                    "tool": "edit_file",
+                    "target": target,
+                    # Supplied by the model, not by the planner. See above.
+                    "content": None,
+                    "args": {"path": target},
+                    "preconditions": [f"{target} is in the evidence for this turn"],
+                    "postconditions": [],
+                },
+            )
+
+        if _mentions(query, TEST_WORDS):
+            return PlanStep(
+                id=step_id(position),
+                kind=KIND_ACTION,
+                target=CONVERSATION_TARGET,
+                description="Run the project's tests.",
+                action={
+                    "tool": "run_tests",
+                    "target": CONVERSATION_TARGET,
+                    "content": None,
+                    # The scope stays empty: narrowing it means passing a
+                    # fragment of the user's sentence to a test runner,
+                    # and file_tools validates scope against a character
+                    # allowlist precisely because that is not safe to
+                    # improvise.
+                    "args": {"scope": ""},
+                    "preconditions": [],
+                    "postconditions": [],
+                },
+            )
+
+        return None
+
+    def _named_document(self, query: str, documents) -> str | None:
+        """The document this query names, or None.
+
+        Matched against what the bundle produced rather than parsed out
+        of the sentence. A filename extracted from prose is a filename
+        nobody has checked exists.
+        """
+        lowered = str(query or "").lower()
+        for document in documents:
+            if document and document.lower() in lowered:
+                return document
+        return None
 
     def wants_tests(self, query: str, current_goal=None) -> bool:
         """Whether verification is in scope, from the query or the goal."""
@@ -408,6 +510,15 @@ class PlanBuilder:
                     depends_on=[terminal.id],
                 )
             )
+
+        # The action, last and dependent on the terminal step. Appended
+        # rather than replacing anything: the terminal step is where the
+        # model says what the change is, and the action is the request to
+        # apply it. Dropping the first would leave an action whose
+        # content nothing produced.
+        action = self.action_step(query, bundle, len(steps) + 1, current_goal)
+        if action is not None:
+            steps.append(replace(action, depends_on=[terminal.id]))
 
         return Plan(steps)
 
