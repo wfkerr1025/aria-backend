@@ -213,3 +213,77 @@ def test_an_action_is_shaped_for_the_orchestrator():
 
     assert result.dry_run is True
     assert result.results[0].tool_name == "edit_file"
+
+
+# ======================================================
+# Tools ARIA does not have
+#
+# Found in the audit. ARIA implements two action tools, edit_file and
+# run_tests. There is no delete_file and no folder tool, so an answer
+# saying "I'll remove notes.md" and emitting a delete_file block parsed
+# to zero actions, returned None, and reported NOTHING -- the file was
+# not deleted and nobody was told. A user reading that answer has every
+# reason to believe it happened.
+#
+# Silence is the worst available answer to a refusal. These pin that it
+# is now said out loud.
+# ======================================================
+def test_a_tool_that_does_not_exist_is_named():
+    from backend.core.action_plan import unsupported_actions
+
+    text = '```json\n{"tool": "delete_file", "path": "notes.md"}\n```'
+
+    assert unsupported_actions(text) == ["delete_file"]
+
+
+def test_a_supported_tool_is_not_reported_as_missing():
+    from backend.core.action_plan import unsupported_actions
+
+    text = '```json\n{"tool": "edit_file", "path": "a.py", "content": "x"}\n```'
+
+    assert unsupported_actions(text) == []
+
+
+def test_prose_in_a_fence_is_not_a_missing_tool():
+    from backend.core.action_plan import unsupported_actions
+
+    # A fenced block that is not JSON is a code sample, not an action
+    # that failed. Counting it would put "python" in a refusal message.
+    assert unsupported_actions("```python\nprint('hi')\n```") == []
+
+
+def test_each_missing_tool_is_named_once():
+    from backend.core.action_plan import unsupported_actions
+
+    text = ('```json\n{"tool": "delete_file", "path": "a"}\n```\n'
+            '```json\n{"tool": "delete_file", "path": "b"}\n```')
+
+    assert unsupported_actions(text) == ["delete_file"]
+
+
+def test_the_turn_reports_a_tool_it_could_not_run(tmp_path, monkeypatch):
+    from backend.core import file_tools
+    from backend.core.tool_orchestrator import run_answer_actions
+
+    monkeypatch.setenv(file_tools.ENV_WORKSPACE, str(tmp_path))
+
+    report = run_answer_actions(
+        'I will remove it.\n\n```json\n{"tool": "delete_file", "path": "notes.md"}\n```',
+        "please delete it",
+    )
+
+    assert report is not None, "a refused action reported nothing at all"
+    assert report["status"] == "unsupported"
+    assert report["unsupported"] == ["delete_file"]
+    assert any("delete_file" in note for note in report["notes"])
+
+
+def test_an_answer_with_no_actions_still_reports_nothing(tmp_path, monkeypatch):
+    from backend.core import file_tools
+    from backend.core.tool_orchestrator import run_answer_actions
+
+    monkeypatch.setenv(file_tools.ENV_WORKSPACE, str(tmp_path))
+
+    # Almost every turn. A client that has never heard of answer_actions
+    # must see exactly the traffic it saw before they existed.
+    assert run_answer_actions("just talking", "hello") is None

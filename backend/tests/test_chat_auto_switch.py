@@ -412,3 +412,73 @@ def test_a_preferred_replacement_that_is_not_installed_falls_back(monkeypatch):
 
     assert outcome.switched is True
     assert outcome.model_id is not None
+
+
+# ======================================================
+# No loops, no fallback storms
+#
+# Three layers now touch the model choice on a single turn -- the router,
+# this gate, and the safety gate. Every one is a single pass and none can
+# hand work back to another, but "obviously" is not an argument, so the
+# property is asserted rather than reasoned about.
+# ======================================================
+def test_the_gate_reaches_a_fixed_point_in_one_pass():
+    # Applying it twice must equal applying it once. This is what makes a
+    # retry loop unnecessary and, more usefully, makes one harmless if
+    # somebody adds it later.
+    once = gate.ensure_tool_capable(WEAK)
+    twice = gate.ensure_tool_capable(once.model_id)
+
+    assert twice.switched is False
+    assert twice.model_id == once.model_id
+
+
+@pytest.mark.parametrize("turn_kind", ["chat", "tools", "heavy_reasoning", None])
+def test_a_redirect_never_lands_on_something_that_needs_redirecting(turn_kind):
+    outcome = gate.ensure_tool_capable(WEAK, turn_kind=turn_kind)
+
+    assert gate.too_weak_for_chat(outcome.model_id) is False
+
+
+def test_the_turn_path_has_no_recursion_and_no_retry_loop():
+    import ast
+    import inspect
+
+    from backend.chat import model_router
+    from backend.core import turn_orchestrator
+
+    for module, forbidden in ((turn_orchestrator, "orchestrate_turn"),
+                              (model_router, "select_model_for_turn"),
+                              (gate, "ensure_tool_capable")):
+        tree = ast.parse(inspect.getsource(module))
+
+        # Each entry point is called by its transport, never by itself or
+        # by anything else in its own module. A fallback that re-enters
+        # the turn is how one failed model becomes twenty attempts.
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == forbidden:
+                inner = {
+                    call.func.id if isinstance(call.func, ast.Name)
+                    else getattr(call.func, "attr", "")
+                    for call in ast.walk(node) if isinstance(call, ast.Call)
+                }
+                assert forbidden not in inner, f"{module.__name__}.{forbidden} recurses"
+
+        # And no unbounded loop anywhere in the routing modules.
+        for node in ast.walk(tree):
+            assert not isinstance(node, ast.While), \
+                f"{module.__name__} has a while loop in the turn path"
+
+
+def test_a_turn_resolves_the_model_exactly_once(offline, monkeypatch):
+    calls = []
+    real = gate.ensure_tool_capable
+    monkeypatch.setattr(
+        turn_orchestrator.chat_capability_gate, "ensure_tool_capable",
+        lambda *a, **kw: (calls.append(a), real(*a, **kw))[1],
+    )
+
+    orchestrate_turn(turn("hello", requested_model_id=WEAK),
+                     default_local_model=lambda: WEAK)
+
+    assert len(calls) == 1

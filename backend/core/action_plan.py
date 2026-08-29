@@ -59,6 +59,7 @@ __all__ = [
     "LIVE_EXECUTION_PHRASES",
     "NEGATION_VETO",
     "parse_actions",
+    "unsupported_actions",
     "requests_live_execution",
 ]
 
@@ -146,6 +147,44 @@ def _invocation(payload, index: int) -> ToolInvocation | None:
         return None
 
     return ToolInvocation(tool_name=name, args=args, step_id=f"action-{index}")
+
+
+def unsupported_actions(text: str) -> list[str]:
+    """Tools an answer asked for that ARIA does not have.
+
+    Separate from parse_actions because the two answer different
+    questions, and the second one was going unasked. parse_actions
+    returns the actions it CAN run; a block naming delete_file -- which
+    is not implemented -- simply is not among them, and the turn then
+    reported nothing at all. The model said it would delete the file, the
+    file was not deleted, and nobody was told.
+
+    Silence is the worst available answer there. A user who reads "I'll
+    remove notes.md" and sees no error has every reason to believe it
+    happened. This makes the refusal sayable.
+
+    Never raises, never executes. Blocks that are not JSON are prose that
+    happened to be fenced and are not counted.
+    """
+    names: list[str] = []
+
+    for block in _FENCED.findall(str(text or "")):
+        try:
+            payload = json.loads(block)
+        except (ValueError, TypeError):
+            continue
+
+        for candidate in (payload if isinstance(payload, list) else [payload]):
+            if not isinstance(candidate, dict):
+                continue
+            name = candidate.get("tool") or candidate.get("name")
+            # Shaped like an action -- a "tool" key with a string in it --
+            # but naming something that does not exist.
+            if isinstance(name, str) and name.strip() and name.strip() not in ACTION_TOOLS:
+                if name.strip() not in names:
+                    names.append(name.strip())
+
+    return names
 
 
 def parse_actions(text: str) -> list[ToolInvocation]:

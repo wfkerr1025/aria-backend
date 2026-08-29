@@ -955,7 +955,10 @@ class WebSocketHandler:
         turn to change nothing. The full two-stage pass runs on the REST
         path, where the reply is buffered and the user has not seen it.
         """
-        if not answer_text or not supervisor_layer.needs_supervision(model_id):
+        # No role check. The gate used to be needs_supervision(), which
+        # was really "is this one of the heavy models" -- so phi-3, the
+        # default chat model, had its output repaired by nothing.
+        if not answer_text:
             return answer_text
 
         result = supervisor_layer.repair_deterministically(answer_text)

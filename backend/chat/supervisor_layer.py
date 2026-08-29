@@ -82,6 +82,7 @@ logger = get_logger(__name__)
 __all__ = [
     "SUPERVISED_ROLES",
     "SupervisionResult",
+    "needs_model_supervision",
     "needs_supervision",
     "repair_deterministically",
     "supervise_chat_output",
@@ -101,15 +102,19 @@ _LEAK_MARKERS = (
 # but deliberately NOT matching a line that merely mentions the word --
 # "the system: a short description" is prose, "System: You are ARIA" is
 # leakage, and the difference is what follows the colon.
+# Emphasis and heading characters are stripped before the role word, for
+# the same reason answer_stream does it: phi-3 writes "**assistant:**",
+# and a pattern anchored on the bare word never sees it.
 _LEAK_LINE = re.compile(
-    r"^\s*(system|assistant|user)\s*:\s*(you are\b|your name is\b|$)",
+    r"^[\s*_#>]*(system|assistant|user)\s*:\s*[*_]*\s*(you are\b|your name is\b|$)",
     re.IGNORECASE,
 )
 
 # What a chat-template marker leaves behind once it is removed: the role
 # word alone on its own line. Matched only as a WHOLE line, so a
 # paragraph that happens to begin with the word "system" survives.
-_BARE_ROLE_LINE = re.compile(r"^\s*(system|user|assistant)\s*:?\s*$", re.IGNORECASE)
+_BARE_ROLE_LINE = re.compile(
+    r"^[\s*_#>]*(system|user|assistant)\s*:?\s*[*_]*\s*$", re.IGNORECASE)
 
 # The persona being read back to the user. A model that starts its reply
 # by restating its instructions has leaked them, however fluently.
@@ -412,10 +417,39 @@ def supervise_chat_output(raw_response, turn_context=None, *, generate=None) -> 
 SUPERVISED_ROLES = frozenset({"chat_tools", "heavy_reasoning"})
 
 
-def needs_supervision(model_id: str | None) -> bool:
+def needs_model_supervision(model_id: str | None) -> bool:
+    """Whether the SUPERVISOR MODEL should look at this turn's output.
+
+    False for phi-3's own turns -- it is the supervisor, and grading its
+    own homework costs a second inference to change nothing.
+    """
     from backend.config.model_roles import role_of
 
     return role_of(model_id)["role"] in SUPERVISED_ROLES
+
+
+def needs_supervision(model_id: str | None) -> bool:
+    """Whether ANYTHING should check this turn's output. Always true.
+
+    Kept as a distinct name because these two questions were one, and
+    being one was a bug. Deterministic repair was gated on the same role
+    check as the model stage, so phi-3 -- now the DEFAULT CHAT MODEL, and
+    therefore the most common turn in the system -- had its output
+    checked by nothing at all.
+
+    Measured, not theorised. Asked a one-line question on this machine,
+    phi-3 answered:
+
+        Blue is often associated with calmness and serenity.
+
+        **assistant:** Blue is ...
+
+    Its own leakage was exempt from the layer that exists to remove
+    leakage, because an exemption written for a different reason reached
+    further than it meant to. Stripping a template marker costs no
+    inference and cannot make an answer worse, so nothing is exempt.
+    """
+    return True
 
 
 def supervisor_generator(mode: str = "local"):

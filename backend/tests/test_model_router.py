@@ -289,3 +289,83 @@ def test_the_router_loads_nothing():
 def test_every_choice_explains_itself():
     for text in ("hello", "edit the file a.py", "think carefully about this"):
         assert select_model_for_turn(turn(text)).reason
+
+
+# ======================================================
+# The phrasing corpus
+#
+# The audit that produced this file found the classifier matching 6 of 27
+# ordinary ways of asking for a file operation. "create a file" routed
+# correctly; "create a new file called notes.md" did not, because one
+# extra word broke a substring match. The other twenty-one went to the
+# chat model, whose role says can_tools False -- which is the "ARIA talks
+# about the change instead of making it" failure, arriving through the
+# layer built to prevent it.
+#
+# A phrase list cannot be made right by adding phrases; there is always
+# another way to say it. The corpus is here so that the NEXT attempt to
+# simplify the signals has to beat these numbers rather than a handful of
+# examples someone happened to think of.
+# ======================================================
+TOOL_PHRASINGS = [
+    "create a file", "create a new file called notes.md", "make a new file",
+    "add a file to the project", "write a new file src/util.py",
+    "create a folder called docs", "make a directory for tests",
+    "delete notes.md", "remove the file a.py", "rename foo.py to bar.py",
+    "move the file into src/", "read the file src/main.py",
+    "show me what's in config.json", "open README.md",
+    "list the files in this project", "what files are in src/",
+    "edit main.py", "update the config file", "fix the bug in parser.py",
+    "add logging to the handler", "commit the staged changes",
+    "discard my changes", "stage everything", "run the tests", "run pytest",
+    "search the web for python 3.13 news",
+]
+
+CHAT_PHRASINGS = [
+    "hello", "hi there", "thanks!", "what did you mean by that",
+    "can you explain that again", "who are you", "tell me a joke",
+    # Shaped like file work and is not. Each of these was a real false
+    # positive at some point in the audit.
+    "I like Node.js", "how do I create a file in python", "what is a directory",
+    "can you show me an example", "list three ideas for a name",
+    "and/or is fine", "he/she said hello", "it was a win/loss record",
+]
+
+
+@pytest.mark.parametrize("text", TOOL_PHRASINGS)
+def test_every_way_of_asking_for_file_work_reaches_a_tool_model(text):
+    choice = select_model_for_turn(turn(text))
+
+    assert choice.turn_kind in (TURN_TOOLS, TURN_HEAVY), (
+        f"{text!r} routed as {choice.turn_kind}; it would reach "
+        f"{choice.model_id}, which is not a tool model"
+    )
+    assert choice.model_id in (TOOL_MODEL, HEAVY_MODEL)
+    # The requirement stated in the audit, restated per phrasing.
+    assert choice.model_id != ROUTER_MODEL
+
+
+@pytest.mark.parametrize("text", CHAT_PHRASINGS)
+def test_conversation_is_not_mistaken_for_file_work(text):
+    # The other direction matters as much. Routing chat to the tool model
+    # is not dangerous, it is just slower and makes the routing look
+    # arbitrary -- and a classifier that fires on everything has stopped
+    # classifying.
+    assert select_model_for_turn(turn(text)).turn_kind == TURN_CHAT
+
+
+def test_a_named_file_outranks_the_instructional_veto():
+    # "how do I fix parser.py" is about THIS project, however it is
+    # phrased. The veto exists for "how do I create a file in python",
+    # which names no file.
+    assert select_model_for_turn(turn("how do I fix parser.py")).turn_kind == TURN_TOOLS
+    assert select_model_for_turn(
+        turn("how do I create a file in python")).turn_kind == TURN_CHAT
+
+
+@pytest.mark.parametrize("text", ["python 3.13 is out", "e.g. something",
+                                  "version 2.0 shipped"])
+def test_a_number_is_not_a_filename(text):
+    # The extension has to be a real one. Matching any word.word makes
+    # "3.13" a file operation.
+    assert select_model_for_turn(turn(text)).turn_kind == TURN_CHAT

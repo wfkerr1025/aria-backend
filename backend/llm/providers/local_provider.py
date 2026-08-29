@@ -40,6 +40,19 @@ TURN_BOUNDARY_STOP_SEQUENCES = [
     # this belongs to a turn that does not exist.
     "\nInstruction:", "\nInstructions:",
     "\nUser Query:", "\nSynthesis Instructions:",
+
+    # Chat-template markers. Stopping ON them beats truncating after
+    # them: the transport can only cut what has already been generated,
+    # and on the streaming path already sent.
+    #
+    # Measured on this machine, phi-3-mini answered a one-line question
+    # with "**assistant:**" mid-reply -- the bolded form, which the
+    # "\nassistant:" sequences above do not match. That is why
+    # answer_stream now strips emphasis before comparing, and why the
+    # bolded forms are listed here as well.
+    "<|im_start|>", "<|im_end|>", "<|system|>", "<|user|>", "<|assistant|>",
+    "<|end|>", "<|eot_id|>", "[/INST]", "[/inst]",
+    "**assistant:**", "**Assistant:**", "**system:**", "**System:**",
 ]
 
 # Kept in step with backend/core/answer_stream.py's TERMINATORS, which

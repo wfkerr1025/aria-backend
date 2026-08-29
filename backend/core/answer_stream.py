@@ -93,6 +93,15 @@ TERMINATORS: tuple[str, ...] = (
     "### instruction",
     "<|user|>",
     "<|system|>",
+    # The other half of the same chat template. Their absence was not a
+    # judgement, it was an omission -- <|assistant|> reached the screen in
+    # a live measurement while <|user|> beside it was caught.
+    "<|assistant|>",
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|end|>",
+    "<|eot_id|>",
+    "[/inst]",
     # The prompt's own Conversation Context format. It renders past turns
     # as "- [user] ..." / "- [assistant] ...", and a model completing that
     # document carries on writing the conversation rather than answering
@@ -542,9 +551,28 @@ class AnswerStream:
 
     def _strip_markers(self, line: str) -> str:
         """Apply the terminator and scaffolding rules to one line."""
+        # Emphasis stripped before matching. Measured on this machine,
+        # phi-3-mini -- the default chat model -- answered a one-line
+        # question with:
+        #
+        #     Blue is often associated with calmness and serenity.
+        #
+        #     **assistant:** Blue is ...
+        #
+        # "assistant:" is in TERMINATORS and did not fire, because the
+        # line starts with two asterisks. A model that has learnt to write
+        # its scaffolding in bold is still writing scaffolding, and the
+        # markers below are exactly the characters it decorates with.
         lowered = line.lstrip().lower()
 
-        terminator = _matches(lowered, TERMINATORS)
+        # A second, undecorated view, used ONLY for the terminator check.
+        # A terminator returns "" so an offset does not matter; a
+        # scaffolding prefix is sliced off by length, so stripping the
+        # hashes there would break "### Response" -- which it did, and two
+        # tests said so immediately.
+        undecorated = lowered.lstrip("*_#> 	")
+
+        terminator = _matches(lowered, TERMINATORS) or _matches(undecorated, TERMINATORS)
         if terminator:
             self._stopped = True
             self.terminated_at = terminator

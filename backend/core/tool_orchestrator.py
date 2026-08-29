@@ -438,10 +438,30 @@ def run_answer_actions(answer_text: str, user_text: str) -> dict | None:
     "apply the changes" in its own answer has described an intention, not
     granted itself one.
     """
-    from backend.core.action_plan import parse_actions, requests_live_execution
+    from backend.core.action_plan import (
+        parse_actions, requests_live_execution, unsupported_actions,
+    )
 
     actions = parse_actions(answer_text)
+
+    # A tool ARIA does not have is a refusal that has to be SAID. Before
+    # this, an answer whose only action block named delete_file parsed to
+    # nothing, returned None, and the turn reported nothing -- so a user
+    # who read "I'll remove notes.md" saw no error and had every reason
+    # to think it had happened.
+    unsupported = unsupported_actions(answer_text)
+
     if not actions:
+        if unsupported:
+            return {
+                "actions": [], "results": [], "rollback": [],
+                "status": "unsupported", "dry_run": True,
+                "unsupported": unsupported,
+                "notes": [
+                    f"{name} is not a tool ARIA has, so nothing was done."
+                    for name in unsupported
+                ],
+            }
         return None
 
     live = requests_live_execution(user_text)
@@ -475,5 +495,9 @@ def run_answer_actions(answer_text: str, user_text: str) -> dict | None:
         "rollback": list(outcome.rolled_back),
         "status": _report_status(outcome),
         "dry_run": outcome.dry_run,
-        "notes": list(context.errors),
+        "unsupported": unsupported,
+        "notes": list(context.errors) + [
+            f"{name} is not a tool ARIA has, so that step was skipped."
+            for name in unsupported
+        ],
     }

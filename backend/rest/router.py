@@ -934,12 +934,16 @@ async def post_chat(payload: ChatRequest) -> Dict[str, Any]:
     # The WebSocket path has already streamed its tokens by this point
     # and gets the deterministic half only -- see
     # backend/chat/supervisor_layer.py.
-    if supervisor_layer.needs_supervision(turn["model_id"]):
+    if reply:
+        # Deterministic repair runs for every model. The supervisor MODEL
+        # runs only for the heavy ones -- passing generate=None for the
+        # rest skips the second inference without skipping the repairs.
+        use_model = supervisor_layer.needs_model_supervision(turn["model_id"])
         supervised = supervisor_layer.supervise_chat_output(
             reply,
             {"role": model_roles.describe_role(turn["model_id"])},
             generate=supervisor_layer.supervisor_generator(
-                _stream_engine.mode_manager.get_mode()),
+                _stream_engine.mode_manager.get_mode()) if use_model else None,
         )
         if supervised.changed:
             unified_log("rest", "INFO", "supervisor revised the reply", {

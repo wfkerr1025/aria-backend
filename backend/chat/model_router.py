@@ -65,6 +65,7 @@ way.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from backend.config import model_roles
@@ -113,15 +114,95 @@ _HEAVY_PHRASES = (
 )
 
 # Workspace and file work. These are the turns where a malformed action
-# packet does something rather than reads wrong, so they route to a model
+# packet DOES something rather than reads wrong, so they route to a model
 # that can hold the shape.
+#
+# This was a list of fixed phrases and it was badly wrong. Probed against
+# 27 ordinary ways of asking for a file operation it matched six: "create
+# a file" routed correctly and "create a new file called notes.md" did
+# not, because one extra word broke the substring. Twenty-one requests
+# went to the chat model, whose role says can_tools False -- which is the
+# "ARIA talks about the change instead of making it" failure that this
+# whole layer exists to prevent, arriving through the layer meant to
+# prevent it.
+#
+# So it is now three cheap signals instead of a phrase book:
+#
+#   a concrete path or filename   -- naming main.py is talking about this
+#                                    project, whatever the sentence
+#   a file verb near a file noun  -- "make a new folder", "update the config"
+#   a workspace verb              -- commit, stage, discard, rollback
+#
+# Kept deliberately mechanical. A model could classify this better and
+# would cost an inference on every turn to decide which model the turn
+# gets, which is the wrong place to spend latency.
 _WORKSPACE_PHRASES = (
-    "edit the file", "edit file", "change the file", "create a file",
-    "write a file", "add a file", "delete the file", "rename the file",
-    "run the tests", "run tests", "commit the", "stage the",
     "in the workspace", "the workspace", "project root",
     "apply the change", "apply the patch", "make the change",
+    "staged change", "working directory",
 )
+
+# A path is unambiguous: separators do not appear in conversation.
+_PATH_TOKEN = re.compile(r"(?:\.{1,2}[/\\]|~[/\\])[\w.\-]|[\w.\-]+[/\\][\w.\-]+[/\\]")
+
+# A bare directory: "what files are in src/". _PATH_TOKEN needs
+# something AFTER the separator, so it misses a trailing one. The
+# lookahead is what keeps "and/or" and "he/she" out of this.
+_DIR_TOKEN = re.compile(r"\b[\w.\-]{2,}[/\\](?![\w.\-])")
+
+# A filename is only unambiguous if the extension is one. Matching any
+# word.word turns "3.13", "e.g." and "Node.js" into file operations, so
+# the extension has to be a real one.
+_CODE_EXTENSIONS = (
+    "py|js|mjs|cjs|jsx|ts|tsx|json|md|txt|rst|yml|yaml|toml|ini|cfg|conf|"
+    "html|htm|css|scss|less|sh|bash|bat|ps1|c|h|cpp|hpp|cc|cs|java|go|rs|"
+    "rb|php|sql|xml|csv|tsv|log|lock|env|gitignore|gguf|ipynb|vue|svelte"
+)
+_FILENAME = re.compile(rf"\b[\w\-]+\.({_CODE_EXTENSIONS})\b", re.IGNORECASE)
+
+# Library names that are shaped exactly like filenames. "I like Node.js"
+# is conversation, and without this it routes as a file operation --
+# harmless (mistral-7b answers it fine) but slower than it needs to be,
+# and the kind of thing that makes routing look arbitrary.
+_NOT_FILENAMES = frozenset({
+    "node.js", "next.js", "nuxt.js", "vue.js", "three.js", "d3.js",
+    "express.js", "react.js", "chart.js", "socket.io",
+})
+
+
+_FILE_VERBS = (
+    "create", "make", "write", "add", "delete", "remove", "rename", "move",
+    "copy", "edit", "update", "modify", "change", "fix", "patch", "refactor",
+    "read", "open", "show", "list", "generate", "scaffold", "implement",
+)
+_FILE_NOUNS = (
+    "file", "files", "folder", "folders", "directory", "directories",
+    "script", "scripts", "module", "modules", "class", "classes",
+    "function", "functions", "method", "methods", "handler", "handlers",
+    "endpoint", "endpoints", "test", "tests", "config", "readme",
+)
+
+# Acting on staged work. These are verbs with no innocent reading in a
+# project assistant -- nobody asks ARIA to "discard my changes" rhetorically.
+_WORKSPACE_VERBS = ("commit", "stage", "unstage", "discard", "rollback", "revert")
+
+# "run the tests", "run pytest". The verb alone is far too common.
+_RUN_VERBS = ("run", "execute", "launch")
+_RUN_NOUNS = ("test", "tests", "pytest", "suite", "build", "lint", "typecheck", "script")
+
+# The same veto the workspace-query intent uses, and for the same reason:
+# "how do I create a file in python" asks for instructions, not for a file.
+# It is skipped when a real path is named -- someone who says parser.py is
+# talking about this project however they phrased the question.
+_INSTRUCTIONAL = (
+    "how do i", "how do you", "how can i", "how would i", "how to ",
+    "what is a", "what is the difference", "explain what", "in python",
+    "in javascript",
+)
+
+
+def _word_set(text: str) -> set:
+    return set(re.findall(r"[a-z]+", text.lower()))
 
 
 @dataclass(frozen=True)
@@ -152,7 +233,30 @@ def _context_chars(turn_request) -> int:
 
 def _mentions_tools(text: str) -> bool:
     lowered = text.lower()
+
+    # A named path outranks everything, including the instructional veto.
+    named_a_path = bool(_PATH_TOKEN.search(text) or _DIR_TOKEN.search(text)) or any(
+        match.group(0).lower() not in _NOT_FILENAMES
+        for match in _FILENAME.finditer(text)
+    )
+    if named_a_path:
+        return True
+
     if any(phrase in lowered for phrase in _WORKSPACE_PHRASES):
+        return True
+
+    if any(veto in lowered for veto in _INSTRUCTIONAL):
+        return False
+
+    words = _word_set(lowered)
+
+    if words & set(_WORKSPACE_VERBS):
+        return True
+
+    if (words & set(_FILE_VERBS)) and (words & set(_FILE_NOUNS)):
+        return True
+
+    if (words & set(_RUN_VERBS)) and (words & set(_RUN_NOUNS)):
         return True
 
     # The planner's own tables, rather than a second copy. A turn this

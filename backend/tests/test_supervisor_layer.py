@@ -324,8 +324,21 @@ def test_the_whole_mess_is_cleaned():
     ("phi-3-mini-4k-instruct-q4", False),
     ("qwen2.5-0.5b-instruct-q4_k_m", False),
 ])
-def test_only_the_heavier_models_are_checked(model_id, supervised):
-    assert sup.needs_supervision(model_id) is supervised
+def test_only_the_heavier_models_get_the_supervisor_model(model_id, supervised):
+    assert sup.needs_model_supervision(model_id) is supervised
+
+
+@pytest.mark.parametrize("model_id", [
+    "mistral-7b-q4km", "nemo-12b-q5",
+    "phi-3-mini-4k-instruct-q4", "qwen2.5-0.5b-instruct-q4_k_m",
+    "some-model-nobody-registered", None,
+])
+def test_every_model_gets_the_deterministic_repairs(model_id):
+    # The two questions used to be one, and being one was a bug: phi-3 is
+    # the default chat model AND the supervisor, so its exemption from
+    # "should the supervisor model run" silently exempted it from having
+    # its output checked at all. Measured, it leaks "**assistant:**".
+    assert sup.needs_supervision(model_id) is True
 
 
 def test_a_cloud_turn_gets_no_supervisor():
