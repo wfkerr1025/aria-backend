@@ -98,53 +98,65 @@ class GhostError(RuntimeError):
     """A staging operation that must not be guessed at."""
 
 
-def project_root() -> Path:
+def project_root(root: Path | None = None) -> Path:
     """The real project: what a commit writes into.
+
+    `root` names a workspace explicitly. Every function here takes it and
+    passes it down, because a multi-workspace operation has to act on a
+    project that is not the one the environment points at -- and because
+    the alternative, temporarily repointing the environment, would make
+    two concurrent operations disagree about which project they are in.
 
     The workspace root, unless something separates them later. Kept as a
     function rather than a constant for the same reason workspace_root is
     one: a test that points it somewhere else must take effect without
     reloading the module.
     """
-    return file_tools.workspace_root()
+    return Path(root).resolve() if root else file_tools.workspace_root()
 
 
-def staging_root() -> Path:
-    """This project's ghost workspace."""
-    root = project_root()
-    return root / STAGING_DIRNAME / root.name
+def staging_root(root: Path | None = None) -> Path:
+    """This project's ghost workspace.
+
+    Inside the project it stages for, never in a shared location. That is
+    what makes workspaces isolated by construction rather than by a rule
+    someone has to remember: one project's staging cannot be reached from
+    another's root, because it is not under it.
+    """
+    base = project_root(root)
+    return base / STAGING_DIRNAME / base.name
 
 
-def _is_staging(path: Path) -> bool:
-    staging_base = project_root() / STAGING_DIRNAME
+def _is_staging(path: Path, root: Path | None = None) -> bool:
+    staging_base = project_root(root) / STAGING_DIRNAME
     return staging_base == path or staging_base in path.parents
 
 
-def _relative_to_project(path: str) -> Path:
+def _relative_to_project(path: str, root: Path | None = None) -> Path:
     """The project-relative path, refusing anything outside the project.
 
     Reuses file_tools' confinement rather than re-deriving it: one
     definition of "inside", and it is the one enforced at write time.
     """
-    resolved = file_tools.resolve_in_workspace(path)
+    resolved = file_tools.resolve_in_workspace(path, root=project_root(root))
 
-    if _is_staging(resolved):
+    if _is_staging(resolved, root):
         # Already a ghost path. Staging it again would nest a staging
         # directory inside itself.
         raise GhostError(f"Refusing to stage a path already inside staging: {path!r}")
 
     try:
-        return resolved.relative_to(project_root())
+        return resolved.relative_to(project_root(root))
     except ValueError:  # pragma: no cover - resolve_in_workspace already refused
         raise GhostError(f"Path is outside the project: {path!r}")
 
 
-def ghost_path_for(path: str) -> Path:
+def ghost_path_for(path: str, root: Path | None = None) -> Path:
     """Where an edit to `path` is written instead."""
-    return staging_root() / _relative_to_project(path)
+    return staging_root(root) / _relative_to_project(path, root)
 
 
-def stage_path(path: str) -> str:
+def stage_path(path: str, root: Path | None = None) -> str:
     """The ghost path for `path`, with its directory ready to write into.
 
     Validates the PARENT rather than the file: a staged file must land
@@ -153,8 +165,8 @@ def stage_path(path: str) -> str:
     legitimate edit; creating "made/up/tree/api.py" is a hallucinated
     path wearing an edit's clothes.
     """
-    relative = _relative_to_project(path)
-    parent = project_root() / relative.parent
+    relative = _relative_to_project(path, root)
+    parent = project_root(root) / relative.parent
 
     if not parent.is_dir():
         raise GhostError(
@@ -162,19 +174,19 @@ def stage_path(path: str) -> str:
             f"directory in the project"
         )
 
-    ghost = staging_root() / relative
+    ghost = staging_root(root) / relative
     ghost.parent.mkdir(parents=True, exist_ok=True)
 
     # Before it is replaced, keep what is there now. This is what
     # rollback_staged_changes restores, and taking it here means the
     # caller cannot forget to.
-    snapshot(relative.as_posix())
+    snapshot(relative.as_posix(), root)
 
     logger.info("staging %s -> %s", relative.as_posix(), ghost)
     return str(ghost)
 
 
-def staged_files() -> list[str]:
+def staged_files(root: Path | None = None) -> list[str]:
     """Project-relative paths with something staged, sorted.
 
     Snapshots are not staged files. They live under the staging root
@@ -183,14 +195,14 @@ def staged_files() -> list[str]:
     a diff, and -- on the next commit -- write ARIA's own bookkeeping
     into the user's project.
     """
-    root = staging_root()
-    if not root.is_dir():
+    base = staging_root(root)
+    if not base.is_dir():
         return []
 
-    snapshots = root / SNAPSHOT_DIRNAME
+    snapshots = base / SNAPSHOT_DIRNAME
     return sorted(
-        str(p.relative_to(root)).replace("\\", "/")
-        for p in root.rglob("*")
+        str(p.relative_to(base)).replace("\\", "/")
+        for p in base.rglob("*")
         if p.is_file() and snapshots not in p.parents
     )
 
@@ -201,15 +213,15 @@ def _read(path: Path) -> list[str]:
     return path.read_bytes().decode("utf-8", errors="replace").splitlines(keepends=True)
 
 
-def diff_for(relative: str) -> str:
+def diff_for(relative: str, root: Path | None = None) -> str:
     """A unified diff of one staged file against the project's copy.
 
     Deterministic: same inputs, same text, no timestamps in the header.
     A file that exists only in staging diffs against nothing, which is
     how a new file reads.
     """
-    ghost = staging_root() / relative
-    real = project_root() / relative
+    ghost = staging_root(root) / relative
+    real = project_root(root) / relative
 
     return "".join(difflib.unified_diff(
         _read(real), _read(ghost),
@@ -218,9 +230,9 @@ def diff_for(relative: str) -> str:
     ))
 
 
-def diff_all() -> dict[str, str]:
+def diff_all(root: Path | None = None) -> dict[str, str]:
     """Every staged file's diff, keyed by project-relative path."""
-    return {name: diff_for(name) for name in staged_files()}
+    return {name: diff_for(name, root) for name in staged_files(root)}
 
 
 # ------------------------------------------------------
@@ -251,7 +263,7 @@ def requests_discard(user_text: str) -> bool:
 # ------------------------------------------------------
 # Commit and discard
 # ------------------------------------------------------
-def commit(user_text: str) -> dict:
+def commit(user_text: str, root: Path | None = None) -> dict:
     """Copy staged files into the project, if the user asked.
 
     Refuses rather than raises when consent is missing: a commit nobody
@@ -263,7 +275,7 @@ def commit(user_text: str) -> dict:
         logger.info("commit refused: no explicit request from the user")
         return {"status": "refused", "reason": "no explicit request", "files": []}
 
-    names = staged_files()
+    names = staged_files(root)
     if not names:
         return {"status": "empty", "reason": "nothing staged", "files": []}
 
@@ -271,8 +283,8 @@ def commit(user_text: str) -> dict:
     failed: list[dict] = []
 
     for name in names:
-        source = staging_root() / name
-        destination = project_root() / name
+        source = staging_root(root) / name
+        destination = project_root(root) / name
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
             # Bytes, not text: the staged file is already exactly what
@@ -289,16 +301,16 @@ def commit(user_text: str) -> dict:
         "status": "committed" if not failed else "partial",
         "files": written,
         "failed": failed,
-        "diffs": {name: diff_for(name) for name in written},
+        "diffs": {name: diff_for(name, root) for name in written},
     }
 
 
-def discard(user_text: str) -> dict:
+def discard(user_text: str, root: Path | None = None) -> dict:
     """Throw the staging area away, if the user asked."""
     if not requests_discard(user_text):
         return {"status": "refused", "reason": "no explicit request", "files": []}
 
-    names = staged_files()
+    names = staged_files(root)
     root = staging_root()
     if root.is_dir():
         shutil.rmtree(root, ignore_errors=True)
@@ -321,7 +333,7 @@ def discard(user_text: str) -> dict:
 # refused by _relative_to_project; this only ever maps a project path
 # onto its staged copy.
 
-def get_effective_file(path: str) -> Path:
+def get_effective_file(path: str, root: Path | None = None) -> Path:
     """The version of `path` to read: staged if there is one.
 
     Returns a real filesystem path, so a caller reads it with whatever it
@@ -329,7 +341,7 @@ def get_effective_file(path: str) -> Path:
     staged, which is the common case.
     """
     try:
-        relative = _relative_to_project(path)
+        relative = _relative_to_project(path, root)
     except Exception:
         # Not a project path -- outside the workspace, or already inside
         # staging. Confinement is file_tools' job and it has already
@@ -337,11 +349,11 @@ def get_effective_file(path: str) -> Path:
         # may be.
         return Path(path)
 
-    ghost = staging_root() / relative
-    return ghost if ghost.is_file() else project_root() / relative
+    ghost = staging_root(root) / relative
+    return ghost if ghost.is_file() else project_root(root) / relative
 
 
-def list_effective_directory(path: str = "") -> list[str]:
+def list_effective_directory(path: str = "", root: Path | None = None) -> list[str]:
     """Names in a directory, staged versions overriding real ones.
 
     Sorted, no duplicates: a file in both places is one file and appears
@@ -349,14 +361,14 @@ def list_effective_directory(path: str = "") -> list[str]:
     content.
     """
     try:
-        relative = _relative_to_project(path) if path else Path()
+        relative = _relative_to_project(path, root) if path else Path()
     except Exception:
         return []
 
     names: set[str] = set()
-    real_base = project_root() / relative
+    real_base = project_root(root) / relative
 
-    for base in (real_base, staging_root() / relative):
+    for base in (real_base, staging_root(root) / relative):
         if not base.is_dir():
             continue
         for entry in base.iterdir():
@@ -373,11 +385,11 @@ def list_effective_directory(path: str = "") -> list[str]:
 SNAPSHOT_DIRNAME = ".snapshots"
 
 
-def _snapshot_root() -> Path:
-    return staging_root() / SNAPSHOT_DIRNAME
+def _snapshot_root(root: Path | None = None) -> Path:
+    return staging_root(root) / SNAPSHOT_DIRNAME
 
 
-def snapshot(relative: str) -> bool:
+def snapshot(relative: str, root: Path | None = None) -> bool:
     """Keep the current staged version before it is replaced.
 
     One slot per file, holding the previous staged content, which is what
@@ -387,15 +399,15 @@ def snapshot(relative: str) -> bool:
     Returns whether anything was kept: a file staged for the first time
     has no previous version, and that is not a failure.
     """
-    source = staging_root() / relative
+    source = staging_root(root) / relative
     if not source.is_file():
         return False
 
-    target = _snapshot_root() / relative
+    target = _snapshot_root(root) / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(source.read_bytes())
 
-    index = _snapshot_root() / "index.json"
+    index = _snapshot_root(root) / "index.json"
     try:
         existing = json.loads(index.read_text(encoding="utf-8")) if index.is_file() else {}
     except (ValueError, OSError):
@@ -407,22 +419,22 @@ def snapshot(relative: str) -> bool:
     return True
 
 
-def rollback_staged_changes(files=None) -> dict:
+def rollback_staged_changes(files=None, root: Path | None = None) -> dict:
     """Restore staged files from their snapshots.
 
     Touches nothing in the project: this restores one staged version over
     another, entirely inside ARIA's own scratch.
     """
-    wanted = list(files) if files else staged_files()
+    wanted = list(files) if files else staged_files(root)
     restored: list[str] = []
     missing: list[str] = []
 
     for relative in wanted:
-        source = _snapshot_root() / relative
+        source = _snapshot_root(root) / relative
         if not source.is_file():
             missing.append(relative)
             continue
-        target = staging_root() / relative
+        target = staging_root(root) / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
         restored.append(relative)
@@ -443,7 +455,7 @@ STATUS_STAGED_MODIFIED = "modified"
 STATUS_STAGED_UNCHANGED = "unchanged"
 
 
-def get_pending_changes() -> list:
+def get_pending_changes(root: Path | None = None) -> list:
     """Every staged file, with enough to render a review screen.
 
     "unchanged" is reported rather than hidden: a staged file identical
@@ -452,9 +464,9 @@ def get_pending_changes() -> list:
     have kept from them.
     """
     pending = []
-    for relative in staged_files():
-        real = project_root() / relative
-        ghost = staging_root() / relative
+    for relative in staged_files(root):
+        real = project_root(root) / relative
+        ghost = staging_root(root) / relative
         if not real.is_file():
             status = STATUS_STAGED_NEW
         elif real.read_bytes() == ghost.read_bytes():
@@ -467,27 +479,27 @@ def get_pending_changes() -> list:
             "status": status,
             "staged_path": str(ghost),
             "project_path": str(real),
-            "diff": diff_for(relative),
-            "has_snapshot": (_snapshot_root() / relative).is_file(),
+            "diff": diff_for(relative, root),
+            "has_snapshot": (_snapshot_root(root) / relative).is_file(),
         })
     return pending
 
 
-def get_diff(path: str) -> str:
-    return diff_for(path)
+def get_diff(path: str, root: Path | None = None) -> str:
+    return diff_for(path, root)
 
 
-def get_all_diffs() -> dict:
-    return diff_all()
+def get_all_diffs(root: Path | None = None) -> dict:
+    return diff_all(root)
 
 
-def _selected(files):
+def _selected(files, root: Path | None = None):
     """The staged files a command applies to, and the names it did not know.
 
     A caller naming something that is not staged is told so, rather than
     quietly getting a successful-looking report about nothing.
     """
-    staged = staged_files()
+    staged = staged_files(root)
     if not files:
         return staged, []
 
@@ -497,7 +509,7 @@ def _selected(files):
     return known, unknown
 
 
-def commit_changes(user_text: str, files=None) -> dict:
+def commit_changes(user_text: str, files=None, root: Path | None = None) -> dict:
     """Copy staged files into the project, if the user asked.
 
     files=None commits everything staged; a list commits only those.
@@ -508,7 +520,7 @@ def commit_changes(user_text: str, files=None) -> dict:
         return {"status": "refused", "reason": "no explicit request",
                 "files": [], "unknown": []}
 
-    names, unknown = _selected(files)
+    names, unknown = _selected(files, root)
     if not names:
         return {
             "status": "empty",
@@ -520,8 +532,8 @@ def commit_changes(user_text: str, files=None) -> dict:
     failed: list[dict] = []
 
     for name in names:
-        source = staging_root() / name
-        destination = project_root() / name
+        source = staging_root(root) / name
+        destination = project_root(root) / name
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
             # Bytes, not text: the staged file is already exactly what
@@ -539,28 +551,28 @@ def commit_changes(user_text: str, files=None) -> dict:
         "files": written,
         "failed": failed,
         "unknown": unknown,
-        "diffs": {name: diff_for(name) for name in written},
+        "diffs": {name: diff_for(name, root) for name in written},
     }
 
 
-def discard_changes(user_text: str, files=None) -> dict:
+def discard_changes(user_text: str, files=None, root: Path | None = None) -> dict:
     """Throw staged files away, if the user asked. Never touches the project."""
     if not requests_discard(user_text):
         return {"status": "refused", "reason": "no explicit request",
                 "files": [], "unknown": []}
 
-    names, unknown = _selected(files)
+    names, unknown = _selected(files, root)
     if not names:
         return {"status": "empty", "files": [], "unknown": unknown}
 
     if not files:
         # Everything: the directory goes, snapshots with it.
-        shutil.rmtree(staging_root(), ignore_errors=True)
+        shutil.rmtree(staging_root(root), ignore_errors=True)
         logger.info("discarded %d staged file(s)", len(names))
         return {"status": "discarded", "files": names, "unknown": unknown}
 
     for name in names:
-        (staging_root() / name).unlink(missing_ok=True)
+        (staging_root(root) / name).unlink(missing_ok=True)
         logger.info("discarded staged %s", name)
 
     return {"status": "discarded", "files": names, "unknown": unknown}

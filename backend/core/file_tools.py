@@ -94,14 +94,21 @@ def workspace_root() -> Path:
     return Path(configured).resolve() if configured else Path.cwd().resolve()
 
 
-def resolve_in_workspace(path: str) -> Path:
+def resolve_in_workspace(path: str, root: Path | None = None) -> Path:
     """Resolve `path` and confirm it is inside the workspace.
 
     strict=False so a file that does not exist yet still resolves -- writing
     a new file is legitimate -- while symlinks and "..' segments are
     flattened before the check, which is what makes the check meaningful.
+
+    `root` names which workspace to check against, and defaults to the
+    active one. It exists for multi-workspace operations, which have to
+    confine a path to a project that is not the one the environment
+    currently points at. Parameterised rather than reimplemented
+    elsewhere: one definition of "inside", and every caller gets the
+    resolve-then-compare order that makes it mean anything.
     """
-    root = workspace_root()
+    root = Path(root).resolve() if root else workspace_root()
     candidate = Path(path)
     if not candidate.is_absolute():
         candidate = root / candidate
@@ -114,10 +121,10 @@ def resolve_in_workspace(path: str) -> Path:
     return resolved
 
 
-def _relative(resolved: Path) -> str:
+def _relative(resolved: Path, root: Path | None = None) -> str:
     """The path as the user would recognise it, for summaries and results."""
     try:
-        return str(resolved.relative_to(workspace_root())).replace("\\", "/")
+        return str(resolved.relative_to(root or workspace_root())).replace("\\", "/")
     except ValueError:
         return str(resolved)
 
@@ -125,14 +132,14 @@ def _relative(resolved: Path) -> str:
 # ======================================================
 # read_file
 # ======================================================
-def read_file(path: str) -> dict:
+def read_file(path: str, root: Path | None = None) -> dict:
     """Read a text file from inside the workspace.
 
     Decoded as UTF-8 with replacement rather than strict: a tool that raises
     on one bad byte is a tool that cannot read half the log files it will be
     pointed at, and the replacement character is visible in the output.
     """
-    resolved = resolve_in_workspace(path)
+    resolved = resolve_in_workspace(path, root=root)
 
     # Staged first. A model that edits a file and then reads it back
     # should see its own edit; reading the project's copy instead is how
@@ -146,19 +153,19 @@ def read_file(path: str) -> dict:
     try:
         from backend.core.ghost_workspace import get_effective_file
 
-        effective = get_effective_file(str(resolved))
+        effective = get_effective_file(str(resolved), root)
     except Exception:  # pragma: no cover - staging must never break a read
         effective = resolved
 
     if not effective.is_file():
-        raise WorkspaceError(f"Not a file: {_relative(resolved)}")
+        raise WorkspaceError(f"Not a file: {_relative(resolved, root)}")
 
     size = effective.stat().st_size
     data = effective.read_bytes()[:MAX_READ_BYTES]
     text = data.decode("utf-8", errors="replace")
 
     return {
-        "path": _relative(resolved),
+        "path": _relative(resolved, root),
         "text": text,
         "bytes": size,
         "truncated": size > MAX_READ_BYTES,
@@ -183,8 +190,15 @@ def _unified_preview(before: str, after: str, name: str, context: int = 3) -> st
     )
 
 
-def edit_file(path: str, content: str, confirm: bool = False) -> dict:
+def edit_file(path: str, content: str, confirm: bool = False, root: Path | None = None) -> dict:
     """Replace a file's contents, previewing unless told to apply.
+
+    `root` names which workspace to confine to, defaulting to the active
+    one. Multi-workspace staging needs it: a write into a project that is
+    not the one the environment points at is legitimate and has to be
+    checked against THAT project's root, not the current one. Without it
+    every non-primary workspace's staging read as "outside the
+    workspace".
 
     confirm defaults to False, so the ordinary call computes the diff and
     writes nothing. That is the guard: a plan step that names the wrong file
@@ -196,8 +210,8 @@ def edit_file(path: str, content: str, confirm: bool = False) -> dict:
     sense -- the second call does not touch the file's mtime, so nothing
     downstream sees a change that did not happen.
     """
-    resolved = resolve_in_workspace(path)
-    name = _relative(resolved)
+    resolved = resolve_in_workspace(path, root=root)
+    name = _relative(resolved, root)
 
     if resolved.exists() and not resolved.is_file():
         raise WorkspaceError(f"Not a file: {name}")
@@ -225,7 +239,7 @@ def edit_file(path: str, content: str, confirm: bool = False) -> dict:
         }
 
     if not resolved.parent.is_dir():
-        raise WorkspaceError(f"Directory does not exist: {_relative(resolved.parent)}")
+        raise WorkspaceError(f"Directory does not exist: {_relative(resolved.parent, root)}")
 
     # newline="" so writing is the exact inverse of reading. read_file
     # decodes raw bytes and keeps whatever line endings the file had;

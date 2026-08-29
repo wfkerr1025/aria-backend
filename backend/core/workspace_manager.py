@@ -36,6 +36,19 @@ logger = get_logger(__name__)
 __all__ = [
     "WorkspaceError",
     "describe_workspace",
+    "reset_registry",
+    "rollback_workspace",
+    "discard_workspace",
+    "commit_workspace",
+    "get_effective_file",
+    "get_workspace_details",
+    "get_workspace_list",
+    "get_workspace",
+    "set_active_workspaces",
+    "set_primary_workspace",
+    "remove_workspace",
+    "add_workspace",
+    "WorkspaceInfo",
     "get_ghost_root",
     "get_project_root",
     "refresh_workspace",
@@ -123,3 +136,257 @@ def describe_workspace() -> dict:
         "tool_capable": model_capability.supports_tool_use(active),
         "capability_warning": model_capability.capability_warning(active),
     }
+
+
+# ======================================================
+# Several projects at once
+# ======================================================
+# One ARIA, more than one project. The rule that makes this safe is
+# stated once and enforced by construction rather than by care:
+#
+#   A workspace's staging lives INSIDE that workspace
+#   (<root>/.aria_staging/<name>/), so one project's staged files are not
+#   reachable from another project's root. Isolation is a consequence of
+#   where the directory is, not of a check somebody has to remember.
+#
+# Every operation names the workspace it acts on. Nothing falls back to
+# another workspace's staged files when a path is not found -- a read
+# that quietly answered from a different project would be the worst
+# failure available here, because it would look exactly like a correct
+# answer.
+#
+# The primary workspace IS the one the environment points at, which is
+# what every existing caller of file_tools already uses. The
+# single-workspace path is not a special case of this; it is this, with
+# one entry.
+
+import time
+import uuid
+from dataclasses import dataclass, field
+
+
+@dataclass
+class WorkspaceInfo:
+    """One project ARIA is working in."""
+
+    id: str
+    name: str
+    root_path: str
+    active: bool = True
+    last_used: float = 0.0
+
+    @property
+    def root(self) -> Path:
+        return Path(self.root_path)
+
+    # Read on demand rather than stored. A cached staged count disagrees
+    # with the directory the moment anything writes to it, and this is
+    # the number a user decides whether to commit from.
+    @property
+    def ghost_directory_path(self) -> str:
+        return str(ghost_workspace.staging_root(self.root))
+
+    @property
+    def staged_files(self) -> list:
+        try:
+            return ghost_workspace.staged_files(self.root)
+        except Exception:  # pragma: no cover - a listing fault is not fatal
+            logger.exception("could not list staged files for %s", self.name)
+            return []
+
+    def describe(self) -> dict:
+        from backend.core import model_capability
+
+        model = model_capability.active_model_id()
+        capable = model_capability.supports_tool_use(model)
+        staged = self.staged_files
+
+        return {
+            "id": self.id,
+            "name": self.name,
+            "root_path": self.root_path,
+            "ghost_directory_path": self.ghost_directory_path,
+            "staged_files": staged,
+            "staged_count": len(staged),
+            "tool_capable_model": model if capable else None,
+            "tool_capable": capable,
+            "capability_warning": model_capability.capability_warning(model),
+            "active": self.active,
+            "last_used": self.last_used,
+            "primary": self.id == _state.primary,
+        }
+
+
+@dataclass
+class _Registry:
+    workspaces: dict = field(default_factory=dict)
+    primary: str = None
+
+
+_state = _Registry()
+
+
+def _slug(path: Path) -> str:
+    return path.name or "workspace"
+
+
+def _validated(path) -> Path:
+    """The same validation set_project_root uses, for the same reason."""
+    requested = str(path or "").strip()
+    if not requested:
+        raise WorkspaceError("A workspace path cannot be empty")
+
+    resolved = Path(requested).expanduser().resolve(strict=False)
+    if not resolved.is_dir():
+        raise WorkspaceError(f"Not a directory: {resolved}")
+    return resolved
+
+
+def add_workspace(root_path, name=None) -> WorkspaceInfo:
+    """Register a project. Adding the same one twice returns the first.
+
+    Identity is the resolved path, not the name: two entries pointing at
+    one directory would each keep their own staging view of the same
+    files, and committing one would silently make the other's diffs
+    wrong.
+    """
+    resolved = _validated(root_path)
+
+    for existing in _state.workspaces.values():
+        if existing.root == resolved:
+            existing.last_used = time.time()
+            return existing
+
+    info = WorkspaceInfo(
+        id=uuid.uuid4().hex[:12],
+        name=(str(name).strip() if name else "") or _slug(resolved),
+        root_path=str(resolved),
+        last_used=time.time(),
+    )
+    _state.workspaces[info.id] = info
+    if _state.primary is None:
+        set_primary_workspace(info.id)
+
+    logger.info("workspace added: %s (%s)", info.name, info.root_path)
+    return info
+
+
+def remove_workspace(workspace_id: str) -> bool:
+    """Forget a project. Its files and its staging are left alone.
+
+    Removing is bookkeeping, never a delete: staged work in a project
+    ARIA has stopped tracking is still the user's work, and throwing it
+    away because a list got shorter is not a trade anyone asked for.
+    """
+    info = _state.workspaces.pop(workspace_id, None)
+    if info is None:
+        return False
+
+    if _state.primary == workspace_id:
+        _state.primary = None
+        remaining = sorted(_state.workspaces.values(), key=lambda w: -w.last_used)
+        if remaining:
+            set_primary_workspace(remaining[0].id)
+
+    logger.info("workspace removed: %s (staging left on disk)", info.name)
+    return True
+
+
+def set_primary_workspace(workspace_id: str) -> WorkspaceInfo:
+    """Make this the workspace the file tools are pointed at.
+
+    The primary IS the environment's workspace root. Keeping them one
+    thing is what stops a second definition of "where ARIA is"
+    disagreeing with the boundary enforced at write time.
+    """
+    info = _state.workspaces.get(workspace_id)
+    if info is None:
+        raise WorkspaceError(f"No such workspace: {workspace_id!r}")
+
+    set_project_root(info.root_path)
+    _state.primary = workspace_id
+    info.active = True
+    info.last_used = time.time()
+    logger.info("primary workspace: %s", info.name)
+    return info
+
+
+def set_active_workspaces(workspace_ids) -> list:
+    """Which workspaces are in scope. The primary is always among them.
+
+    Active means "operations may name this one", not "operations may
+    reach into it": every read and every commit still names the
+    workspace it acts on.
+    """
+    wanted = {str(i) for i in (workspace_ids or [])}
+    if _state.primary:
+        wanted.add(_state.primary)
+
+    for workspace_id, info in _state.workspaces.items():
+        info.active = workspace_id in wanted
+
+    return sorted(w.id for w in _state.workspaces.values() if w.active)
+
+
+def get_workspace(workspace_id: str) -> WorkspaceInfo:
+    info = _state.workspaces.get(workspace_id)
+    if info is None:
+        raise WorkspaceError(f"No such workspace: {workspace_id!r}")
+    return info
+
+
+def get_workspace_list() -> list:
+    """Every registered project, most recently used first."""
+    return [
+        info.describe()
+        for info in sorted(_state.workspaces.values(), key=lambda w: -w.last_used)
+    ]
+
+
+def get_workspace_details(workspace_id: str) -> dict:
+    """One project, with its pending changes and their diffs."""
+    info = get_workspace(workspace_id)
+    details = info.describe()
+    details["pending_changes"] = ghost_workspace.get_pending_changes(info.root)
+    return details
+
+
+def get_effective_file(path: str, workspace_id: str) -> Path:
+    """Read `path` as this workspace sees it. Never any other workspace.
+
+    The workspace is named, not searched for. Falling back to another
+    workspace's staged copy when this one has none is the merge this
+    subsystem exists to prevent, and it would be invisible: the caller
+    gets a file, and nothing about it says which project it came from.
+    """
+    return ghost_workspace.get_effective_file(path, get_workspace(workspace_id).root)
+
+
+def commit_workspace(workspace_id: str, user_text: str, files=None) -> dict:
+    info = get_workspace(workspace_id)
+    info.last_used = time.time()
+    return ghost_workspace.commit_changes(user_text, files=files, root=info.root)
+
+
+def discard_workspace(workspace_id: str, user_text: str, files=None) -> dict:
+    info = get_workspace(workspace_id)
+    info.last_used = time.time()
+    return ghost_workspace.discard_changes(user_text, files=files, root=info.root)
+
+
+def rollback_workspace(workspace_id: str, files=None) -> dict:
+    info = get_workspace(workspace_id)
+    info.last_used = time.time()
+    return ghost_workspace.rollback_staged_changes(files=files, root=info.root)
+
+
+def touch_workspace(workspace_id: str) -> None:
+    info = _state.workspaces.get(workspace_id)
+    if info is not None:
+        info.last_used = time.time()
+
+
+def reset_registry() -> None:
+    """Forget every workspace. For tests, and for a fresh session."""
+    _state.workspaces.clear()
+    _state.primary = None
