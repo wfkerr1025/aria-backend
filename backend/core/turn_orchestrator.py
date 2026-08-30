@@ -814,8 +814,16 @@ def orchestrate_turn(
     # model and there is no switch_model() ahead of it -- see
     # backend/core/chat_capability_gate.py for why that distinction is
     # the whole design.
+    # expects_evidence is passed so the tool floor does not overrule the
+    # evidence ladder. "What is the stock price of Microsoft" classifies
+    # as a tool turn -- it needs a search -- but the model is not being
+    # asked to emit an action block, and the ladder above has already
+    # decided deliberately to keep a small local model and SIMPLIFY the
+    # prompt rather than move the turn. Two rules answering one question
+    # is how the answer stops being single-valued.
     capability = chat_capability_gate.ensure_tool_capable(
         model_id, mode=session.mode, turn_kind=routing.turn_kind,
+        evidence_turn=expects_evidence,
     )
 
     if capability.refused:

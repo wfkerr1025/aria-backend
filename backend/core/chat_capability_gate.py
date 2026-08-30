@@ -48,14 +48,25 @@ explicitly asked for. Measured against the real registry, it moved
 turns off `phi-3-mini`, which holds a conversation perfectly well, and
 off every id in the test corpus.
 
-Two different questions, two different bars, and they must not share an
-answer:
+Three different questions, three different bars, and they must not share
+an answer:
 
     "may this model be trusted to synthesize evidence?"  -> allowlist,
         conservative by default, because a wrong answer looks right;
     "can this model hold a chat turn at all?"            -> a floor,
         permissive by default, because the alternative is overriding a
-        choice the user made on purpose.
+        choice the user made on purpose;
+    "can this model emit an action block?"               -> allowlist
+        again, and this one is measured: phi-3-mini clears the chat floor
+        and cannot do it. Asked to create a file it wrote two complete C#
+        implementations and not one action, so the user got an essay
+        about a file instead of a file.
+
+The third is why this module consults the allowlist after all -- for
+TOOL turns only, where it is the established authority and where being
+wrong in the permissive direction means the turn silently does nothing.
+Each question still decides and repairs with its own rule; what changed
+is that there are three questions, not two.
 
 So this reads `params` off the registry entry and refuses only what is
 demonstrably below the floor. A model with no registry entry, or an
@@ -223,8 +234,125 @@ class CapabilityGateOutcome:
         return self.switched_from is not None
 
 
+# Turn kinds that ask the model to emit an action block. Named here
+# rather than imported from model_router to keep this module free of a
+# dependency on the router that calls it.
+_TOOL_TURNS = frozenset({"tools"})
+
+
+def _lighter_tool_model(too_big: str, model_id: str) -> str | None:
+    """A tool-capable model that fits, when the recommended one does not."""
+    from backend.core.complexity_router import _LADDER, _fits_in_memory, _is_installed
+    from backend.core.model_capability import supports_tool_use
+
+    for candidate in _LADDER:
+        if candidate in (too_big, model_id):
+            continue
+        if (_is_installed(candidate) and supports_tool_use(candidate)
+                and _fits_in_memory(candidate)):
+            return candidate
+    return None
+
+
+def _tool_replacement_for(model_id: str | None, turn_kind: str | None,
+                          mode: str, evidence_turn: bool = False) -> str | None:
+    """A tool-capable model for a tool turn, or None to leave it alone.
+
+    THE GAP THIS CLOSES
+    -------------------
+    There was a floor for CHAT and none for TOOLS. phi-3-mini is 3.8B, so
+    it clears CHAT_PARAM_FLOOR and the gate waved it through -- onto a
+    turn asking it to create a file. Measured live: it produced two
+    complete C# implementations, several hundred tokens each, and not one
+    action block. The user asked for a file and got an essay about a
+    file, twice.
+
+    The role floor in complexity_router already raises a tool turn to a
+    tool model, but only when the router is the one choosing. A model
+    that arrives pinned -- an explicit override, "switch to a lighter
+    model", a restored session -- never passes through it. That is the
+    same shape as every other hole this codebase has closed: a floor
+    works wherever the decision is made, a gate only works where it is
+    placed, and this gate is on the path every turn takes.
+
+    WHY THE ALLOWLIST DECIDES, NOT A PARAMETER COUNT
+    ------------------------------------------------
+    _replacement_for warns against deciding with one rule and repairing
+    with another. That warning is about ONE axis: the chat floor decides
+    chat and repairs chat. Tool use is a different axis with its own
+    established authority -- model_capability.TOOL_CAPABLE_MODELS -- and
+    it decides and repairs here, so the rule stays single-valued per
+    question. It already knew phi-3-mini could not do this and already
+    named nemo-12b as the fix; nothing was consulting it.
+
+    Returns None whenever the turn should be left as it is, which is
+    every chat turn, every already-capable model, and any case where the
+    substitute is missing or would cross the local/cloud boundary. A gate
+    that refused here would refuse turns on a machine whose registry
+    happens not to list a tool model -- the failure this project already
+    met once with model pinning, and removed pinning for.
+    """
+    if not model_id or str(turn_kind) not in _TOOL_TURNS:
+        return None
+
+    # An evidence turn is a tool turn by classification and not by need:
+    # "what is the stock price of Microsoft" wants a SEARCH, and the
+    # model only has to read what the search found. The evidence ladder
+    # has already decided what happens to those -- keep the small local
+    # model, simplify the prompt -- and two rules answering one question
+    # is how the answer stops being single-valued. Caught by
+    # test_evidence_routing, which said so immediately.
+    if evidence_turn:
+        return None
+
+    try:
+        from backend.core.model_capability import (recommended_tool_model,
+                                                   supports_tool_use)
+
+        if supports_tool_use(model_id):
+            return None
+
+        replacement = recommended_tool_model(model_id)
+    except Exception:  # pragma: no cover - a gate fault must not fail a turn
+        logger.exception("could not check tool capability for %s", model_id)
+        return None
+
+    if not replacement or replacement == model_id:
+        return None
+
+    from backend.core.complexity_router import _is_installed
+
+    if not _is_installed(replacement):
+        logger.info("tool floor: %s is not installed; leaving %s in place",
+                    replacement, model_id)
+        return None
+
+    # The same question the role floor asks. Substituting a model the
+    # machine cannot hold would trade an answer that is useless for one
+    # that does not arrive, and the second is worse.
+    from backend.core.complexity_router import _fits_in_memory
+
+    if not _fits_in_memory(replacement):
+        lighter = _lighter_tool_model(replacement, model_id)
+        if lighter is None:
+            logger.info("tool floor: %s does not fit and nothing lighter is "
+                        "tool-capable; leaving %s in place", replacement, model_id)
+            return None
+        replacement = lighter
+
+    if model_violates_mode_separation(replacement, mode):
+        logger.warning(
+            "tool floor: %s is incompatible with mode %s; leaving %s in place.",
+            replacement, mode, model_id,
+        )
+        return None
+
+    return replacement
+
+
 def ensure_tool_capable(model_id: str | None, *, mode: str = "local",
-                        turn_kind: str | None = None) -> CapabilityGateOutcome:
+                        turn_kind: str | None = None,
+                        evidence_turn: bool = False) -> CapabilityGateOutcome:
     """Move a turn onto a model that can follow the chat protocol.
 
     Returns the model the turn should use. Three outcomes:
@@ -245,7 +373,19 @@ def ensure_tool_capable(model_id: str | None, *, mode: str = "local",
     back to the ladder rather than refusing.
     """
     if not too_weak_for_chat(model_id):
-        return CapabilityGateOutcome(model_id=model_id)
+        replacement = _tool_replacement_for(model_id, turn_kind, mode, evidence_turn)
+        if replacement is None:
+            return CapabilityGateOutcome(model_id=model_id)
+
+        logger.info(
+            "capability gate: %s is not tool-capable and this is a %s turn; "
+            "using %s instead.", model_id, turn_kind, replacement,
+        )
+        return CapabilityGateOutcome(
+            model_id=replacement,
+            switched_from=model_id,
+            warning=switch_warning(replacement),
+        )
 
     replacement = _replacement_for(model_id, turn_kind)
 

@@ -212,6 +212,23 @@ SCAFFOLD_PREFIXES: tuple[str, ...] = (
     "search topic:",
 )
 
+# NOT TERMINATED HERE: a bare speaker label.
+#
+# Measured live on phi-3-mini -- after finishing a complete answer it
+# emitted "B: Let's create a basic structure for a player inventory in
+# C#." and generated the whole answer a second time. A terminator for
+# "^[A-Z]:\s" was written, and then removed, because this class is not
+# fence-aware: every rule in this table applies inside a ```yaml or
+# ```csharp block as readily as outside one, and "A: value" is ordinary
+# YAML. Truncating a user's code block to tidy up a stray label is a
+# worse failure than the label.
+#
+# The root cause was routing, and is fixed there: phi-3-mini cleared the
+# chat floor and had no tool floor to stop it taking a file-creation
+# turn. The honest fix for the repetition itself is whole-block
+# repetition detection, which is a different piece of work from a prefix
+# table.
+
 _MAX_MARKER = max(len(m) for m in TERMINATORS + SCAFFOLD_PREFIXES)
 
 # How much of a line to hold before deciding it is ordinary text. Long

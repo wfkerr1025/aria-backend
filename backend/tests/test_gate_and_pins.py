@@ -125,15 +125,47 @@ def test_a_capable_pin_is_honoured_silently(offline, pinned):
     assert result.notices == []
 
 
-def test_a_pin_that_cannot_use_tools_is_still_the_users_choice(offline):
-    # phi-3 has can_tools False and the user asked for it anyway. The
-    # supervisor repairs a malformed action block; the router does not
-    # quietly move them off the model they picked.
+def test_a_pin_that_cannot_use_tools_is_moved_and_the_user_is_told(offline):
+    """This reverses an earlier decision, on evidence.
+
+    It used to assert the pin was kept, reasoning that "the supervisor
+    repairs a malformed action block; the router does not quietly move
+    them off the model they picked". Respecting a pin is right, and the
+    premise turned out to be false: there was no malformed block to
+    repair.
+
+    Measured live. Asked for a player_inventory.cs with a pinned
+    phi-3-mini, it produced two complete C# implementations, several
+    hundred tokens each, and not one action block. Nothing was staged and
+    nothing was created. The user asked for a file and got an essay about
+    a file, twice, with no indication anything had gone wrong.
+
+    So the choice is not "their model" versus "our model". It is a turn
+    that runs and one that silently does nothing -- and the gate's own
+    rule already covers that case: it moves a turn off a model that
+    cannot do the job, and it says so. The notice is what keeps this
+    from being the quiet override the old test was guarding against.
+    """
     result = orchestrate_turn(
         turn("edit main.py", requested_model_id="phi-3-mini-4k-instruct-q4"),
         default_local_model=lambda: "phi-3-mini-4k-instruct-q4")
 
+    assert result.model_id != "phi-3-mini-4k-instruct-q4"
+    assert result.notices, "moving a pinned model must never be silent"
+    assert result.notices[0]["model_id"] == result.model_id
+
+
+def test_a_pin_that_cannot_use_tools_is_kept_for_a_chat_turn(offline):
+    """The reversal is scoped to tool turns. phi-3-mini converses fine,
+    and nothing about this change may take an ordinary chat turn off the
+    model the user chose."""
+    result = orchestrate_turn(
+        turn("what do you think about inventory systems",
+             requested_model_id="phi-3-mini-4k-instruct-q4"),
+        default_local_model=lambda: "phi-3-mini-4k-instruct-q4")
+
     assert result.model_id == "phi-3-mini-4k-instruct-q4"
+    assert result.notices == []
 
 
 def test_a_session_pin_behaves_like_a_request_pin(offline):
@@ -230,3 +262,104 @@ def test_the_workspace_boundary_holds_for_operations(tmp_path, monkeypatch, bad)
     for op in fs_plan.FILE_OPERATIONS:
         with pytest.raises(fs_plan.PlanError):
             fs_plan.stage_operation(op, bad, "elsewhere.txt")
+
+
+# ======================================================
+# The tool floor
+# ======================================================
+#
+# There was a floor for CHAT and none for TOOLS.
+#
+# Measured live: a turn asking for a player_inventory.cs ran on
+# phi-3-mini, which is 3.8B and so clears CHAT_PARAM_FLOOR. It produced
+# two complete C# implementations, several hundred tokens each, and not
+# one action block. The user asked for a file and got an essay about a
+# file, twice.
+#
+# complexity_router's role floor already raises a tool turn to a tool
+# model -- but only when the ROUTER is choosing. A model that arrives
+# pinned (an explicit override, "switch to a lighter model", a restored
+# session) never passes through it. Same shape as every other hole this
+# codebase has closed: a floor works wherever the decision is made, a
+# gate only works where it is placed.
+
+def test_a_tool_turn_is_moved_off_a_model_that_cannot_emit_actions():
+    from backend.core.chat_capability_gate import ensure_tool_capable
+
+    outcome = ensure_tool_capable("phi-3-mini-4k-instruct-q4",
+                                  mode="local", turn_kind="tools")
+
+    assert outcome.model_id == "nemo-12b-q5"
+    assert outcome.switched_from == "phi-3-mini-4k-instruct-q4"
+    assert outcome.refused is False
+
+
+def test_the_same_model_is_left_alone_on_a_chat_turn():
+    """phi-3-mini converses fine. The tool floor is about tools only."""
+    from backend.core.chat_capability_gate import ensure_tool_capable
+
+    outcome = ensure_tool_capable("phi-3-mini-4k-instruct-q4",
+                                  mode="local", turn_kind="chat")
+
+    assert outcome.model_id == "phi-3-mini-4k-instruct-q4"
+    assert outcome.switched_from is None
+
+
+def test_a_tool_capable_model_is_never_moved():
+    from backend.core.chat_capability_gate import ensure_tool_capable
+
+    for model in ("mistral-7b-q4km", "nemo-12b-q5"):
+        for kind in ("chat", "tools", "heavy"):
+            outcome = ensure_tool_capable(model, mode="local", turn_kind=kind)
+            assert outcome.model_id == model, f"{model} moved on a {kind} turn"
+
+
+def test_the_tool_floor_never_refuses_a_turn():
+    """The model-pinning precedent: refusing turns is the failure mode.
+
+    Pinning was implemented, measured and removed once because it refused
+    turns on a loaded machine. A floor that cannot find a substitute
+    leaves the user with the model they chose.
+    """
+    from backend.core import chat_capability_gate as gate
+
+    outcome = gate.ensure_tool_capable("phi-3-mini-4k-instruct-q4",
+                                       mode="local", turn_kind="tools")
+    assert outcome.refused is False
+
+
+def test_a_substitute_that_does_not_fit_in_memory_is_not_chosen(monkeypatch):
+    """Trading a useless answer for one that never arrives is a bad trade."""
+    from backend.core import chat_capability_gate as gate
+    from backend.core import complexity_router
+
+    monkeypatch.setattr(complexity_router, "_fits_in_memory",
+                        lambda model_id: model_id != "nemo-12b-q5")
+
+    outcome = gate.ensure_tool_capable("phi-3-mini-4k-instruct-q4",
+                                       mode="local", turn_kind="tools")
+
+    assert outcome.model_id == "mistral-7b-q4km"
+    assert outcome.refused is False
+
+
+def test_the_tool_floor_never_crosses_the_mode_boundary(monkeypatch):
+    from backend.core import chat_capability_gate as gate
+
+    monkeypatch.setattr(gate, "model_violates_mode_separation",
+                        lambda model_id, mode: True)
+
+    outcome = gate.ensure_tool_capable("phi-3-mini-4k-instruct-q4",
+                                       mode="cloud", turn_kind="tools")
+
+    assert outcome.model_id == "phi-3-mini-4k-instruct-q4"
+    assert outcome.refused is False
+
+
+def test_none_still_means_the_router_chooses():
+    """Automatic routing is not a pin and must pass through untouched."""
+    from backend.core.chat_capability_gate import ensure_tool_capable
+
+    outcome = ensure_tool_capable(None, mode="automatic", turn_kind="tools")
+    assert outcome.model_id is None
+    assert outcome.switched_from is None
