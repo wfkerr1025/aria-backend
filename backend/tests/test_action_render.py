@@ -245,7 +245,11 @@ def test_scaffolding_is_removed_from_a_previous_turn():
     # I would do:" headings in one reply, one of them empty.
     assert "Here is what I would do:" not in cleaned
     assert "yes, do it" not in cleaned
-    assert "write `a.py`" in cleaned
+    # The bullet goes too, and that is the half that mattered. Measured
+    # on nemo-12b: with turn one's rendering in the transcript, turn two
+    # answered with "- write `open_world.py` (5 lines)" and no action at
+    # all -- imitating ARIA's summary instead of proposing anything.
+    assert "write `a.py`" not in cleaned
 
 
 def test_stripping_leaves_the_models_own_words():
@@ -256,7 +260,22 @@ def test_stripping_leaves_the_models_own_words():
     cleaned = strip_scaffolding(text)
 
     assert "I will add the script." in cleaned
-    assert "- write `a.py` (1 line)" in cleaned
+    assert "- write `a.py` (1 line)" not in cleaned
+
+
+@pytest.mark.parametrize("line", [
+    "- write the tests first, then the code",
+    "- delete is a strong word",
+    "- copy that approach for the other module",
+    "- create a plan before you start",
+])
+def test_ordinary_prose_bullets_are_kept(line):
+    from backend.core.action_render import strip_scaffolding
+
+    # The backtick separates ARIA's rendering from a list the model
+    # wrote: every bullet this module produces names a path in
+    # backticks, and advice does not.
+    assert strip_scaffolding(line) == line
 
 
 def test_the_orchestrator_cleans_the_history_it_sends():
@@ -270,3 +289,65 @@ def test_the_orchestrator_cleans_the_history_it_sends():
     # On a copy: request.messages is the caller's list and the
     # orchestrator mutates nothing it was handed.
     assert "replace(request, messages=" in source
+
+
+# ======================================================
+# A file turn that produced no action
+#
+# Measured on nemo-12b: "delete notes.md" came back as "I propose to
+# delete the file notes.md. Please confirm." -- the explain-and-ask half
+# of the brief with the block left out. Nothing was staged, and the reply
+# is indistinguishable from one that worked.
+# ======================================================
+def test_a_proposal_with_no_action_is_named_as_one():
+    out = render("I propose to delete the file notes.md. Please confirm.",
+                 expected_action=True)
+
+    assert "did not produce a usable action" in out
+    # The model's own words are kept: the user asked for something and
+    # deserves to see what ARIA understood.
+    assert "I propose to delete the file notes.md." in out
+
+
+@pytest.mark.parametrize("text", [
+    "I propose to delete notes.md.",
+    "I will create hello_world.py for you.",
+    "Shall I remove that file?",
+    "Would you like me to move it?",
+])
+def test_prose_that_sounds_like_a_proposal_is_caught(text):
+    assert "did not produce a usable action" in render(text, expected_action=True)
+
+
+def test_the_note_is_not_added_to_an_ordinary_answer():
+    # A question about a file is not a request to change one.
+    out = render("That file holds the build configuration.", expected_action=True)
+
+    assert "did not produce a usable action" not in out
+
+
+def test_the_note_is_not_added_when_no_action_was_expected():
+    # The routing layer decides this, and a chat turn that happens to say
+    # "I propose" is not a failed file operation.
+    out = render("I propose we discuss the design first.", expected_action=False)
+
+    assert "did not produce a usable action" not in out
+
+
+def test_a_real_action_is_never_labelled_as_missing():
+    out = render(block('{"tool": "delete_file", "path": "notes.md"}'),
+                 expected_action=True)
+
+    assert "did not produce a usable action" not in out
+    assert "delete `notes.md`" in out
+
+
+def test_the_transport_knows_whether_an_action_was_expected():
+    import inspect
+
+    from backend.websocket import handlers
+
+    source = inspect.getsource(handlers)
+
+    assert "_turn_expects_action" in source
+    assert "expected_action=" in source

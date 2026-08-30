@@ -154,3 +154,65 @@ def test_this_module_decides_nothing_about_routing():
     # a second router disagreeing with the first.
     assert "select_model_for_turn" not in called
     assert "classify_turn" not in called
+
+
+# ======================================================
+# Which model takes which turn
+#
+# One table, read by model_router when it can name a model and by
+# complexity_router's role floor when it defers. Two copies would let
+# Local mode and Automatic mode route differently, which is exactly the
+# bug class this codebase keeps producing.
+# ======================================================
+def test_every_turn_kind_has_a_family():
+    from backend.chat.model_router import (
+        TURN_CHAT, TURN_CLASSIFICATION, TURN_HEAVY, TURN_TOOLS,
+    )
+
+    for kind in (TURN_CLASSIFICATION, TURN_CHAT, TURN_TOOLS, TURN_HEAVY):
+        assert mr.family_for_turn(kind) in mr.MODEL_ROLES
+
+
+def test_file_work_goes_to_the_twelve_b():
+    # Measured, not assumed. On six file tasks the 7B and the 12B
+    # proposed an action equally often and failed in different places:
+    # the 7B could not produce one at all for "create a README.md
+    # describing this project" -- the only task needing something written
+    # from scratch -- and took fifty seconds to fail. The 12B wrote a
+    # real README. It costs about 1.3 seconds a turn on this machine.
+    assert mr.family_for_turn("tools") == "mistral-nemo-12b"
+    assert mr.family_for_turn("heavy_reasoning") == "mistral-nemo-12b"
+
+
+def test_chat_does_not_go_to_the_twelve_b():
+    # The other half of the trade. A greeting must not wake the slowest
+    # model on the machine.
+    assert mr.family_for_turn("chat") == "phi-3-mini-4k-instruct-q4"
+
+
+def test_classification_stays_on_the_smallest():
+    assert mr.family_for_turn("classification") == "qwen2.5-0.5b"
+
+
+def test_an_unknown_turn_kind_falls_back_to_chat():
+    assert mr.family_for_turn("something-invented-later") == "phi-3-mini-4k-instruct-q4"
+
+
+def test_both_routing_layers_read_the_same_table():
+    import inspect
+
+    from backend.chat import model_router
+    from backend.core import complexity_router
+
+    # model_router names a model in Local mode; complexity_router floors
+    # the ladder in Automatic. Reading one table is what makes those two
+    # agree by construction rather than by being edited together.
+    assert "family_for_turn" in inspect.getsource(model_router)
+    assert "family_for_turn" in inspect.getsource(complexity_router)
+
+
+def test_every_family_in_the_routing_table_is_installed():
+    for kind in mr.FAMILY_FOR_TURN:
+        family = mr.family_for_turn(kind)
+        assert mr.installed_model_for(family) is not None, (
+            f"{kind} routes to {family}, which is not installed")

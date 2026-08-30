@@ -60,6 +60,8 @@ __all__ = [
     "can_supervise",
     "can_tools",
     "describe_role",
+    "FAMILY_FOR_TURN",
+    "family_for_turn",
     "installed_model_for",
     "role_of",
 ]
@@ -119,6 +121,35 @@ DEFAULT_ROLE = {
     "can_tools": False,
     "can_supervise": False,
 }
+
+
+# Which family a kind of turn should use. One table, read by
+# backend/chat/model_router.py when it can name a model and by
+# complexity_router's role floor when it cannot -- so the two agree by
+# construction rather than by being edited together.
+#
+# Tool work is on the 12B rather than the 7B, and that was measured
+# rather than assumed. On six file tasks the two proposed an action
+# equally often and differed in WHERE they failed: the 7B could not
+# produce an action at all for "create a README.md describing this
+# project" -- the one task needing something written from scratch -- and
+# took fifty seconds to fail. The 12B wrote a real README describing the
+# project. It costs about 1.3 seconds a turn on this machine, which has
+# 34 GB free and passes the safety gate for both.
+#
+# The 12B is worse at one thing: a terse "delete notes.md" sometimes
+# comes back as prose with no action block. That is why an action-less
+# file turn is now reported rather than shown as if it worked.
+FAMILY_FOR_TURN = {
+    "classification": "qwen2.5-0.5b",
+    "chat": "phi-3-mini-4k-instruct-q4",
+    "tools": "mistral-nemo-12b",
+    "heavy_reasoning": "mistral-nemo-12b",
+}
+
+
+def family_for_turn(turn_kind: str) -> str:
+    return FAMILY_FOR_TURN.get(turn_kind, "phi-3-mini-4k-instruct-q4")
 
 
 def _prefixes(family: str) -> tuple[str, ...]:

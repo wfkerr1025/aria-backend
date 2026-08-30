@@ -27,6 +27,21 @@ from backend.core import action_render
 # filters incrementally and supervision only reaches the text that drives
 # actions.
 BUFFER_FOR_SUPERVISION = True
+
+
+def _expects_an_action(user_text: str) -> bool:
+    """Whether the user asked for file work on this turn."""
+    try:
+        from backend.chat.model_router import TURN_TOOLS, classify_turn
+
+        class _Request:
+            latest_user_text = user_text
+            messages = ()
+
+        return classify_turn(_Request()) == TURN_TOOLS
+    except Exception:  # pragma: no cover - a note is not worth a turn
+        logger.exception("could not classify the turn for the missing-action note")
+        return False
 from backend.core.turn_orchestrator import orchestrate_turn
 from backend.core.tool_orchestrator import run_answer_actions
 from backend.core.turn_types import (
@@ -95,6 +110,7 @@ class WebSocketHandler:
         # through _dispatch reads as "no consent given", which is the
         # safe answer and the one a dry run needs.
         self._turn_user_text = ""
+        self._turn_expects_action = False
 
         # Set by _handle_model_override ("Proceed Anyway") to the exact
         # model_id the user just accepted the warning for. Consumed
@@ -415,6 +431,11 @@ class WebSocketHandler:
         # apply an action is read from what the USER said, and by the
         # time the answer exists the packet is long out of scope.
         self._turn_user_text = self._latest_user_text(packet)
+
+        # Whether this turn was routed as file work. Read here, from the
+        # same classifier the router uses, so the delivery path can tell
+        # "answered a question" from "was asked to act and did not".
+        self._turn_expects_action = _expects_an_action(self._turn_user_text)
 
         request = TurnRequest(
             messages=packet.get("messages", []),
@@ -1027,8 +1048,14 @@ class WebSocketHandler:
         # had already been staged.
         from backend.core.action_plan import requests_live_execution
 
+        # expected_action: the routing layer already read this turn as
+        # file work, so an answer with no action in it is a failure worth
+        # naming rather than prose to be shown as though it worked.
         text = action_render.render_actions_for_reading(
-            text, staged=requests_live_execution(self._turn_user_text))
+            text,
+            staged=requests_live_execution(self._turn_user_text),
+            expected_action=self._turn_expects_action,
+        )
 
         # The same filter the unbuffered path applies token by token. One
         # pass over the finished text is equivalent, which is what the

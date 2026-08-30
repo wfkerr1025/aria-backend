@@ -32,12 +32,16 @@ from backend.chat.model_router import (
     TURN_TOOLS,
     select_model_for_turn,
 )
-from backend.config.model_roles import installed_model_for
+from backend.config.model_roles import family_for_turn, installed_model_for
 from backend.core.turn_types import SessionState, TurnRequest
 
 ROUTER_MODEL = installed_model_for("qwen2.5-0.5b")
 CHAT_MODEL = installed_model_for("phi-3-mini-4k-instruct-q4")
-TOOL_MODEL = installed_model_for("mistral-7b")
+# Read from the table rather than named, so a change to which model
+# takes tool work updates the tests with the code instead of
+# breaking them. What is asserted is the architecture -- tool turns
+# reach the model the table says -- not which model that is today.
+TOOL_MODEL = installed_model_for(family_for_turn("tools"))
 HEAVY_MODEL = installed_model_for("mistral-nemo-12b")
 
 

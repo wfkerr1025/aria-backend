@@ -306,8 +306,12 @@ def _apply_role_floor(chosen: Optional[str], prompt: str, tool_use: bool,
         # rates "think carefully about the architecture of this module"
         # as low, so without this the same floor that rescues a tool turn
         # would leave a reasoning turn on the 7B.
-        target = DIFFICULT_MODEL_ID if kind == TURN_HEAVY else MEDIUM_MODEL_ID
-        if not _is_installed(target):
+        from backend.config.model_roles import family_for_turn, installed_model_for
+
+        # The same table the router uses when it can name a model, so
+        # Automatic mode and Local mode floor at the same tier.
+        target = installed_model_for(family_for_turn(kind))
+        if target is None or not _is_installed(target):
             target = MEDIUM_MODEL_ID
         if not _is_installed(target):
             return chosen

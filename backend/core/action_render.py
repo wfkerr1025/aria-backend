@@ -61,9 +61,27 @@ _ALREADY_STAGED = ("Staged in the ghost workspace. Review the diff and commit it
 _SCAFFOLDING = (
     "Here is what I would do:",
     "Staged:",
+    "- run the tests",
     _HOW_TO_CONFIRM,
     _ALREADY_STAGED,
 )
+
+# The described-action bullets this module writes: "- write `a.py` (2
+# lines)", "- delete `notes.md`". They are the other half of the
+# scaffolding and the more damaging half.
+#
+# Measured on nemo-12b across two turns. With turn one's rendering in the
+# transcript, turn two answered with a python block and the line
+# "- write `open_world.py` (5 lines)" -- imitating ARIA's summary instead
+# of emitting an action. Nothing was staged, and because turn one HAD
+# staged something the reply looked right. A conversation that gets worse
+# the longer it runs is exactly what was reported.
+#
+# The backtick is what keeps this off ordinary prose: every bullet this
+# module writes names a path in backticks, and "- write the tests first"
+# does not.
+_DESCRIBED_ACTION = re.compile(
+    r"^-\s+(write|create|delete|move|rename|copy)\b[^`]*`", re.IGNORECASE)
 
 
 def _describe(invocation) -> str:
@@ -98,7 +116,8 @@ def _describe(invocation) -> str:
     return f"{invocation.tool_name} `{path}`"
 
 
-def render_actions_for_reading(answer_text: str, staged: bool = False) -> str:
+def render_actions_for_reading(answer_text: str, staged: bool = False,
+                               expected_action: bool = False) -> str:
     """The answer as a person should read it, with the blocks described.
 
     Returns the text unchanged when there are no actions in it, which is
@@ -111,7 +130,7 @@ def render_actions_for_reading(answer_text: str, staged: bool = False) -> str:
 
         invocations = parse_actions(text)
         if not invocations:
-            return text
+            return _note_a_missing_action(text, expected_action)
 
         from backend.core.action_plan import strip_action_json
 
@@ -138,6 +157,39 @@ def render_actions_for_reading(answer_text: str, staged: bool = False) -> str:
         return text
 
 
+_NO_ACTION = ("_I described that but did not produce a usable action, so nothing "
+              "was staged. Ask me again and I will try once more._")
+
+# Prose that reads like a proposal without being one. Measured on
+# nemo-12b: "delete notes.md" came back as "I propose to delete the file
+# notes.md. Please confirm." -- the explain-and-ask half of the brief
+# with the block left out. It looks exactly like a working answer.
+_SOUNDS_LIKE_A_PROPOSAL = (
+    "i propose", "i will create", "i will delete", "i will move",
+    "i will rename", "i will write", "shall i", "please confirm",
+    "would you like me to",
+)
+
+
+def _note_a_missing_action(text: str, expected_action: bool) -> str:
+    """Say when a file turn produced words and no action.
+
+    Silence here is the failure the user actually experiences: ARIA says
+    "I propose to delete notes.md, please confirm", nothing is staged,
+    and the reply is indistinguishable from one that worked. Naming it
+    costs a line and removes the whole class of "she said she did it and
+    did not".
+    """
+    if not expected_action:
+        return text
+
+    lowered = str(text or "").lower()
+    if not any(marker in lowered for marker in _SOUNDS_LIKE_A_PROPOSAL):
+        return text
+
+    return f"{text}\n\n{_NO_ACTION}"
+
+
 def strip_scaffolding(text: str) -> str:
     """ARIA's own rendering, removed from a previous assistant turn.
 
@@ -150,5 +202,9 @@ def strip_scaffolding(text: str) -> str:
     belong in the transcript the model reads.
     """
     source = str(text or "")
-    kept = [line for line in source.splitlines() if line.strip() not in _SCAFFOLDING]
+    kept = [
+        line for line in source.splitlines()
+        if line.strip() not in _SCAFFOLDING
+        and not _DESCRIBED_ACTION.match(line.strip())
+    ]
     return "\n".join(kept).strip()

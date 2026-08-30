@@ -329,12 +329,9 @@ def classify_turn(turn_request, workspace_state=None, *, intent=None,
 
 
 def _family_for(turn_kind: str) -> str:
-    return {
-        TURN_CLASSIFICATION: "qwen2.5-0.5b",
-        TURN_TOOLS: "mistral-7b",
-        TURN_HEAVY: "mistral-nemo-12b",
-        TURN_CHAT: "phi-3-mini-4k-instruct-q4",
-    }[turn_kind]
+    # The table lives in model_roles, so the routing done here and the
+    # floor complexity_router applies when this defers cannot disagree.
+    return model_roles.family_for_turn(turn_kind)
 
 
 def select_model_for_turn(turn_request, workspace_state=None, *, intent=None,

@@ -52,6 +52,12 @@ __all__ = ["action_tool_brief"]
 # had become a .md. It is now a small Python file with real code in it,
 # under a name nobody asks for.
 #
+# It also has to say that the block is REQUIRED, not decorative.
+# Measured on nemo-12b: asked to delete a file it answered "I propose to
+# delete the file notes.md. Please confirm this action." -- doing the
+# "explain it and ask" half of these rules and skipping the block
+# entirely. The reply reads exactly like a working one and does nothing.
+#
 # Prescriptive about the SHAPE because the first version was not, and
 # mistral-7b invented its own: given one example it replied with
 # {"create_folder": ".", "create_file": {...}} -- no "tool" key, and a
@@ -83,6 +89,10 @@ Rules:
   whose contents are obvious, WRITE THOSE CONTENTS. Never propose an
   empty file unless the user asked for an empty file.
 - One action per block. Several blocks in one answer is fine.
+- ALWAYS write the block. A sentence describing an action does nothing
+  at all; only the block reaches the tools. "I propose to delete
+  notes.md, please confirm" with no block is an answer that looks like
+  it worked and did not.
 - Nothing happens until the user agrees. The block is a proposal:
   say what it will do and ask them to confirm. Do not say you have
   created, deleted or moved anything -- you have proposed it.

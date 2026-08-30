@@ -48,12 +48,16 @@ LOCAL_MODEL = "test-local-model"
 # Read from the role table rather than hard-coded, so moving the chat
 # role to another model does not silently leave this asserting the old
 # one.
-from backend.config.model_roles import installed_model_for  # noqa: E402
+from backend.config.model_roles import family_for_turn, installed_model_for  # noqa: E402
 
 CHAT_MODEL = installed_model_for("phi-3-mini-4k-instruct-q4")
 # A lookup is a tool turn, and a tool turn routes to the tool model --
 # which is also where the evidence floor would have put it anyway.
-TOOL_MODEL = installed_model_for("mistral-7b")
+# Read from the table rather than named, so a change to which model
+# takes tool work updates the tests with the code instead of
+# breaking them. What is asserted is the architecture -- tool turns
+# reach the model the table says -- not which model that is today.
+TOOL_MODEL = installed_model_for(family_for_turn("tools"))
 
 
 def prepare(message: str, **kw):
