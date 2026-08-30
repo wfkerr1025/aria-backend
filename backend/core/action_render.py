@@ -99,7 +99,13 @@ def render_actions_for_reading(answer_text: str, staged: bool = False) -> str:
         if not invocations:
             return text
 
-        without_blocks = _JSON_FENCE.sub("", text).strip()
+        from backend.core.action_plan import strip_action_json
+
+        # Fenced blocks, then the ones written bare. The model emitted an
+        # action with no fence at all in a live session, and stripping
+        # only fences left the raw JSON on screen beside a sentence
+        # describing it.
+        without_blocks = strip_action_json(_JSON_FENCE.sub("", text)).strip()
 
         described = [f"- {_describe(invocation)}" for invocation in invocations]
         heading = "Staged:" if staged else "Here is what I would do:"

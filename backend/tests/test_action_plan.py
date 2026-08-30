@@ -620,3 +620,105 @@ def test_a_real_code_fence_beside_one_action_is_still_used():
     created = [p for p in ap.parse_actions(text) if p.tool_name == "edit_file"]
 
     assert created[0].args["content"] == "print('hi')\n"
+
+
+# ======================================================
+# An action written without a fence
+#
+# Measured live. Asked to create a file, mistral-7b answered with the
+# whole action and no fence at all:
+#
+#     {"tool": "edit_file", "path": "hello_world.py", "content": "..."}
+#
+# parse_actions found nothing, no action ran, nothing was staged, and
+# there was never anything to commit -- and the next three turns had the
+# model claiming it had created the file. The proposal was right there,
+# one pair of backticks away from working.
+# ======================================================
+def test_an_unfenced_action_is_still_an_action():
+    import json
+
+    text = json.dumps({"tool": "edit_file", "path": "hello_world.py",
+                       "content": 'print("Hello World")\n'})
+
+    parsed = ap.parse_actions(text)
+
+    assert len(parsed) == 1
+    assert parsed[0].tool_name == "edit_file"
+    assert parsed[0].args["content"] == 'print("Hello World")\n'
+
+
+def test_an_unfenced_action_can_have_prose_around_it():
+    import json
+
+    text = ("I will remove it. "
+            + json.dumps({"tool": "delete_file", "path": "a.py"})
+            + " Shall I?")
+
+    assert [p.tool_name for p in ap.parse_actions(text)] == ["delete_file"]
+
+
+@pytest.mark.parametrize("text", [
+    "Use a dict like {key: value} in python.",
+    "The set is {1, 2, 3}.",
+    '{"path": "a.py", "content": "x"}',
+    '{"result": "ok"}',
+    "{}",
+])
+def test_prose_and_tool_less_json_are_not_actions(text):
+    # Requiring a "tool" key is what keeps this narrow. Without it, any
+    # answer discussing JSON would start executing.
+    assert ap.parse_actions(text) == []
+
+
+def test_braces_inside_content_do_not_end_the_object():
+    import json
+
+    # Scanned with brace counting rather than a regex, because content is
+    # a JSON string that can hold braces -- and code very often does.
+    text = json.dumps({"tool": "edit_file", "path": "a.py",
+                       "content": 'if x: {"a": 1}\nprint("}")\n'})
+
+    parsed = ap.parse_actions(text)
+
+    assert len(parsed) == 1
+    assert parsed[0].args["content"] == 'if x: {"a": 1}\nprint("}")\n'
+
+
+def test_a_fenced_answer_is_read_exactly_as_before():
+    import json
+
+    # The unfenced scan runs only when there is no fenced block, so a
+    # properly fenced action is never counted twice.
+    payload = json.dumps({"tool": "run_tests"})
+    text = block(payload)
+
+    assert len(ap.parse_actions(text)) == 1
+
+
+def test_two_unfenced_actions_are_both_read():
+    import json
+
+    text = (json.dumps({"tool": "delete_file", "path": "a.py"}) + "\n"
+            + json.dumps({"tool": "create_folder", "path": "docs"}))
+
+    assert [p.tool_name for p in ap.parse_actions(text)] == ["delete_file", "create_folder"]
+
+
+def test_stripping_leaves_the_prose_and_removes_the_action():
+    import json
+
+    text = ("I will remove it. "
+            + json.dumps({"tool": "delete_file", "path": "a.py"})
+            + " Shall I?")
+
+    stripped = ap.strip_action_json(text)
+
+    assert "tool" not in stripped
+    assert "I will remove it." in stripped
+    assert "Shall I?" in stripped
+
+
+def test_stripping_leaves_ordinary_prose_alone():
+    for text in ("Use {a: b}.", "", "Just talking."):
+        assert ap.strip_action_json(text) == text

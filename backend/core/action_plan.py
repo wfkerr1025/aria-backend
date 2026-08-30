@@ -60,6 +60,7 @@ __all__ = [
     "LIVE_EXECUTION_PHRASES",
     "NEGATION_VETO",
     "parse_actions",
+    "strip_action_json",
     "unsupported_actions",
     "requests_live_execution",
 ]
@@ -301,6 +302,86 @@ def unsupported_actions(text: str) -> list[str]:
     return names
 
 
+def _unfenced_payloads(text: str) -> list:
+    """Action objects the model wrote without a code fence, with spans.
+
+    Measured: asked to create a file, mistral-7b answered with the whole
+    action and no fence at all --
+
+        {"tool": "edit_file", "path": "hello_world.py", "content": "..."}
+
+    -- so parse_actions found nothing, no action ran, and the next three
+    turns had the model claiming it had created the file. The proposal
+    was right there and the format was one pair of backticks away.
+
+    Requiring a "tool" key is what keeps this narrow. Prose containing a
+    stray brace does not match; an answer whose JSON has no tool in it
+    does not match. Scanned with brace counting rather than a regex
+    because content is a JSON string that can hold braces of its own.
+    """
+    payloads = []
+    source = str(text or "")
+    index = 0
+
+    while True:
+        start = source.find("{", index)
+        if start == -1:
+            return payloads
+
+        depth, in_string, escaped, end = 0, False, False, -1
+        for position in range(start, len(source)):
+            char = source[position]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == chr(92):
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    end = position + 1
+                    break
+
+        if end == -1:
+            return payloads
+
+        candidate = source[start:end]
+        try:
+            parsed = json.loads(candidate)
+        except (ValueError, TypeError):
+            parsed = None
+
+        if isinstance(parsed, dict) and isinstance(parsed.get("tool") or parsed.get("name"), str):
+            # The span comes back too, so the display layer can remove
+            # exactly what was read as an action rather than running a
+            # second scanner that might disagree with this one.
+            payloads.append((parsed, start, end))
+
+        index = end
+
+
+def strip_action_json(text: str) -> str:
+    """The answer with unfenced action objects removed.
+
+    Fenced blocks are the display layer's own business; this covers the
+    ones written bare, using the SAME scan that read them as actions so
+    the two cannot disagree about what is an action and what is prose.
+    """
+    source = str(text or "")
+    spans = [(start, end) for _payload, start, end in _unfenced_payloads(source)]
+
+    for start, end in reversed(spans):
+        source = source[:start] + source[end:]
+    return source
+
+
 def _collapse_duplicate_writes(invocations: list) -> list:
     """One path, one write. The one that has contents wins.
 
@@ -364,7 +445,19 @@ def parse_actions(text: str) -> list[ToolInvocation]:
     ]
     only_code = code_blocks[0] if len(code_blocks) == 1 else None
 
-    for block in _FENCED.findall(source):
+    blocks = _FENCED.findall(source)
+
+    # A model that wrote the action without a fence still wrote the
+    # action. Only consulted when there is no fenced one, so a properly
+    # fenced answer is read exactly as before and a fenced block is never
+    # counted twice.
+    if not blocks:
+        for payload, _start, _end in _unfenced_payloads(source):
+            invocation = _invocation(payload, len(invocations) + 1, only_code)
+            if invocation is not None:
+                invocations.append(invocation)
+
+    for block in blocks:
         if len(invocations) >= _MAX_ACTIONS:
             logger.warning("more than %d actions in one answer; ignoring the rest",
                            _MAX_ACTIONS)

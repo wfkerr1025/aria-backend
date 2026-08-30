@@ -168,3 +168,28 @@ def test_rendering_a_rendered_answer_changes_nothing():
     # It runs on the display path only, but a double application must not
     # compound -- there are no blocks left to describe.
     assert render(once) == once
+
+
+def test_an_unfenced_action_is_described_not_printed():
+    import json
+
+    # Stripping only fences left the raw JSON on screen beside a sentence
+    # describing it.
+    out = render(json.dumps({"tool": "edit_file", "path": "hello_world.py",
+                             "content": 'print("hi")\n'}))
+
+    assert '"tool"' not in out
+    assert "write `hello_world.py`" in out
+
+
+def test_prose_around_an_unfenced_action_survives():
+    import json
+
+    out = render("I will remove it. "
+                 + json.dumps({"tool": "delete_file", "path": "a.py"})
+                 + " Shall I?")
+
+    assert "I will remove it." in out
+    assert "Shall I?" in out
+    assert "delete `a.py`" in out
+    assert '"tool"' not in out
