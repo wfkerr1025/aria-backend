@@ -103,10 +103,31 @@ _ASKS_TO_CONFIRM = re.compile(
 )
 
 
+# The same ask, riding on the end of a sentence rather than owning a
+# line. Measured on nemo-12b: "Here's a proposal for creating a player
+# inventory in C#. Please confirm:" -- and directly under it, "Done:".
+# Line matching never saw it, because the ask starts mid-line, so the
+# reply asked permission for work it had just reported finishing.
+#
+# Only a TRAILING clause is cut, and only after a sentence break, so the
+# sentence the model wrote about its own work survives intact.
+_TRAILING_ASK = re.compile(
+    r"(?:(?<=[.!?])|^)\s*"
+    r"(?:please\s+)?"
+    r"(?:confirm|let me know|tell me|review it)\b[^.!?]*[.!?:]?\s*$",
+    re.IGNORECASE,
+)
+
+
 def _drop_confirmation_requests(text: str) -> str:
     """Remove "please confirm" once the work has already happened."""
-    kept = [line for line in str(text or "").splitlines()
-            if not _ASKS_TO_CONFIRM.match(line.strip())]
+    kept = []
+    for line in str(text or "").splitlines():
+        if _ASKS_TO_CONFIRM.match(line.strip()):
+            continue
+        trimmed = _TRAILING_ASK.sub("", line).rstrip()
+        # A line that was ONLY the ask is dropped rather than left blank.
+        kept.append(trimmed if trimmed.strip() else "")
     return "\n".join(kept).strip()
 
 
@@ -152,7 +173,8 @@ def _describe(invocation, created=()) -> str:
 
 def render_actions_for_reading(answer_text: str, staged: bool = False,
                                expected_action: bool = False,
-                               created=(), problems=None) -> str:
+                               created=(), problems=None, failed=None,
+                               new_folders=(), relocated=None) -> str:
     """The answer as a person should read it, with the blocks described.
 
     Returns the text unchanged when there are no actions in it, which is
@@ -176,16 +198,43 @@ def render_actions_for_reading(answer_text: str, staged: bool = False,
         without_blocks = strip_action_json(_JSON_FENCE.sub("", text)).strip()
 
         made = {str(name) for name in (created or ())}
+        refused = dict(failed or {})
+
+        # The model proposed one path and the file went to another,
+        # because the user named no folder and the model invented one.
+        # The description follows the file: saying "created
+        # src/inventory.cs" when it is sitting in the root sends the user
+        # looking in a directory that does not exist.
+        for invocation in invocations:
+            moved_to = (relocated or {}).get(str(invocation.args.get("path") or ""))
+            if moved_to:
+                invocation.args["path"] = moved_to
         if made:
             # It is already done; asking permission now is noise at best
             # and a contradiction at worst.
             without_blocks = _drop_confirmation_requests(without_blocks)
-        described = [f"- {_describe(invocation, made)}" for invocation in invocations]
+        # An action that did not run is reported as not run. The render
+        # used to describe the PROPOSAL and stop there: a staging failure
+        # -- "'src' is not a directory in the project" -- still printed
+        # "Staged: - write src/player_inventory.cs (17 lines)", which is
+        # ARIA claiming work it had not done. The description is built
+        # from the invocation AND its result, or it is not a description
+        # of what happened.
+        described = []
+        for invocation in invocations:
+            path = str(invocation.args.get("path") or "")
+            if path in refused:
+                described.append(f"- **could not** {_describe(invocation, ())} "
+                                 f"- {refused[path]}")
+            else:
+                described.append(f"- {_describe(invocation, made)}")
 
         # Three states, and the difference matters to whoever is reading.
         # A file that now exists is reported in the past tense; one
         # waiting for a commit is not; one waiting for a yes is neither.
-        if made:
+        if refused and not made:
+            heading = "I could not do that:"
+        elif made:
             heading = "Done:"
         elif staged:
             heading = "Staged:"
@@ -202,6 +251,7 @@ def render_actions_for_reading(answer_text: str, staged: bool = False,
         still_waiting = [
             invocation for invocation in invocations
             if str(invocation.args.get("path") or "") not in made
+            and str(invocation.args.get("path") or "") not in refused
         ]
         if still_waiting:
             parts.append(_ALREADY_STAGED if staged else _HOW_TO_CONFIRM)
@@ -210,6 +260,15 @@ def render_actions_for_reading(answer_text: str, staged: bool = False,
         # is the difference between "ARIA created the file" and "ARIA
         # created a working file", and the user is the one who has to
         # know which of those happened.
+        # A new folder is a bigger change than a new file, so it is said
+        # out loud rather than inferred from a path. stage_path lets a
+        # create bring its parent; this is the half that makes it visible.
+        folders = [str(name) for name in (new_folders or ())]
+        if folders:
+            named = ", ".join(f"`{name}/`" for name in folders)
+            verb = "This added" if made else "This will add"
+            parts.append(f"{verb} the folder{'' if len(folders) == 1 else 's'} {named}.")
+
         for message in (problems or {}).values():
             parts.append(f"[!] {message}")
 

@@ -162,19 +162,39 @@ def ghost_path_for(path: str, root: Path | None = None) -> Path:
     return staging_root(root) / _relative_to_project(path, root)
 
 
-def stage_path(path: str, root: Path | None = None) -> str:
+def stage_path(path: str, root: Path | None = None,
+               allow_new_parent: bool = False) -> str:
     """The ghost path for `path`, with its directory ready to write into.
 
     Validates the PARENT rather than the file: a staged file must land
     somewhere the project already has, which refuses an invented
-    directory without refusing a new file. Creating "backend/api.py" is a
-    legitimate edit; creating "made/up/tree/api.py" is a hallucinated
+    directory without refusing a new file. Editing "backend/api.py" is a
+    legitimate edit; editing "made/up/tree/api.py" is a hallucinated
     path wearing an edit's clothes.
+
+    WHY A NEW FILE MAY BRING ITS FOLDER
+    -----------------------------------
+    That guard reads a missing parent as evidence the model invented the
+    path, which is right when the file is supposed to already exist and
+    wrong when it is not supposed to exist at all. Asked for
+    "src/player_inventory.cs" on a project with no src/, ARIA refused --
+    and the refusal was not even shown, so the reply said "Staged:" for
+    work that never happened.
+
+    Creating a folder along with a new file is not a hallucination, it is
+    the ordinary shape of "put this somewhere sensible", and it is what
+    the user asked for when they named the path. So `allow_new_parent`
+    is set for a CREATE -- a target that does not exist in the project --
+    and left off for an EDIT, where a missing directory still means the
+    model is describing a file that is not there.
+
+    Nothing is hidden by this. `new_directories_for` names the folders a
+    commit would add, and the renderer says so before the user agrees.
     """
     relative = _relative_to_project(path, root)
     parent = project_root(root) / relative.parent
 
-    if not parent.is_dir():
+    if not parent.is_dir() and not allow_new_parent:
         raise GhostError(
             f"Refusing to stage {path!r}: {relative.parent.as_posix()!r} is not a "
             f"directory in the project"
@@ -190,6 +210,26 @@ def stage_path(path: str, root: Path | None = None) -> str:
 
     logger.info("staging %s -> %s", relative.as_posix(), ghost)
     return str(ghost)
+
+
+def new_directories_for(path: str, root: Path | None = None) -> list[str]:
+    """Project folders a commit of `path` would have to create, outermost first.
+
+    The visible half of allow_new_parent. A new tree is a bigger change
+    than a new file, and the user should read it as one before it lands.
+    """
+    try:
+        relative = _relative_to_project(path, root)
+    except Exception:
+        return []
+
+    missing = []
+    for parent in reversed(relative.parents):
+        if parent == Path("."):
+            continue
+        if not (project_root(root) / parent).is_dir():
+            missing.append(parent.as_posix())
+    return missing
 
 
 def staged_files(root: Path | None = None) -> list[str]:

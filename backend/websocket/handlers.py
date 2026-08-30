@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import json
+import re
 import asyncio
 import functools
 import time
@@ -78,6 +79,43 @@ from backend.logger import log as unified_log
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+
+_WRITING_PATH = re.compile(r'"path"\s*:\s*"([^"]{1,200})"')
+
+
+def _path_being_written(raw_so_far: str):
+    """The file named in the action block the model is part-way through.
+
+    Read off the raw text as it arrives, so the progress line can say
+    "writing player_inventory.cs" instead of "writing the file" as soon
+    as the model has got that far -- which is usually within a token or
+    two of opening the block, and long before the contents are done.
+    """
+    match = _WRITING_PATH.search(str(raw_so_far or ""))
+    return match.group(1) if match else None
+
+
+def _failed_paths(report) -> dict:
+    """Paths whose action did not run, with the reason it did not.
+
+    Read off the RESULTS, not the proposal. Rendering the proposal alone
+    reported a refused staging as "Staged: - write ...", which is ARIA
+    claiming work it had not done.
+    """
+    if not report:
+        return {}
+
+    by_step = {a.get("step_id"): a for a in report.get("actions") or []}
+    failed = {}
+    for result in report.get("results") or []:
+        if result.get("status") in ("ok", "skipped"):
+            continue
+        action = by_step.get(result.get("step_id")) or {}
+        path = str((action.get("args") or {}).get("path") or "")
+        if path:
+            failed[path] = result.get("error") or "it did not run"
+    return failed
 
 
 def _expects_an_action(user_text: str) -> bool:
@@ -927,6 +965,10 @@ class WebSocketHandler:
         # changed is that the client no longer has to see it.
         answer = AnswerStream()
         action_blocks = ActionBlockFilter()
+        # The id the client opened its bubble with. The revision and the
+        # closing end must carry it, or the client matches neither.
+        stream_id: dict = {"value": None}
+        writing: dict = {"announced": False, "named": False}
 
         def send_packet_sync(packet: dict):
             # Called from the executor's worker thread, not the event
@@ -939,6 +981,7 @@ class WebSocketHandler:
             logger.debug("Streaming packet: %s", packet)
 
             if packet.get("type") == "stream_start":
+                stream_id["value"] = packet.get("requestId")
                 asyncio.run_coroutine_threadsafe(
                     self._emit_status(turn_status.WRITING, tool_runs=list(tool_runs or [])),
                     loop,
@@ -964,6 +1007,23 @@ class WebSocketHandler:
                 # `{"tool": "edit_file"...` on screen one fragment at a
                 # time, replaced a second later by "Done:".
                 publishable = action_blocks.push(answer.push(raw))
+
+                # The block is hidden, and a big file takes a long time
+                # to write. Measured: after an eight-word opening
+                # sentence, 93 seconds of nothing while a C# class
+                # generated inside a fence the user could not see. Hiding
+                # the syntax must not mean hiding that work is happening.
+                if action_blocks.suppressed_a_block and not writing["announced"]:
+                    writing["announced"] = True
+                    asyncio.run_coroutine_threadsafe(
+                        self._emit_progress("writing the file"), loop)
+                if writing["announced"] and not writing["named"]:
+                    path = _path_being_written("".join(accumulated_tokens))
+                    if path:
+                        writing["named"] = True
+                        asyncio.run_coroutine_threadsafe(
+                            self._emit_progress(f"writing {path}"), loop)
+
                 if not publishable:
                     # Held back, stripped, or past a terminator. Sending an
                     # empty stream_token would make the client render a
@@ -999,6 +1059,18 @@ class WebSocketHandler:
                 _, optimize_info = optimize_response("".join(accumulated_tokens))
                 log_response_optimized("websocket", optimize_info, self.conversation_id)
 
+                # HELD. The turn is not over: the actions still have to
+                # run and the checked text still has to replace what was
+                # streamed. _finish_stream sends the revision and then the
+                # end, with the SAME requestId the stream opened with.
+                #
+                # Forwarding it here sent two stream_ends with different
+                # ids. The client finalised on the first, cleared its
+                # active stream, and then dropped the revision as having
+                # nothing to apply to -- so every turn showed the raw
+                # answer and none of the cleanup.
+                return
+
             asyncio.run_coroutine_threadsafe(self._send(packet), loop)
 
         try:
@@ -1024,7 +1096,8 @@ class WebSocketHandler:
                     raw_answer, request.model_id, answer, report)
             else:
                 await self._finish_stream(
-                    raw_answer, "".join(published), request, report)
+                    raw_answer, "".join(published), request, report,
+                    stream_id["value"])
 
             if report is not None:
                 await self._send({"type": "answer_actions", **report})
@@ -1055,8 +1128,15 @@ class WebSocketHandler:
         try:
             from backend.core.model_registry import get_model
 
-            loader = getattr(self.router, "loader", None) or getattr(
-                getattr(self.router, "local_provider", None), "loader", None)
+            # From the provider registry, which returns the same local
+            # Provider every call and holds the loader on it. The first
+            # version asked ProviderRouter, which has no loader at all --
+            # so this returned silently and the load was never announced.
+            # A progress line nobody sees is the same as no progress line,
+            # and the 39-second blank screen stayed exactly as it was.
+            from backend.llm.providers.provider_registry import get_provider
+
+            loader = getattr(get_provider("local"), "loader", None)
             if loader is None or model_id is None:
                 return
             if getattr(loader, "active_model_id", None) == model_id:
@@ -1087,7 +1167,8 @@ class WebSocketHandler:
             logger.debug("could not send progress %r", label, exc_info=True)
 
     async def _finish_stream(self, raw_answer: str, streamed: str,
-                             request, report: dict | None) -> None:
+                             request, report: dict | None,
+                             request_id=None) -> None:
         """Replace what was streamed with the checked text, then close.
 
         This is what buys streaming back without giving up the cleanup.
@@ -1112,6 +1193,9 @@ class WebSocketHandler:
                 expected_action=self._turn_expects_action,
                 created=(report or {}).get("created") or [],
                 problems=(report or {}).get("problems") or {},
+                failed=_failed_paths(report),
+                new_folders=(report or {}).get("new_folders") or (),
+                relocated=(report or {}).get("relocated") or {},
             )
         except Exception:
             logger.exception("could not build the revised answer; the streamed text stands")
@@ -1124,13 +1208,14 @@ class WebSocketHandler:
             })
             await self._send({
                 "type": "message_revised",
-                "requestId": id(raw_answer),
+                "requestId": request_id if request_id is not None else id(raw_answer),
                 "modelId": request.model_id,
                 "text": final,
             })
 
-        await self._send({"type": "stream_end", "modelId": request.model_id,
-                          "requestId": id(raw_answer)})
+        await self._send({
+            "type": "stream_end", "modelId": request.model_id,
+            "requestId": request_id if request_id is not None else id(raw_answer)})
 
     async def _deliver_supervised(self, answer_text: str, model_id, answer,
                                   report: dict | None = None) -> str:

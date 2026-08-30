@@ -49,8 +49,9 @@ NOT IN THIS PASS, and the reason:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from backend.core import file_tools
@@ -151,6 +152,14 @@ class ExecutionContext:
     # Newest first. Each entry undoes one completed action.
     rollback_stack: list[tuple[str, Callable[[], None]]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # What the user actually asked for. Read for the same reason
+    # consent is: the model does not get to authorise a new folder
+    # tree by proposing one.
+    user_text: str = ""
+    # Project folders this turn would add, in the order they were
+    # first needed. A new tree is a bigger change than a new file
+    # and is named to the user before it lands.
+    new_folders: list[str] = field(default_factory=list)
 
     @property
     def workspace_root(self):
@@ -352,8 +361,29 @@ def _run_one(invocation, context: ExecutionContext) -> ActionResult:
         # point is to be reviewable. This is the only path that writes
         # during a turn, and a test asserts it never hands edit_file a
         # path outside staging.
+        # A create may bring its folder; an edit may not. The distinction
+        # is whether the target is already in the project: if it is not,
+        # there is no existing file being described, so a missing parent
+        # is a folder the user asked for rather than one the model
+        # imagined.
         try:
-            args["path"] = ghost_workspace.stage_path(args.get("path", ""))
+            # Where the file goes was settled before this ran, by
+            # _honour_the_requested_location. This step only decides
+            # whether the folder may be created, and records it.
+            wanted = str(args.get("path", ""))
+            folders = ghost_workspace.new_directories_for(wanted)
+            args["path"] = ghost_workspace.stage_path(
+                wanted,
+                allow_new_parent=_is_a_new_file(wanted)
+                and _the_user_named_the_folder(wanted, context.user_text))
+
+            # Recorded only now, because stage_path did not refuse. A
+            # folder listed for an action that failed would have the
+            # reply saying "could not write it" and "this will add the
+            # folder" in the same breath.
+            for folder in folders:
+                if folder not in context.new_folders:
+                    context.new_folders.append(folder)
         except Exception as error:
             logger.warning("refusing to stage %r: %s", args.get("path"), error)
             return ActionResult(
@@ -482,6 +512,126 @@ def _content_problems(actions) -> dict:
     return problems
 
 
+# A folder the user did not ask for is the model's idea, not theirs.
+#
+# stage_path refuses a file whose parent directory does not exist,
+# because a missing parent usually means the model invented the path.
+# That guard is right about invented paths and wrong about new ones: the
+# user asks for "src/player_inventory.cs" on a project with no src/, and
+# the answer should be the file, not a refusal.
+#
+# The filesystem cannot tell those apart -- the directory is missing
+# either way. The user's own words can, and they are the same authority
+# this module already uses for consent: the model does not get to
+# authorise a new folder tree by proposing one.
+_WORD = re.compile(r"[A-Za-z0-9_.-]+")
+
+
+def _the_user_named_the_folder(path: str, user_text: str) -> bool:
+    """Whether every new folder in `path` appears in what the user wrote.
+
+    "create src/player_inventory.cs" names src/, so src/ is theirs to
+    create. A bare "make me an inventory script" names nothing, and a
+    directory in the answer came from the model.
+    """
+    from backend.core import ghost_workspace
+
+    missing = ghost_workspace.new_directories_for(path)
+    if not missing:
+        return True
+
+    said = {word.lower() for word in _WORD.findall(str(user_text or ""))}
+    return all(
+        # The deepest segment is what the user would have typed; the
+        # ancestors come with it. "docs/api/spec.md" is named by the
+        # phrase "docs/api", so each segment is checked on its own name.
+        PurePosixPath(folder).name.lower() in said
+        for folder in missing
+    )
+
+
+def _where_the_user_asked_for_it(path: str, user_text: str) -> str:
+    """The path, with a directory the user never mentioned removed.
+
+    Measured, on the user's own request: "create a player_inventory.cs
+    with stackable slots" produced src/player_inventory.cs. The user
+    asked for a file and got a subdirectory they had not mentioned --
+    and because src/ did not exist, staging refused and the turn
+    silently did nothing.
+
+    Refusing would be honest and useless; the file was wanted. So when
+    the user named no folder at all and the model supplied one that is
+    not in the project, the file goes where it was asked for. A folder
+    the user DID name is kept and created, and a folder that already
+    exists is always kept -- a model filing something into an existing
+    tree is being helpful, not inventive.
+    """
+    wanted = str(path or "").replace(chr(92), "/").strip()
+    if "/" not in wanted.strip("/"):
+        return wanted
+
+    try:
+        from backend.core import ghost_workspace
+
+        if not ghost_workspace.new_directories_for(wanted):
+            return wanted  # the tree is already there
+    except Exception:  # pragma: no cover - fall through to the guard below
+        return wanted
+
+    if _the_user_named_the_folder(wanted, user_text):
+        return wanted
+
+    # The user mentioned no directory anywhere in the request. Not just
+    # this one -- if they were talking about folders at all, the model's
+    # choice may be a reading of something said earlier in the sentence,
+    # and quietly relocating the file would be its own kind of wrong.
+    if "/" in str(user_text or "") or _FOLDER_WORD.search(str(user_text or "")):
+        return wanted
+
+    bare = PurePosixPath(wanted).name
+    logger.info("dropping unrequested folder from %r; the user asked for %r",
+                wanted, bare)
+    return bare
+
+
+_FOLDER_WORD = re.compile(r"\b(folder|directory|dir|subfolder|subdirectory)\b",
+                          re.IGNORECASE)
+
+
+def _honour_the_requested_location(actions, user_text: str) -> dict:
+    """Rewrite action paths to where the user asked for the file.
+
+    Mutates the invocations in place and returns {proposed: final} for
+    the ones that moved, so the reply can name the file that was really
+    written rather than the one the model first suggested.
+    """
+    moved = {}
+    for action in actions:
+        if action.tool_name != "edit_file":
+            continue
+        proposed = str(action.args.get("path") or "")
+        final = _where_the_user_asked_for_it(proposed, user_text)
+        if final and final != proposed:
+            action.args["path"] = final
+            moved[proposed] = final
+    return moved
+
+
+def _is_a_new_file(path: str) -> bool:
+    """Whether this path is absent from the project.
+
+    A resolve that refuses is not a new file -- it is a path outside the
+    workspace, and stage_path must get its own refusal rather than an
+    extra permission.
+    """
+    from backend.core import file_tools
+
+    try:
+        return not file_tools.resolve_in_workspace(str(path or "")).exists()
+    except Exception:
+        return False
+
+
 def _paths_that_do_not_exist(actions) -> set:
     """Targets of edit_file actions that are not in the project yet."""
     from backend.core import file_tools
@@ -556,12 +706,20 @@ def run_answer_actions(answer_text: str, user_text: str) -> dict | None:
     #
     # Network is never granted. A model cannot turn an "action" into an
     # outbound request.
-    context = ExecutionContext(dry_run=not live)
+    context = ExecutionContext(dry_run=not live, user_text=user_text)
     context.allowed_permissions.update(ACTION_PERMISSIONS)
 
     # Which targets do not exist yet, recorded BEFORE anything runs.
     # Asking afterwards would be asking about a file the turn had just
     # staged, and every write would look like an addition.
+    # Where each file actually goes, settled BEFORE anything reads a
+    # path. This used to happen inside the staging step, which runs
+    # after new_paths is captured -- so a relocated file was staged
+    # under its new name, looked for under the old one, and never
+    # auto-committed. One decision, made once, and every later stage
+    # sees the same path.
+    relocated = _honour_the_requested_location(actions, user_text)
+
     new_paths = _paths_that_do_not_exist(actions)
 
     logger.info("running %d action(s) for this turn, live=%s", len(actions), live)
@@ -622,6 +780,8 @@ def run_answer_actions(answer_text: str, user_text: str) -> dict | None:
         "created": created,
         "problems": problems,
         "unsupported": unsupported,
+        "new_folders": list(context.new_folders),
+        "relocated": relocated,
         "notes": list(context.errors) + [
             f"{message} It is staged rather than written, so you can read it "
             f"before it reaches the project."
