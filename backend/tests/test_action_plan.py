@@ -439,3 +439,71 @@ def test_supplied_content_is_never_replaced():
         block('{"tool": "edit_file", "path": "a.py", "content": "print(1)"}'))
 
     assert parsed[0].args["content"] == "print(1)"
+
+
+# ======================================================
+# Content the model left out
+# ======================================================
+def test_the_only_code_block_fills_a_create_with_no_content():
+    # Measured twice on mistral-7b: the script written in one fence, and
+    # the action proposed in the next without it. Taking that block is
+    # the reading a person would give the same answer.
+    text = ('Here is the script:\n\n```python\nprint("Hello, World!")\n```\n\n'
+            'I propose:\n\n' + block('{"tool": "create_file", "path": "hello_world.py"}'))
+
+    parsed = ap.parse_actions(text)
+
+    assert parsed[0].tool_name == "edit_file"
+    assert parsed[0].args["content"] == 'print("Hello, World!")\n'
+
+
+def test_two_code_blocks_are_a_guess_and_are_not_used():
+    # A guess about file contents is written to disk. With more than one
+    # candidate the file stays empty -- recoverable, visible in the
+    # staged diff, and not a fabrication.
+    text = ('```python\nprint(1)\n```\n\n```javascript\nconsole.log(1)\n```\n\n'
+            + block('{"tool": "create_file", "path": "a.py"}'))
+
+    assert ap.parse_actions(text)[0].args["content"] == ""
+
+
+def test_content_the_model_supplied_is_never_replaced():
+    text = ('```python\nprint(99)\n```\n\n'
+            + block('{"tool": "edit_file", "path": "a.py", "content": "given"}'))
+
+    assert ap.parse_actions(text)[0].args["content"] == "given"
+
+
+def test_the_action_block_is_not_mistaken_for_source():
+    text = block('{"tool": "create_file", "path": "a.py"}')
+
+    # The json fence is the action, not the file's contents.
+    assert "tool" not in ap.parse_actions(text)[0].args["content"]
+
+
+def test_an_empty_create_is_reported(tmp_path, monkeypatch):
+    from backend.core import file_tools
+    from backend.core.tool_orchestrator import run_answer_actions
+
+    monkeypatch.setenv(file_tools.ENV_WORKSPACE, str(tmp_path))
+
+    report = run_answer_actions(
+        block('{"tool": "create_file", "path": "a.py"}'), "yes, do it")
+
+    # A model that proposes a file without writing its contents produces
+    # a real, committable, useless file. The staged diff shows it, but
+    # only to someone who looks.
+    assert any("created empty" in note for note in report["notes"])
+
+
+def test_a_create_with_content_is_not_reported_as_empty(tmp_path, monkeypatch):
+    from backend.core import file_tools
+    from backend.core.tool_orchestrator import run_answer_actions
+
+    monkeypatch.setenv(file_tools.ENV_WORKSPACE, str(tmp_path))
+
+    report = run_answer_actions(
+        block('{"tool": "edit_file", "path": "a.py", "content": "print(1)"}'),
+        "yes, do it")
+
+    assert not any("created empty" in note for note in report["notes"])

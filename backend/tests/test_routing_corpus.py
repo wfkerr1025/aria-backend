@@ -236,3 +236,67 @@ def test_the_floor_uses_the_same_number_the_gate_does():
     assert CHAT_PARAM_FLOOR == 3_000_000_000
     for text in ["Hello Aria", "edit main.py", "think carefully about this"]:
         assert too_weak_for_chat(ladder(text)) is False
+
+
+# ======================================================
+# What the turn IS, versus which model runs it
+#
+# These are different questions and collapsing them hid the tool brief
+# for a whole session. In Automatic mode the router defers on the model
+# -- correctly -- and the early return reported TURN_CHAT along with it.
+# The orchestrator injects the action brief only on TURN_TOOLS or
+# TURN_HEAVY, so in Automatic mode the model was never told its tools
+# existed and went back to "I'll create the file" without proposing
+# anything.
+#
+# Only model_id is mode-dependent. turn_kind is read by the capability
+# gate's replacement tier and by the brief, and both need it in every
+# mode.
+# ======================================================
+@pytest.mark.parametrize("mode", ["local", "automatic", "cloud"])
+@pytest.mark.parametrize("text,expected", [
+    ("I need you to create for me a hello_world.py file", TURN_TOOLS),
+    ("hello there", TURN_CHAT),
+    ("think carefully about the architecture", TURN_HEAVY),
+])
+def test_the_turn_is_classified_in_every_mode(mode, text, expected):
+    choice = select_model_for_turn(turn(text, session=SessionState(mode=mode)))
+
+    assert choice.turn_kind == expected
+
+
+@pytest.mark.parametrize("mode", ["cloud", "automatic"])
+def test_only_the_model_defers_outside_local_mode(mode):
+    choice = select_model_for_turn(
+        turn("create a file", session=SessionState(mode=mode)))
+
+    assert choice.model_id is None
+    assert choice.turn_kind == TURN_TOOLS
+
+
+@pytest.mark.parametrize("mode", ["local", "automatic"])
+def test_the_action_brief_reaches_a_tool_turn_in_that_mode(mode):
+    from unittest.mock import patch
+
+    from backend.core import turn_orchestrator as orch
+    from backend.core.safety_manager import SafetyDecision
+    from backend.core.turn_types import TurnRequest
+
+    safe = SafetyDecision(safe_to_run=True, requires_warning=False,
+                          severity="ok", message="", profile=None, snapshot=None)
+
+    def prompt_for(text):
+        request = TurnRequest(
+            messages=[{"role": "user", "content": text}], latest_user_text=text,
+            session=SessionState(mode=mode))
+        with patch.object(orch, "evaluate_safety", lambda cfg: safe), \
+             patch.object(orch, "_classifier_generator", lambda r, d, s: s):
+            result = orch.orchestrate_turn(
+                request, default_local_model=lambda: "mistral-7b-q4km")
+        messages = result.inference_request.messages if result.inference_request else []
+        return any("You can act on this project" in m.content for m in messages)
+
+    assert prompt_for("create a hello_world.py file") is True
+    # And not on ordinary chat: the brief is context spent making a
+    # greeting more likely to propose a file operation.
+    assert prompt_for("hello there") is False

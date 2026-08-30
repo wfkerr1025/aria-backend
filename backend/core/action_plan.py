@@ -126,6 +126,7 @@ NEGATION_VETO: tuple[str, ...] = (
 
 # Fenced blocks, json-tagged or not. The tag is what the prompt asks for;
 # accepting an untagged block too costs nothing and models drop the tag.
+_CODE_FENCE = re.compile(r"```(?!json)[a-zA-Z0-9_+-]*\n(.*?)```", re.DOTALL)
 _FENCED = re.compile(r"```(?:json)?\s*([\[{].*?[\]}])\s*```", re.DOTALL)
 
 _MAX_ACTIONS = 20
@@ -199,7 +200,7 @@ _TOOL_ALIASES = {
 }
 
 
-def _invocation(payload, index: int) -> ToolInvocation | None:
+def _invocation(payload, index: int, only_code_block: str | None = None) -> ToolInvocation | None:
     if not isinstance(payload, dict):
         return None
 
@@ -229,10 +230,18 @@ def _invocation(payload, index: int) -> ToolInvocation | None:
         return None
 
     if name == "edit_file" and "content" not in args:
-        # "Create hello_world.py" with no content is a request for an
-        # empty file, not a malformed action. Refusing it would be
-        # technically right and would leave the user with nothing.
-        args["content"] = ""
+        # The model wrote the script and then proposed the file without
+        # it. Measured, twice, on mistral-7b: "create hello_world.py"
+        # came back as {"tool": "create_file", "path": "hello_world.py"}
+        # in the same answer as a ```python block containing exactly the
+        # script the user asked for.
+        #
+        # Taking that block is the reading a person would give it. Only
+        # when there is EXACTLY ONE, because two blocks make it a guess,
+        # and a guess about file contents is written to disk. With none
+        # or several, the file is empty -- recoverable, visible in the
+        # staged diff, and not a fabrication.
+        args["content"] = only_code_block or ""
 
     return ToolInvocation(tool_name=name, args=args, step_id=f"action-{index}")
 
@@ -289,7 +298,14 @@ def parse_actions(text: str) -> list[ToolInvocation]:
     """
     invocations: list[ToolInvocation] = []
 
-    for block in _FENCED.findall(str(text or "")):
+    # The code the model wrote in this same answer, when there is exactly
+    # one block of it. Used only to fill a create whose content the model
+    # left out -- see _invocation.
+    source = str(text or "")
+    code_blocks = [b for b in _CODE_FENCE.findall(source) if b.strip()]
+    only_code = code_blocks[0] if len(code_blocks) == 1 else None
+
+    for block in _FENCED.findall(source):
         if len(invocations) >= _MAX_ACTIONS:
             logger.warning("more than %d actions in one answer; ignoring the rest",
                            _MAX_ACTIONS)
@@ -306,7 +322,7 @@ def parse_actions(text: str) -> list[ToolInvocation]:
         # A model may write one action or a list of them in one block.
         candidates = payload if isinstance(payload, list) else [payload]
         for candidate in candidates:
-            invocation = _invocation(candidate, len(invocations) + 1)
+            invocation = _invocation(candidate, len(invocations) + 1, only_code)
             if invocation is not None:
                 invocations.append(invocation)
 

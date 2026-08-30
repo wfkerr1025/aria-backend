@@ -69,7 +69,10 @@ _RULES = """
 Rules:
 - The "tool" value must be one of the names above, exactly.
 - Paths are relative to the project root. Never an absolute path.
-- content is the COMPLETE new text of the file, not a fragment.
+- edit_file ALWAYS needs content. Write the file's actual text there.
+  If the user asked for a hello world script, a README or anything else
+  whose contents are obvious, WRITE THOSE CONTENTS. Never propose an
+  empty file unless the user asked for an empty file.
 - One action per block. Several blocks in one answer is fine.
 - Nothing happens until the user agrees. The block is a proposal:
   say what it will do and ask them to confirm. Do not say you have

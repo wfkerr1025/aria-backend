@@ -533,6 +533,15 @@ def run_answer_actions(answer_text: str, user_text: str) -> dict | None:
         "dry_run": outcome.dry_run,
         "unsupported": unsupported,
         "notes": list(context.errors) + [
+            # An empty create is legal and is almost never what was
+            # wanted: a model that proposes a file without writing its
+            # contents produces a real, committable, useless file. The
+            # staged diff shows it, but only to someone who looks -- this
+            # says it in the turn.
+            f"{a.args.get('path')} would be created empty; ARIA proposed no contents."
+            for a in actions
+            if a.tool_name == "edit_file" and not str(a.args.get("content") or "").strip()
+        ] + [
             f"{name} is not a tool ARIA has, so that step was skipped."
             for name in unsupported
         ],

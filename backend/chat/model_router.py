@@ -381,11 +381,22 @@ def select_model_for_turn(turn_request, workspace_state=None, *, intent=None,
     # uses, and at the tool tier for a tool-bearing prompt. A floor works
     # wherever the decision is made; a gate only works where it is
     # placed.
-    if mode != "local":
-        return ModelChoice(None, TURN_CHAT, f"{mode} mode routes through the provider")
-
+    # Classified FIRST, then the model decided. Deferring on which model
+    # runs a turn is not the same as having no opinion about what the
+    # turn is, and collapsing the two hid the tool brief for a whole
+    # session: the early return reported TURN_CHAT, the orchestrator
+    # injects the brief only on TURN_TOOLS or TURN_HEAVY, so in Automatic
+    # mode the model was never told its tools existed and went back to
+    # answering "I'll create the file" without proposing anything.
+    #
+    # turn_kind is read by two other things besides the model choice --
+    # the capability gate's replacement tier and the tool brief -- and
+    # both are correct in every mode. Only model_id is mode-dependent.
     turn_kind = classify_turn(turn_request, workspace_state, intent=intent,
                               classification_only=classification_only)
+
+    if mode != "local":
+        return ModelChoice(None, turn_kind, f"{mode} mode routes through the provider")
 
     # The caller's already-resolved pin wins over the request field, and
     # that is a correctness rule rather than a convenience.
