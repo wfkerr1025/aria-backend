@@ -126,7 +126,18 @@ NEGATION_VETO: tuple[str, ...] = (
 
 # Fenced blocks, json-tagged or not. The tag is what the prompt asks for;
 # accepting an untagged block too costs nothing and models drop the tag.
-_CODE_FENCE = re.compile(r"```(?!json)[a-zA-Z0-9_+-]*\n(.*?)```", re.DOTALL)
+# Every fenced block in the answer, with its language tag, matched IN
+# ORDER so that opening and closing fences pair.
+#
+# The first version matched ```(?!json) directly and found blocks that
+# were not there: the CLOSING fence of one json block, the prose after
+# it, and the OPENING fence of the next all satisfied the pattern. The
+# prose between two action blocks was then read as a code block and
+# used as a file's contents -- which is to say a model's commentary
+# would have been written to disk. A test caught it.
+#
+# Consuming through the closing fence is what makes that impossible.
+_ANY_FENCE = re.compile(r"```([a-zA-Z0-9_+-]*)\n(.*?)```", re.DOTALL)
 _FENCED = re.compile(r"```(?:json)?\s*([\[{].*?[\]}])\s*```", re.DOTALL)
 
 _MAX_ACTIONS = 20
@@ -290,6 +301,48 @@ def unsupported_actions(text: str) -> list[str]:
     return names
 
 
+def _collapse_duplicate_writes(invocations: list) -> list:
+    """One path, one write. The one that has contents wins.
+
+    Measured on mistral-7b: asked for hello_world.py it proposed the file
+    TWICE in one answer -- an empty create, then a write with the script
+    in it. Two writes to one path in a single turn cannot both be meant,
+    and keeping both makes the outcome depend on ordering while showing
+    the user a list with the same file in it twice.
+
+    Prefers content over emptiness rather than simply taking the last:
+    the intent that carries a file's text is unambiguously the real one,
+    whichever order the model happened to write them in.
+    """
+    kept: list = []
+    by_path: dict = {}
+
+    for invocation in invocations:
+        if invocation.tool_name != "edit_file":
+            kept.append(invocation)
+            continue
+
+        path = str(invocation.args.get("path") or "")
+        previous = by_path.get(path)
+
+        if previous is None:
+            by_path[path] = invocation
+            kept.append(invocation)
+            continue
+
+        has_content = bool(str(invocation.args.get("content") or "").strip())
+        had_content = bool(str(previous.args.get("content") or "").strip())
+
+        if has_content and not had_content:
+            kept[kept.index(previous)] = invocation
+            by_path[path] = invocation
+            logger.info("collapsed a duplicate write to %s onto the one with contents", path)
+        else:
+            logger.info("dropped a duplicate write to %s", path)
+
+    return kept
+
+
 def parse_actions(text: str) -> list[ToolInvocation]:
     """The actions a model's answer asked for, in the order it wrote them.
 
@@ -302,7 +355,13 @@ def parse_actions(text: str) -> list[ToolInvocation]:
     # one block of it. Used only to fill a create whose content the model
     # left out -- see _invocation.
     source = str(text or "")
-    code_blocks = [b for b in _CODE_FENCE.findall(source) if b.strip()]
+    code_blocks = [
+        body for language, body in _ANY_FENCE.findall(source)
+        if language.lower() != "json" and body.strip()
+        # A block with no language tag holding JSON is an action block
+        # the model did not label. It is not the file's contents.
+        and not body.strip().startswith(("{", "["))
+    ]
     only_code = code_blocks[0] if len(code_blocks) == 1 else None
 
     for block in _FENCED.findall(source):
@@ -325,6 +384,8 @@ def parse_actions(text: str) -> list[ToolInvocation]:
             invocation = _invocation(candidate, len(invocations) + 1, only_code)
             if invocation is not None:
                 invocations.append(invocation)
+
+    invocations = _collapse_duplicate_writes(invocations)
 
     if invocations:
         logger.info("parsed %d action(s): %s",

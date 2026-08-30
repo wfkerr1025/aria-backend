@@ -507,3 +507,116 @@ def test_a_create_with_content_is_not_reported_as_empty(tmp_path, monkeypatch):
         "yes, do it")
 
     assert not any("created empty" in note for note in report["notes"])
+
+
+# ======================================================
+# One path, one write
+#
+# Measured on mistral-7b: asked for hello_world.py it proposed the file
+# TWICE in one answer -- an empty create, then a write with the script in
+# it. Two writes to one path in a single turn cannot both be meant, and
+# keeping both makes the outcome depend on ordering while showing the
+# user the same file twice in the plan.
+# ======================================================
+def test_an_empty_create_collapses_onto_the_write_with_contents():
+    import json
+
+    text = (block(json.dumps({"tool": "create_file", "path": "hello_world.py"}))
+            + "\n"
+            + block(json.dumps({"tool": "edit_file", "path": "hello_world.py",
+                                "content": "print('hi')\n"})))
+
+    parsed = ap.parse_actions(text)
+
+    assert len(parsed) == 1
+    assert parsed[0].args["content"] == "print('hi')\n"
+
+
+def test_order_does_not_decide_which_survives():
+    import json
+
+    # Contents win whichever way round the model wrote them. Taking
+    # simply the last would make the answer's word order decide what
+    # lands on disk.
+    text = (block(json.dumps({"tool": "edit_file", "path": "a.py",
+                              "content": "print(1)"}))
+            + "\n" + block(json.dumps({"tool": "create_file", "path": "a.py"})))
+
+    parsed = ap.parse_actions(text)
+
+    assert len(parsed) == 1
+    assert parsed[0].args["content"] == "print(1)"
+
+
+def test_writes_to_different_paths_are_both_kept():
+    import json
+
+    text = (block(json.dumps({"tool": "edit_file", "path": "a.py", "content": "x"}))
+            + "\n" + block(json.dumps({"tool": "edit_file", "path": "b.py", "content": "y"})))
+
+    assert len(ap.parse_actions(text)) == 2
+
+
+def test_a_delete_and_a_write_of_the_same_path_are_both_kept():
+    import json
+
+    # Not duplicates: "remove it and put this there instead" is a real
+    # sequence, and fs_plan validates it against the projected tree.
+    text = (block(json.dumps({"tool": "delete_file", "path": "a.py"}))
+            + "\n" + block(json.dumps({"tool": "edit_file", "path": "a.py", "content": "x"})))
+
+    parsed = ap.parse_actions(text)
+
+    assert [p.tool_name for p in parsed] == ["delete_file", "edit_file"]
+
+
+def test_two_empty_creates_of_one_path_are_still_one():
+    import json
+
+    text = (block(json.dumps({"tool": "create_file", "path": "a.py"}))
+            + "\n" + block(json.dumps({"tool": "create_file", "path": "a.py"})))
+
+    assert len(ap.parse_actions(text)) == 1
+
+
+def test_prose_between_two_action_blocks_is_never_used_as_file_contents():
+    import json
+
+    # The bug this guards. The first fence pattern matched ```(?!json)
+    # directly, so the CLOSING fence of one action block, the prose after
+    # it, and the OPENING fence of the next all satisfied it. That prose
+    # was then read as a code block and used as a file's contents --
+    # a model's commentary written to disk.
+    text = (block(json.dumps({"tool": "delete_file", "path": "old.py"}))
+            + "\nAnd then I will add the new one.\n\n"
+            + block(json.dumps({"tool": "create_file", "path": "new.py"})))
+
+    parsed = ap.parse_actions(text)
+    created = [p for p in parsed if p.tool_name == "edit_file"]
+
+    assert created, "the create action was lost"
+    assert created[0].args["content"] == ""
+
+
+def test_an_unlabelled_json_fence_is_not_file_contents():
+    import json
+
+    # A model that writes ``` instead of ```json has still written an
+    # action, not a file.
+    text = ("```\n" + json.dumps({"tool": "run_tests"}) + "\n```\n\n"
+            + block(json.dumps({"tool": "create_file", "path": "a.py"})))
+
+    created = [p for p in ap.parse_actions(text) if p.tool_name == "edit_file"]
+
+    assert created[0].args["content"] == ""
+
+
+def test_a_real_code_fence_beside_one_action_is_still_used():
+    import json
+
+    text = ("Here is the script:\n\n```python\nprint('hi')\n```\n\n"
+            + block(json.dumps({"tool": "create_file", "path": "a.py"})))
+
+    created = [p for p in ap.parse_actions(text) if p.tool_name == "edit_file"]
+
+    assert created[0].args["content"] == "print('hi')\n"

@@ -43,6 +43,15 @@ __all__ = ["action_tool_brief"]
 # every line costs context on a 4k-window model -- and a long brief is
 # also a long thing for a 7B to half-follow.
 #
+# The example's path and language are load-bearing, which is not
+# obvious and was measured twice. With the example written as
+# hello_world.py, a user asking for hello_world.py got an action with no
+# content at all -- the model appeared to avoid reproducing the example
+# it had just been shown. Changing the path fixed that and the model
+# then wrote a MARKDOWN-shaped comment into a .py, because the example
+# had become a .md. It is now a small Python file with real code in it,
+# under a name nobody asks for.
+#
 # Prescriptive about the SHAPE because the first version was not, and
 # mistral-7b invented its own: given one example it replied with
 # {"create_folder": ".", "create_file": {...}} -- no "tool" key, and a
@@ -56,7 +65,7 @@ block. Every block MUST have a "tool" key naming one of the actions
 below, with that action's arguments beside it:
 
 ```json
-{"tool": "edit_file", "path": "hello_world.py", "content": "print(\\"Hello World\\")\n"}
+{"tool": "edit_file", "path": "src/greet.py", "content": "def greet(name):\n    print(f\\"Hi {name}\\")\n"}
 ```
 
 There is no create_file. A file is created by writing it with edit_file:

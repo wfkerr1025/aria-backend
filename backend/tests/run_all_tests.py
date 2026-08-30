@@ -74,6 +74,7 @@ PYTEST_TESTS = [
     "test_file_tools_staging_and_consent.py",
     "test_websocket_supervision_buffering.py",
     "test_routing_corpus.py",
+    "test_action_render.py",
     "test_gate_and_pins.py",
     "test_directory_query_behavior.py",
     "test_add_workspace_ipc.py",

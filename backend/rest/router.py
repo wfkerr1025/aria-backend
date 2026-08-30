@@ -96,6 +96,7 @@ from backend.core.conversation_manager import (
 from backend.core.answer_stream import AnswerStream
 from backend.core import turn_status
 from backend.chat import supervisor_layer
+from backend.core import action_render
 from backend.config import model_roles
 from backend.core.turn_orchestrator import orchestrate_turn
 from backend.core.turn_types import (
@@ -949,6 +950,11 @@ async def post_chat(payload: ChatRequest) -> Dict[str, Any]:
                 "conversation_id": turn["conversation_id"],
             })
         reply = supervised.text
+
+    # Same rendering the WebSocket path applies: the action block is
+    # machine syntax and the reader gets a sentence. REST callers parse
+    # actions from their own copy of the reply, so this is display only.
+    reply = action_render.render_actions_for_reading(reply)
 
     unified_log("rest", "INFO", "Outgoing chat_response", {
         "model_id": turn["model_id"], "reply_len": len(reply),

@@ -13,6 +13,7 @@ from backend.core.local_inference_engine import InferenceRequest, InferenceMessa
 from backend.core.answer_stream import AnswerStream
 from backend.core import turn_status
 from backend.chat import supervisor_layer
+from backend.core import action_render
 
 # Hold every token until the whole reply exists, supervise it, then send
 # it as one piece.
@@ -951,14 +952,16 @@ class WebSocketHandler:
         try:
             await loop.run_in_executor(None, self.streamer.stream, request, send_packet_sync)
 
-            answer_text = "".join(accumulated_tokens)
+            # The RAW answer drives the actions, and a rendered copy is
+            # what the user reads. They must not be the same string:
+            # rendering replaces the action block with a sentence, and
+            # parsing that would take the action away from the executor.
+            raw_answer = "".join(accumulated_tokens)
 
             if BUFFER_FOR_SUPERVISION:
-                answer_text = await self._deliver_supervised(
-                    answer_text, request.model_id, answer,
-                )
+                await self._deliver_supervised(raw_answer, request.model_id, answer)
 
-            await self._run_answer_actions(self._supervise(answer_text, request.model_id))
+            await self._run_answer_actions(self._supervise(raw_answer, request.model_id))
         except Exception as e:
             # streaming_engine.stream() catches its own errors internally
             # and emits a stream_error packet instead of raising, so this
@@ -1012,6 +1015,13 @@ class WebSocketHandler:
         except Exception:
             logger.exception("supervision failed; sending the unsupervised answer")
             text = answer_text
+
+        # A proposed action is described, not printed. The model is asked
+        # to explain its own block and sometimes does; relying on that is
+        # the same mistake as relying on it to spell the tool name right.
+        # Measured: the entire reply on screen was the json block and
+        # nothing else.
+        text = action_render.render_actions_for_reading(text)
 
         # The same filter the unbuffered path applies token by token. One
         # pass over the finished text is equivalent, which is what the
