@@ -174,7 +174,8 @@ def _describe(invocation, created=()) -> str:
 def render_actions_for_reading(answer_text: str, staged: bool = False,
                                expected_action: bool = False,
                                created=(), problems=None, failed=None,
-                               new_folders=(), relocated=None) -> str:
+                               new_folders=(), relocated=None,
+                               verification=None) -> str:
     """The answer as a person should read it, with the blocks described.
 
     Returns the text unchanged when there are no actions in it, which is
@@ -232,7 +233,16 @@ def render_actions_for_reading(answer_text: str, staged: bool = False,
         # Three states, and the difference matters to whoever is reading.
         # A file that now exists is reported in the past tense; one
         # waiting for a commit is not; one waiting for a yes is neither.
-        if refused and not made:
+        # A change that broke the tests was written and then taken back
+        # out. "Here is what I would do" is wrong -- she did it -- and so
+        # is "Staged", which reads like an ordinary proposal waiting on a
+        # yes. It is a proposal that has already been tried and failed,
+        # and the verification line underneath says how.
+        harmed = verification is not None and verification.harmed
+
+        if harmed:
+            heading = "I tried that and took it back out:"
+        elif refused and not made:
             heading = "I could not do that:"
         elif made:
             heading = "Done:"
@@ -253,7 +263,10 @@ def render_actions_for_reading(answer_text: str, staged: bool = False,
             if str(invocation.args.get("path") or "") not in made
             and str(invocation.args.get("path") or "") not in refused
         ]
-        if still_waiting:
+        # Not when it was reverted. Inviting a "yes, do it" for a change
+        # that has just been measured breaking the suite is asking the
+        # user to approve something ARIA already knows the answer to.
+        if still_waiting and not harmed:
             parts.append(_ALREADY_STAGED if staged else _HOW_TO_CONFIRM)
 
         # A file that does not parse is named here, not left in a log. It
@@ -268,6 +281,16 @@ def render_actions_for_reading(answer_text: str, staged: bool = False,
             named = ", ".join(f"`{name}/`" for name in folders)
             verb = "This added" if made else "This will add"
             parts.append(f"{verb} the folder{'' if len(folders) == 1 else 's'} {named}.")
+
+        # What the tests said. It goes in whether they passed or failed:
+        # "I ran them and they pass" is the sentence that makes "Done"
+        # mean something, and silence on a green run would make the red
+        # one look like a new kind of event rather than the same check
+        # reporting a different answer.
+        if verification is not None:
+            said = verification.describe()
+            if said:
+                parts.append(("[!] " + said) if verification.harmed else said)
 
         for message in (problems or {}).values():
             parts.append(f"[!] {message}")

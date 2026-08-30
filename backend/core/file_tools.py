@@ -270,6 +270,80 @@ def _test_command() -> list[str]:
     return list(DEFAULT_TEST_COMMAND)
 
 
+def run_test_files(paths, timeout: int | None = None) -> dict:
+    """Run the configured test command over specific test files.
+
+    run_tests takes ONE scope and appends it as a single argument, which
+    is right for "narrow this to a folder" and useless for "run these
+    nine files": pytest would receive one argument containing spaces and
+    look for a path of that name.
+
+    The same safety properties hold and for the same reasons. There is no
+    shell. The command comes from configuration, never from the caller.
+    Each path is resolved inside the workspace and must already exist, so
+    a caller cannot turn an argument into an option -- "-x" is not a file
+    -- and cannot reach outside the project.
+
+    Not registered as a tool. Selecting which suites to run is ARIA
+    checking her own work; letting a model choose the argument list would
+    hand it the one part of this that is not validated by construction.
+    """
+    root = workspace_root()
+
+    selected = []
+    for path in paths or []:
+        resolved = resolve_in_workspace(str(path), root=root)
+        if not resolved.is_file():
+            raise WorkspaceError(f"Not a test file: {path!r}")
+        selected.append(resolved.relative_to(root).as_posix())
+
+    if not selected:
+        raise WorkspaceError("No test files were selected")
+
+    base = _test_command()
+
+    # Checking that a change does no harm must not itself be a change.
+    # Measured: a verification run left .pytest_cache/ and __pycache__/
+    # in the user's project -- ARIA introducing files nobody asked for,
+    # during the step whose whole purpose is leaving the project alone.
+    #
+    # Only added when the configured command is actually pytest, since a
+    # different runner would reject the flag and the run would fail for a
+    # reason that has nothing to do with the tests.
+    if any("pytest" in str(part) for part in base):
+        base = [*base, "-p", "no:cacheprovider"]
+
+    command = [*base, *selected]
+
+    environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=timeout or _TEST_TIMEOUT_SECONDS,
+            shell=False,
+            env=environment,
+        )
+    except FileNotFoundError as error:
+        raise WorkspaceError(f"Test command not found: {command[0]}") from error
+    except subprocess.TimeoutExpired as error:
+        raise WorkspaceError(
+            f"Tests timed out after {timeout or _TEST_TIMEOUT_SECONDS}s"
+        ) from error
+
+    output = (completed.stdout or "") + (completed.stderr or "")
+    return {
+        "command": " ".join(command),
+        "files": selected,
+        "exit_code": completed.returncode,
+        "passed": completed.returncode == 0,
+        "output": output[-MAX_READ_BYTES:],
+    }
+
+
 def run_tests(scope: str = "") -> dict:
     """Run the configured test command, optionally narrowed to `scope`.
 

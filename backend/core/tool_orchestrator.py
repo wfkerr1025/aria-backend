@@ -652,7 +652,8 @@ def _paths_that_do_not_exist(actions) -> set:
     return missing
 
 
-def run_answer_actions(answer_text: str, user_text: str) -> dict | None:
+def run_answer_actions(answer_text: str, user_text: str,
+                       on_progress=None) -> dict | None:
     """Parse the actions in an answer and run them for one turn.
 
     The seam a transport calls, kept here so wiring it in is one call
@@ -754,13 +755,38 @@ def run_answer_actions(answer_text: str, user_text: str) -> dict | None:
     problems = _content_problems(actions)
 
     created: list[str] = []
+    verification = None
     if live and AUTO_COMMIT_NEW_FILES:
         additions = [
             name for name in ghost_workspace.staged_files()
             if name in new_paths and name not in problems
         ]
         if additions:
-            created = ghost_workspace.commit_additions(additions)["created"]
+            # Parsing is not the same question as "does this break
+            # anything". A file can be perfectly well-formed and still
+            # take the project from green to red -- measured here, when a
+            # new test file that imported nothing broke a guard asserting
+            # every suite is registered with the runner.
+            #
+            # So the tests that bear on this change run before and after
+            # it, and only NEW failures are laid at its door. If it broke
+            # something the file comes back out and stays staged: the
+            # shortcut is withdrawn, the work is not.
+            from backend.core import change_verification
+
+            try:
+                created, verification = change_verification.verify_new_files(
+                    additions,
+                    lambda names: ghost_workspace.commit_additions(names)["created"],
+                    file_tools.workspace_root(),
+                    on_progress=on_progress,
+                )
+            except Exception:
+                # A fault in the checker must not cost the user their
+                # file. It costs them the check, and the report says so.
+                logger.exception("verification failed; creating the file unchecked")
+                created = ghost_workspace.commit_additions(additions)["created"]
+                verification = None
 
     return {
         "actions": [
@@ -782,6 +808,7 @@ def run_answer_actions(answer_text: str, user_text: str) -> dict | None:
         "unsupported": unsupported,
         "new_folders": list(context.new_folders),
         "relocated": relocated,
+        "verification": verification,
         "notes": list(context.errors) + [
             f"{message} It is staged rather than written, so you can read it "
             f"before it reaches the project."

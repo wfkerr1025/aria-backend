@@ -1196,6 +1196,7 @@ class WebSocketHandler:
                 failed=_failed_paths(report),
                 new_folders=(report or {}).get("new_folders") or (),
                 relocated=(report or {}).get("relocated") or {},
+                verification=(report or {}).get("verification"),
             )
         except Exception:
             logger.exception("could not build the revised answer; the streamed text stands")
@@ -1361,9 +1362,25 @@ class WebSocketHandler:
         worth reporting, and is not worth turning a delivered answer into
         an error.
         """
+        loop = asyncio.get_running_loop()
+
+        def report_progress(message: str) -> None:
+            """Called from the executor thread, delivered on the loop.
+
+            Verification is the longest silence in a file turn -- sixteen
+            seconds on this project -- and a blank screen for that long
+            reads as a hang. The packet cannot be sent from here directly
+            because this runs off the event loop, so it is handed back to
+            it.
+            """
+            asyncio.run_coroutine_threadsafe(self._emit_progress(message), loop)
+
         try:
-            report = await asyncio.get_running_loop().run_in_executor(
-                None, run_answer_actions, answer_text, self._turn_user_text,
+            report = await loop.run_in_executor(
+                None,
+                lambda: run_answer_actions(
+                    answer_text, self._turn_user_text,
+                    on_progress=report_progress),
             )
         except Exception:
             logger.exception("answer actions failed; the answer stands")

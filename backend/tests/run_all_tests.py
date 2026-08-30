@@ -78,6 +78,7 @@ PYTEST_TESTS = [
     "test_action_stream_filter.py",
     "test_content_check.py",
     "test_new_folders_and_honest_failures.py",
+    "test_change_verification.py",
     "test_gate_and_pins.py",
     "test_directory_query_behavior.py",
     "test_add_workspace_ipc.py",
