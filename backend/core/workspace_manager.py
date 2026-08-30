@@ -389,10 +389,58 @@ def get_effective_file(path: str, workspace_id: str) -> Path:
     return ghost_workspace.get_effective_file(path, get_workspace(workspace_id).root)
 
 
-def commit_workspace(workspace_id: str, user_text: str, files=None) -> dict:
+def commit_workspace(workspace_id: str, user_text: str, files=None,
+                     on_progress=None) -> dict:
+    """Commit this workspace, and check that doing so broke nothing.
+
+    Commit is the moment a staged EDIT reaches the project -- the
+    counterpart of the auto-commit that a new file takes. A creation is
+    verified there; everything else is verified here, by the same rule
+    and with the same consequence: if the change takes the project from
+    green to red it is undone, and the reply says which tests went red.
+
+    The check is added around the commit rather than inside it. What
+    "commit" means is ghost_workspace's business; whether the result
+    stands is this one's, and keeping them apart means a fault in the
+    checker cannot corrupt a commit.
+    """
+    from backend.core import fs_plan
+
     info = get_workspace(workspace_id)
     info.last_used = time.time()
-    return ghost_workspace.commit_changes(user_text, files=files, root=info.root)
+
+    names, _unknown = ghost_workspace._selected(files, info.root)
+    operations = fs_plan.pending_operations(info.root) if files is None else []
+
+    def apply_commit():
+        return ghost_workspace.commit_changes(user_text, files=files, root=info.root)
+
+    try:
+        from backend.core import change_verification
+
+        result, verification = change_verification.verify_commit(
+            names, operations, apply_commit, info.root, on_progress=on_progress)
+    except Exception:
+        # A fault in the checker costs the check, never the commit. The
+        # user asked for their work to land; a broken verifier is not a
+        # reason to refuse them.
+        logger.exception("commit verification failed; committing unchecked")
+        return apply_commit()
+
+    if verification is not None:
+        result = dict(result or {})
+        result["verification"] = {
+            "ran": verification.ran,
+            "passed": verification.passed,
+            "new_failures": verification.new_failures,
+            "pre_existing": verification.pre_existing,
+            "suites": len(verification.suites),
+            "whole_suite": verification.whole_suite,
+            "seconds": round(verification.seconds, 1),
+            "skipped_because": verification.skipped_because,
+            "message": verification.describe(),
+        }
+    return result
 
 
 def discard_workspace(workspace_id: str, user_text: str, files=None) -> dict:

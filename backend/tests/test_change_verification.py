@@ -301,3 +301,156 @@ def test_a_progress_callback_that_throws_does_not_lose_the_file(project):
 
     assert report["created"] == ["NOTES.md"]
     assert (project / "NOTES.md").exists()
+
+
+# ======================================================
+# Commit: the other place a change reaches the project
+# ======================================================
+#
+# A creation is verified where it is auto-committed. Everything else --
+# an edit to an existing file, a delete, a move -- reaches the project
+# at commit, and is verified there by the same rule.
+#
+# The undo is what differs. A creation is undone by deleting it. An
+# overwrite is undone by putting the previous bytes back, which nothing
+# kept before this: ghost_workspace's snapshots hold the previous STAGED
+# version and explicitly touch nothing in the project. And a delete can
+# only be undone because fs_plan now archives the file first.
+
+def workspace_for(project):
+    from backend.core import workspace_manager
+
+    return workspace_manager.add_workspace(str(project), "case").id
+
+
+def commit(project, said=None):
+    from backend.core import workspace_manager
+
+    return workspace_manager.commit_workspace(
+        workspace_for(project), "yes, commit it",
+        on_progress=(said.append if said is not None else None))
+
+
+def stage_edit(path, body):
+    import pathlib
+
+    staged = ghost.stage_path(path)
+    pathlib.Path(staged).write_text(body, encoding="utf-8", newline="")
+
+
+def test_an_edit_that_breaks_the_tests_is_undone(project):
+    """The case the user named: "when I start having her editing files"."""
+    original = (project / "greet.py").read_bytes()
+    stage_edit("greet.py", "def hello():\n    return 'BROKEN'\n")
+
+    report = commit(project)
+
+    assert report["status"] == "undone"
+    # Byte-for-byte, not merely "looks right".
+    assert (project / "greet.py").read_bytes() == original
+    assert report["verification"]["new_failures"] == [
+        "tests/test_greet.py::test_hello"]
+
+
+def test_an_edit_that_breaks_nothing_is_committed(project):
+    stage_edit("greet.py", "def hello():\n    # tidier\n    return 'hi'\n")
+
+    report = commit(project)
+
+    assert report["status"] == "committed"
+    assert "# tidier" in (project / "greet.py").read_text()
+    assert report["verification"]["passed"] is True
+
+
+def test_a_delete_that_breaks_the_tests_is_undone(project):
+    """The most destructive operation, and the one that must be reversible.
+
+    Deleting greet.py stops test_greet.py IMPORTING, which pytest reports
+    as a collection error rather than a tidy failure -- so this also
+    covers the run whose exit code is not 1.
+    """
+    from backend.core import fs_plan
+
+    original = (project / "greet.py").read_bytes()
+    fs_plan.stage_operation(fs_plan.OP_DELETE, "greet.py", root=project)
+
+    report = commit(project)
+
+    assert report["status"] == "undone"
+    assert (project / "greet.py").read_bytes() == original
+    assert report["verification"]["new_failures"] == ["tests/test_greet.py"]
+
+
+def test_a_collection_error_counts_as_harm(project):
+    """Evidence of harm needs a finding; evidence of safety needs a clean run.
+
+    Requiring a tidy exit code let the committed delete through
+    unverified, because a suite that cannot import exits 2, not 1.
+    """
+    from backend.core import fs_plan
+
+    fs_plan.stage_operation(fs_plan.OP_DELETE, "greet.py", root=project)
+    commit(project)
+
+    # And the asymmetry the other way: a run that finds nothing but does
+    # not finish cleanly is not a pass.
+    assert cv._run(["tests/does_not_exist.py"], False, project) is None
+
+
+def test_the_reversed_delete_is_reported_as_no_longer_staged(project):
+    """It was cleared from the plan when it ran. Saying "it is staged"
+    would send the user looking for something that is not there."""
+    from backend.core import fs_plan
+
+    fs_plan.stage_operation(fs_plan.OP_DELETE, "greet.py", root=project)
+    report = commit(project)
+
+    message = report["verification"]["message"]
+    assert "put your project back" in message
+    assert "ask for it again" in message
+
+
+def test_the_user_is_told_while_a_commit_is_being_checked(project):
+    said = []
+    stage_edit("greet.py", "def hello():\n    return 'hi'  # same\n")
+    commit(project, said=said)
+
+    assert any("does no harm" in line or "full test suite" in line for line in said)
+
+
+def test_a_broken_checker_still_commits(project):
+    """The user asked for their work to land. A broken verifier is not a
+    reason to refuse them."""
+    import backend.core.change_verification as module
+    from unittest import mock
+
+    stage_edit("greet.py", "def hello():\n    return 'hi'  # fine\n")
+    with mock.patch.object(module, "verify_commit", side_effect=RuntimeError("boom")):
+        report = commit(project)
+
+    assert report["status"] == "committed"
+    assert "# fine" in (project / "greet.py").read_text()
+
+
+def test_a_deleted_file_is_archived_before_it_goes(project):
+    """Without this there is nothing to undo a delete WITH."""
+    from backend.core import fs_plan
+
+    original = (project / "greet.py").read_bytes()
+    fs_plan.stage_operation(fs_plan.OP_DELETE, "greet.py", root=project)
+    fs_plan.apply_operations(project)
+
+    assert not (project / "greet.py").exists()
+    assert (fs_plan.archive_root(project) / "greet.py").read_bytes() == original
+    assert fs_plan.restore_archived("greet.py", project) is True
+    assert (project / "greet.py").read_bytes() == original
+
+
+def test_the_archive_is_never_mistaken_for_staged_work(project):
+    """It lives in ARIA's scratch; committing it back would be absurd."""
+    from backend.core import fs_plan
+
+    fs_plan.stage_operation(fs_plan.OP_DELETE, "greet.py", root=project)
+    fs_plan.apply_operations(project)
+
+    assert ghost.staged_files() == []

@@ -459,8 +459,23 @@ function describeReport(report) {
          + "words, and a negation cancels it.";
   }
   if (report.status === "empty") return "Nothing to do.";
+
+  // A commit that was undone is not a commit. Falling through to the
+  // count below would report "undone: 1 file" -- which reads as though
+  // the file landed, and the whole point is that it did not.
+  const check = report.verification || null;
+  if (report.status === "undone") {
+    return (check && check.message)
+      ? `Undone. ${check.message}`
+      : "Undone: the tests went red, so your project was put back as it was.";
+  }
+
   const files = (report.files || []).length;
-  return `${report.status}: ${files} file${files === 1 ? "" : "s"}.`;
+  const summary = `${report.status}: ${files} file${files === 1 ? "" : "s"}.`;
+
+  // Say that the tests ran, and say when they did not. Silence here
+  // would let "committed" imply a check that never happened.
+  return check && check.message ? `${summary} ${check.message}` : summary;
 }
 
 function when(seconds) {
@@ -475,5 +490,11 @@ function esc(value) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   })[c]);
 }
+
+// Exported so its behaviour can be tested by running it rather than by
+// grepping its source. What a commit report SAYS is the whole product of
+// the verification work behind it; a test that only checks the file
+// contains a string would pass on a function that never runs.
+export { describeReport };
 
 export default Workspaces;

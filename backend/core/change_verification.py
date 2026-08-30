@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -74,6 +75,7 @@ __all__ = [
     "guard_suites",
     "needs_the_whole_suite",
     "select_suites",
+    "verify_commit",
     "verify_new_files",
 ]
 
@@ -135,6 +137,14 @@ class Verification:
     # "they pass" would be untrue and "this broke them" would be unfair.
     pre_existing: int = 0
     seconds: float = 0.0
+    # What became of the work when a change was undone. It differs by
+    # caller and the difference is not cosmetic: a reverted new file is
+    # still staged and can be committed deliberately, while a reverted
+    # DELETE has already been cleared from the plan and has to be asked
+    # for again. Telling the user "it is staged" in the second case
+    # would send them to look for something that is not there.
+    work_note: str = ""
+
     # Set when the check could not be completed -- no tests, a missing
     # runner, a timeout. Not a pass and not a failure.
     skipped_because: str | None = None
@@ -159,9 +169,9 @@ class Verification:
             listed = ", ".join(f"`{name}`" for name in self.new_failures[:3])
             more = (f", and {len(self.new_failures) - 3} more"
                     if len(self.new_failures) > 3 else "")
+            note = f" {self.work_note}" if self.work_note else ""
             return (f"I ran {self._scope()} and this change broke {listed}{more}. "
-                    f"I took it back out of your project -- it is staged, so "
-                    f"nothing is lost.")
+                    f"I put your project back the way it was.{note}")
         if self.pre_existing:
             return (f"I ran {self._scope()} ({self.seconds:.0f}s). This change "
                     f"broke nothing -- the {self.pre_existing} failure"
@@ -350,12 +360,28 @@ def _run(suites, whole: bool, root: Path):
         logger.warning("could not run tests: %s", error)
         return None
 
+    found = _failures(result.get("output"))
     code = result.get("exit_code")
-    if code not in (_ALL_PASSED, _TESTS_FAILED):
-        logger.warning("test run did not produce a verdict (exit %s)", code)
-        return None
 
-    return _failures(result.get("output"))
+    # Evidence of HARM needs only a finding. Evidence of SAFETY needs a
+    # clean run. That asymmetry is the whole rule, and it matters most on
+    # the most destructive change there is: deleting a module makes the
+    # suite that imports it fail to COLLECT, which pytest reports as exit
+    # 2 with ERROR lines rather than a tidy exit 1. Measured -- requiring
+    # a tidy exit code let a committed delete through unverified.
+    #
+    # An incomplete run that found something is still decisive: the
+    # failure is real whether or not the run got to the end. An
+    # incomplete run that found nothing proves nothing at all, because
+    # the thing it would have found may be in the part it never reached.
+    if found:
+        return found
+    if code == _ALL_PASSED:
+        return set()
+
+    logger.warning("test run found nothing and did not finish cleanly (exit %s); "
+                   "treating it as no verdict", code)
+    return None
 
 
 def _restore(created, staged_bytes, root: Path) -> None:
@@ -472,4 +498,182 @@ def verify_new_files(additions, commit, root: Path, on_progress=None) -> tuple:
 
     logger.warning("leaving %s out of the project: new failures %s",
                    created, new_failures)
+    verification.work_note = ("The file is staged, so nothing is lost -- you can "
+                              "read it and commit it deliberately.")
     return [], verification
+
+
+def _project_bytes(names, root: Path):
+    """What the project holds right now, for the files about to change.
+
+    This is the only record of the pre-commit content. ghost_workspace's
+    snapshots keep the previous STAGED version and explicitly touch
+    nothing in the project, so they cannot restore an overwrite.
+    """
+    kept = {}
+    for name in names:
+        target = root / name
+        if target.is_file():
+            try:
+                kept[name] = target.read_bytes()
+            except OSError:  # pragma: no cover
+                logger.exception("could not read %s before committing over it", name)
+    return kept
+
+
+def _undo_operation(entry: dict, root: Path) -> None:
+    """Put one applied operation back the way it was."""
+    from backend.core import fs_plan
+
+    kind, path, dest = entry.get("op"), entry.get("path"), entry.get("dest")
+
+    if kind == fs_plan.OP_DELETE:
+        fs_plan.restore_archived(path, root)
+    elif kind in (fs_plan.OP_MOVE, fs_plan.OP_RENAME):
+        moved, original = root / dest, root / path
+        if moved.exists():
+            original.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(moved), str(original))
+    elif kind == fs_plan.OP_COPY:
+        made = root / dest
+        if made.is_dir():
+            shutil.rmtree(made, ignore_errors=True)
+        elif made.is_file():
+            made.unlink(missing_ok=True)
+    elif kind == fs_plan.OP_CREATE_FOLDER:
+        made = root / path
+        try:
+            made.rmdir()  # only if it is still empty; never a recursive delete
+        except OSError:
+            logger.info("leaving %s: it is not empty any more", path)
+
+
+def verify_commit(names, operations, apply_commit, root: Path,
+                  on_progress=None) -> tuple:
+    """Run the tests around a commit, and undo it if the change broke something.
+
+    The same rule as verify_new_files, at the other place a change
+    reaches the project. `apply_commit` performs the commit and returns
+    its result dict; it is passed in so this stays a checker.
+
+    THE DIFFERENCE FROM A NEW FILE
+    ------------------------------
+    A creation is undone by deleting it. An overwrite is undone by
+    putting the previous bytes back, and an operation by reversing it --
+    which is why fs_plan archives a delete before it runs it. Without
+    that archive, "the tests went red so I put it back" would be a
+    promise about a file that no longer existed.
+
+    Returns (result, verification). The result is whatever apply_commit
+    returned, with an "undone" key added when the change was reversed.
+    """
+    verification = Verification()
+    touched = [str(name) for name in (names or [])]
+    for entry in operations or []:
+        for key in ("path", "dest"):
+            if entry.get(key):
+                touched.append(str(entry[key]))
+
+    if not touched:
+        return apply_commit(), verification
+
+    if not _test_files(root):
+        verification.skipped_because = "this project has no test suite I could find"
+        return apply_commit(), verification
+
+    suites = select_suites(touched, root)
+    whole = needs_the_whole_suite(touched, root)
+    verification.suites = suites
+    verification.whole_suite = whole
+
+    if not suites and not whole:
+        verification.skipped_because = "nothing in your suite bears on these files"
+        return apply_commit(), verification
+
+    started = time.monotonic()
+
+    # Everything needed to put the project back exactly as it was.
+    previous = _project_bytes(touched, root)
+    existed = {name for name in touched if (root / name).exists()}
+
+    result = apply_commit()
+
+    _say(on_progress, "checking that this does no harm"
+         if not whole else "running your full test suite")
+    after = _run(suites, whole, root)
+    verification.seconds = time.monotonic() - started
+
+    if after is None:
+        verification.skipped_because = "the test command did not produce a verdict"
+        return result, verification
+
+    if not after:
+        verification.ran = True
+        return result, verification
+
+    # Red. Undo, then find out whether it was this change that did it.
+    _say(on_progress, "something went red; checking whether it was me")
+    undone = _undo_commit(result, previous, existed, root)
+
+    before = _run(suites, whole, root)
+    verification.seconds = time.monotonic() - started
+
+    if before is None:
+        verification.skipped_because = "the baseline run did not complete"
+        return apply_commit(), verification
+
+    new_failures = sorted(after - before)
+    verification.ran = True
+    verification.new_failures = new_failures
+    verification.passed = not new_failures
+
+    if not new_failures:
+        logger.info("those failures predate this commit; not attributing them")
+        verification.pre_existing = len(after)
+        return apply_commit(), verification
+
+    logger.warning("commit undone: new failures %s", new_failures)
+    if operations:
+        # apply_operations clears what it ran, so the plan is gone even
+        # though the effect was reversed.
+        verification.work_note = ("The staged edits are still there; the staged "
+                                  "delete/move is not, so ask for it again if you "
+                                  "still want it.")
+    else:
+        verification.work_note = ("The change is still staged, so you can read it "
+                                  "and commit it deliberately.")
+    result = dict(result or {})
+    result["status"] = "undone"
+    result["undone"] = undone
+    return result, verification
+
+
+def _undo_commit(result, previous, existed, root: Path) -> list:
+    """Put the project back: operations in reverse, then content."""
+    undone = []
+
+    # Reverse order, so a move-then-copy unwinds the way it was applied.
+    for entry in reversed(list((result or {}).get("applied_operations") or [])):
+        _undo_operation(entry, root)
+        undone.append(entry.get("summary") or entry.get("op"))
+
+    for name, content in previous.items():
+        target = root / name
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            undone.append(name)
+        except OSError:  # pragma: no cover
+            logger.exception("could not restore %s", name)
+
+    # A file the commit CREATED has no previous bytes; it goes away.
+    for name in (result or {}).get("files") or []:
+        if name not in previous and name not in existed:
+            (root / name).unlink(missing_ok=True)
+            undone.append(name)
+
+    seen = []
+    for item in undone:
+        if item not in seen:
+            seen.append(item)
+    return seen

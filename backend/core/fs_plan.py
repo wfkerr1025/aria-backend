@@ -399,6 +399,62 @@ def discard_operations(root: Path | None = None) -> int:
 # ======================================================
 # Applying, which happens only from a commit
 # ======================================================
+# Where a deleted file waits, inside ARIA's own scratch rather than the
+# project. Listed in ghost_workspace._BOOKKEEPING so it is never mistaken
+# for staged work and never committed back into the project.
+ARCHIVE_DIRNAME = ".deleted"
+
+
+def archive_root(root: Path | None = None) -> Path:
+    from backend.core import ghost_workspace
+
+    return ghost_workspace.staging_root(root) / ARCHIVE_DIRNAME
+
+
+def _archive(source: Path, relative: str, root: Path | None = None) -> Path | None:
+    """Keep a copy of what a delete is about to destroy."""
+    target = archive_root(root) / relative
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(source, target)
+        else:
+            shutil.copy2(source, target)
+    except Exception:  # pragma: no cover - an archive fault is not a verdict
+        logger.exception("could not archive %s before deleting it", relative)
+        return None
+
+    logger.info("archived %s before deleting it", relative)
+    return target
+
+
+def restore_archived(relative: str, root: Path | None = None) -> bool:
+    """Put an archived delete back where it came from."""
+    source = archive_root(root) / relative
+    if not source.exists():
+        return False
+
+    from backend.core import ghost_workspace
+
+    target = ghost_workspace.project_root(root) / relative
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(source, target)
+        else:
+            shutil.copy2(source, target)
+    except Exception:  # pragma: no cover
+        logger.exception("could not restore %s", relative)
+        return False
+
+    logger.info("restored %s from the archive", relative)
+    return True
+
+
 def apply_operations(root: Path | None = None) -> dict:
     """Run the staged operations against the project. Called by commit.
 
@@ -416,6 +472,7 @@ def apply_operations(root: Path | None = None) -> dict:
         return {"applied": [], "failed": [], "status": "empty"}
 
     applied: list[str] = []
+    performed: list[dict] = []
     failed: list[dict] = []
 
     for operation in operations:
@@ -429,6 +486,14 @@ def apply_operations(root: Path | None = None) -> dict:
 
         try:
             if operation.op == OP_DELETE:
+                # Kept before it goes. A staged delete has two consents
+                # behind it, so this is not second-guessing the user --
+                # it is what makes the delete REVERSIBLE, which is what
+                # lets a verification failure be undone rather than just
+                # reported. Without it, "the tests went red, I put it
+                # back" would be a promise about a file that no longer
+                # existed.
+                _archive(source, operation.path, root)
                 if source.is_dir():
                     shutil.rmtree(source)
                 else:
@@ -445,6 +510,13 @@ def apply_operations(root: Path | None = None) -> dict:
                 else:
                     shutil.copy2(source, target)
             applied.append(operation.describe())
+            # The same event, structured. The description is for a
+            # person; this is what reversing the operation needs, and a
+            # sentence cannot be un-applied.
+            performed.append({
+                "op": operation.op, "path": operation.path,
+                "dest": operation.dest, "summary": operation.describe(),
+            })
         except Exception as error:  # pragma: no cover - filesystem faults
             failed.append({"summary": operation.describe(), "error": str(error)})
             logger.exception("applying %s failed", operation.describe())
@@ -461,6 +533,7 @@ def apply_operations(root: Path | None = None) -> dict:
 
     return {
         "applied": applied,
+        "applied_operations": performed,
         "failed": failed,
         "status": "failed" if failed else "applied",
     }

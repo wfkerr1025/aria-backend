@@ -85,7 +85,7 @@ STAGING_DIRNAME = ".aria_staging"
 # What lives in the staging root and is NOT the user's work. Anything
 # here is skipped by staged_files(), so it is never diffed, never listed
 # as a pending change, and never committed into the project.
-_BOOKKEEPING = frozenset({".snapshots", ".fs_plan.json"})
+_BOOKKEEPING = frozenset({".snapshots", ".fs_plan.json", ".deleted"})
 
 COMMIT_PHRASES: tuple[str, ...] = (
     "commit the changes", "commit changes", "commit it", "commit this",
@@ -618,7 +618,8 @@ def commit_changes(user_text: str, files=None, root: Path | None = None) -> dict
     # move it into src/" is a sequence a user would say out loud and
     # expect to work; the reverse order writes to a path that has just
     # stopped existing.
-    applied = fs_plan.apply_operations(root) if operations else {"applied": [], "failed": []}
+    applied = (fs_plan.apply_operations(root) if operations
+               else {"applied": [], "applied_operations": [], "failed": []})
     failed.extend({"file": entry["summary"], "error": entry["error"]}
                   for entry in applied["failed"])
 
@@ -626,6 +627,9 @@ def commit_changes(user_text: str, files=None, root: Path | None = None) -> dict
         "status": "committed" if not failed else "partial",
         "files": written,
         "operations": applied["applied"],
+        # Structured, for whoever may have to reverse them. See
+        # change_verification._undo_commit.
+        "applied_operations": applied.get("applied_operations") or [],
         "failed": failed,
         "unknown": unknown,
         "diffs": {name: diff_for(name, root) for name in written},
