@@ -229,6 +229,43 @@ SCAFFOLD_PREFIXES: tuple[str, ...] = (
 # repetition detection, which is a different piece of work from a prefix
 # table.
 
+# A role marker written as a banner rather than as a prefix.
+#
+# Reported by the user, who had not typed it and did not recognise it:
+# after finishing an answer about an inventory system, phi-3-mini emitted
+#
+#     == teacher ==
+#
+# and then wrote a fresh seven-point specification for the file, as
+# though starting a new exercise. It reached the screen because every
+# marker in TERMINATORS is a PREFIX -- "user:", "<|assistant|>" -- and
+# this notation is a banner.
+#
+# It is the model, not ARIA. "teacher" appears nowhere in this codebase,
+# nor in the memory database, the embeddings or the document cache; all
+# four were searched. phi-3 is trained on synthetic instructional data
+# and this is its training format leaking through.
+#
+# Narrow on purpose, and deliberately not "any ==word== line". A
+# MediaWiki-style "== Installation ==" heading is ordinary text a user
+# might well want, and this class is not fence-aware -- every rule in it
+# applies inside a ```markdown block as readily as outside one. Only
+# words that name a SPEAKER are listed, because only those mean the
+# model has started someone else's turn.
+_ROLE_BANNER = re.compile(
+    r"^\s*={2,}\s*"
+    r"(teacher|student|instructor|assistant|user|system|human|ai|bot)"
+    r"\s*={2,}\s*$",
+    re.IGNORECASE,
+)
+
+
+def _role_banner(line: str) -> str | None:
+    """The banner text, when a line is a role marker written as one."""
+    match = _ROLE_BANNER.match(str(line or ""))
+    return match.group(0).strip() if match else None
+
+
 _MAX_MARKER = max(len(m) for m in TERMINATORS + SCAFFOLD_PREFIXES)
 
 # How much of a line to hold before deciding it is ordinary text. Long
@@ -589,7 +626,9 @@ class AnswerStream:
         # tests said so immediately.
         undecorated = lowered.lstrip("*_#> 	")
 
-        terminator = _matches(lowered, TERMINATORS) or _matches(undecorated, TERMINATORS)
+        terminator = (_matches(lowered, TERMINATORS)
+                      or _matches(undecorated, TERMINATORS)
+                      or _role_banner(line))
         if terminator:
             self._stopped = True
             self.terminated_at = terminator
