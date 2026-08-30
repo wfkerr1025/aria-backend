@@ -210,19 +210,56 @@ def _is_an_imperative_file_request(user_text: str) -> bool:
     """
     try:
         from backend.chat.model_router import TURN_HEAVY, TURN_TOOLS, classify_turn
-        from backend.core.conversation_manager import INTENT_TASK_REQUEST, detect_intent
-
-        if detect_intent(user_text) != INTENT_TASK_REQUEST:
-            return False
 
         class _Request:
             latest_user_text = user_text
             messages = ()
 
-        return classify_turn(_Request()) in (TURN_TOOLS, TURN_HEAVY)
+        if classify_turn(_Request()) not in (TURN_TOOLS, TURN_HEAVY):
+            return False
+
+        return not _is_a_question(user_text)
     except Exception:  # pragma: no cover - consent must fail closed
         logger.exception("could not classify the request; not granting execution")
         return False
+
+
+# Openers that make a sentence a question rather than an instruction.
+# "What files are in src/" is file work and is not a request to change
+# anything.
+_QUESTION_WORDS = (
+    "what", "which", "how", "why", "where", "who", "when",
+    "is", "are", "was", "were", "does", "do", "did", "should",
+)
+
+# ...except when they are politeness wrapped around an instruction.
+# "Can you create hello_world.py?" is a request by any reading, and a
+# question mark is not a refusal.
+_POLITE_REQUEST = (
+    "can you", "could you", "would you", "will you", "can u",
+    "please", "i need you to", "i want you to", "i'd like you to",
+)
+
+
+def _is_a_question(user_text: str) -> bool:
+    """Whether this asks about something rather than asking for it.
+
+    Decided here rather than by detect_intent's label, because that
+    taxonomy has three separate names for what is plainly an
+    instruction -- "edit existing.py and replace its contents" comes
+    back as `request`, "rewrite existing.py" as `clarification_needed`,
+    and only "update existing.py" as `task_request`. Keying consent on
+    one of those meant two of three plain instructions granted nothing.
+    """
+    text = str(user_text or "").strip().lower()
+    if not text:
+        return True
+
+    if any(marker in text for marker in _POLITE_REQUEST):
+        return False
+
+    first = text.split()[0].strip("',.!?") if text.split() else ""
+    return text.endswith("?") or first in _QUESTION_WORDS
 
 
 # What a model calls a tool when it has not read the list carefully.

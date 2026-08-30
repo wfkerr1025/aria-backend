@@ -61,6 +61,7 @@ __all__ = [
     "snapshot",
     "rollback_staged_changes",
     "discard_changes",
+    "commit_additions",
     "commit_changes",
     "get_all_diffs",
     "get_diff",
@@ -589,6 +590,62 @@ def commit_changes(user_text: str, files=None, root: Path | None = None) -> dict
         "unknown": unknown,
         "diffs": {name: diff_for(name, root) for name in written},
     }
+
+
+def commit_additions(paths, root: Path | None = None) -> dict:
+    """Write staged files into the project, but ONLY ones that are new.
+
+    The two-consent flow exists to protect against losing something:
+    an overwrite loses the old contents, a delete loses the file, a move
+    loses the path. Creating a file that was not there destroys nothing,
+    and there is nothing to undo.
+
+    Measured against the alternative. Creating one hello_world.py took
+    five attempts, a trip to the Control Center and three commit clicks,
+    and the ceremony protected a file that did not exist. That is not
+    safety, it is friction wearing safety's clothes.
+
+    So this exists for additions and refuses everything else. The guard
+    is HERE rather than in the caller: a path that already exists in the
+    project is skipped whatever the caller believed, so there is no
+    argument, ordering or mistake upstream that turns this into an
+    overwrite. Deletes, moves and renames never reach it -- they are
+    operations in the fs_plan journal, and this only copies staged
+    content.
+
+    Consent is the user's request itself, which named the file they
+    wanted. It is not read again here; requests_live_execution has
+    already decided it, and asking twice for a file that does not exist
+    is the friction this removes.
+    """
+    written: list[str] = []
+    skipped: list[str] = []
+    failed: list[dict] = []
+
+    for name in list(paths or []):
+        destination = project_root(root) / name
+        source = staging_root(root) / name
+
+        if destination.exists():
+            # Not an addition. It keeps the staged copy and the diff, and
+            # the user commits it deliberately.
+            skipped.append(name)
+            continue
+        if not source.is_file():
+            skipped.append(name)
+            continue
+
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
+            source.unlink(missing_ok=True)
+            written.append(name)
+            logger.info("created %s", name)
+        except Exception as error:
+            logger.exception("could not create %s", name)
+            failed.append({"file": name, "error": str(error)})
+
+    return {"created": written, "skipped": skipped, "failed": failed}
 
 
 def discard_changes(user_text: str, files=None, root: Path | None = None) -> dict:

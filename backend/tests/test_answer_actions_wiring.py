@@ -58,8 +58,22 @@ def handler(monkeypatch):
 
 
 def run(handler, answer, user_text):
+    """One turn's actions, and the packet the transport sends for them.
+
+    _run_answer_actions returns the report rather than sending it, and
+    the caller sends it AFTER the reply. That ordering is the point: the
+    reply now reports what happened -- "created hello_world.py" -- which
+    it cannot do if the actions have not run yet. This mirrors the two
+    steps _stream_inference performs.
+    """
     handler._turn_user_text = user_text
-    asyncio.run(handler._run_answer_actions(answer))
+
+    async def _go():
+        report = await handler._run_answer_actions(answer)
+        if report is not None:
+            await handler._send({"type": "answer_actions", **report})
+
+    asyncio.run(_go())
     return [p for p in handler.packets if p.get("type") == "answer_actions"]
 
 

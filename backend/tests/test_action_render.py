@@ -159,7 +159,19 @@ def test_the_transport_parses_actions_from_the_raw_answer():
     # block away from the executor: the proposal would vanish from the
     # screen AND nothing would be staged.
     assert "raw_answer" in source
-    assert "_run_answer_actions(self._supervise(raw_answer" in source
+    assert "_supervise(raw_answer" in source
+
+    # And the actions run BEFORE the reply is delivered, so the reply can
+    # say what happened rather than predict it. Rendering first meant
+    # predicting the outcome, and sometimes predicting it wrong.
+    #
+    # Compared on CODE, not on the source text. A comment earlier in the
+    # function names _deliver_supervised, and the first version of this
+    # assertion found that instead -- the same trap that has caught four
+    # other source assertions in this codebase.
+    code = "\n".join(line for line in source.splitlines()
+                     if not line.strip().startswith("#"))
+    assert code.index("_run_answer_actions") < code.index("_deliver_supervised")
 
 
 def test_rendering_a_rendered_answer_changes_nothing():

@@ -424,3 +424,92 @@ def test_every_bookkeeping_name_really_is_bookkeeping():
     # registered here, it becomes a "pending change" and gets committed.
     assert plan.PLAN_FILENAME in ghost_workspace._BOOKKEEPING
     assert ghost_workspace.SNAPSHOT_DIRNAME in ghost_workspace._BOOKKEEPING
+
+
+# ======================================================
+# A new file is created, not queued
+#
+# The two-consent flow protects against LOSING something: an overwrite
+# loses the old contents, a delete loses the file, a move loses the path.
+# Creating a file that was not there destroys nothing.
+#
+# Measured against the alternative: one hello_world.py took five
+# attempts, a trip to the Control Center and three commit clicks, and the
+# ceremony was protecting a file that did not exist.
+# ======================================================
+def test_a_new_file_is_created_immediately(project):
+    report = run_answer_actions(
+        block('{"tool": "edit_file", "path": "hello_world.py", "content": "print(1)"}'),
+        "Create a file hello_world.py in the root directory")
+
+    assert report["created"] == ["hello_world.py"]
+    assert (project / "hello_world.py").read_text(encoding="utf-8") == "print(1)"
+    # And nothing is left waiting for a commit that has no work to do.
+    assert ghost_workspace.staged_files() == []
+
+
+def test_an_overwrite_is_still_staged(project):
+    (project / "existing.py").write_text("original\n", encoding="utf-8", newline="")
+
+    report = run_answer_actions(
+        block('{"tool": "edit_file", "path": "existing.py", "content": "replaced"}'),
+        "update existing.py")
+
+    assert report["created"] == []
+    assert (project / "existing.py").read_text(encoding="utf-8") == "original\n"
+    assert ghost_workspace.staged_files() == ["existing.py"]
+
+
+def test_a_delete_is_still_staged(project):
+    report = run_answer_actions(DELETE, "delete notes.md")
+
+    assert report["created"] == []
+    assert (project / "notes.md").exists()
+    assert len(fs_plan.pending_operations()) == 1
+
+
+@pytest.mark.parametrize("answer", [MOVE, RENAME, FOLDER])
+def test_every_shape_change_is_still_staged(project, answer):
+    # "yes, do it" rather than "do that": consent has to actually be
+    # granted, or this asserts that a dry run staged nothing, which is
+    # true and tests the wrong thing.
+    report = run_answer_actions(answer, "yes, do it")
+
+    assert report["created"] == []
+    assert len(fs_plan.pending_operations()) == 1
+
+
+def test_without_consent_nothing_is_created(project):
+    report = run_answer_actions(
+        block('{"tool": "edit_file", "path": "hello_world.py", "content": "print(1)"}'),
+        "what would that do?")
+
+    assert report["created"] == []
+    assert not (project / "hello_world.py").exists()
+
+
+def test_the_guard_lives_in_the_commit_not_the_caller(project):
+    # A path that already exists is refused whatever the caller believed,
+    # so no ordering or mistake upstream turns this into an overwrite.
+    (project / "existing.py").write_text("original\n", encoding="utf-8", newline="")
+    from backend.core import file_tools
+
+    file_tools.edit_file(ghost_workspace.stage_path("existing.py"),
+                         "replaced\n", confirm=True)
+
+    result = ghost_workspace.commit_additions(["existing.py"])
+
+    assert result["created"] == []
+    assert result["skipped"] == ["existing.py"]
+    assert (project / "existing.py").read_text(encoding="utf-8") == "original\n"
+
+
+def test_a_created_file_leaves_no_staged_copy_behind(project):
+    run_answer_actions(
+        block('{"tool": "edit_file", "path": "fresh.py", "content": "print(1)"}'),
+        "create fresh.py")
+
+    # Otherwise the Control Center shows a pending change for a file that
+    # has already been written.
+    assert ghost_workspace.staged_files() == []
+    assert (project / "fresh.py").exists()

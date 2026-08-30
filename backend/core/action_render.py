@@ -61,6 +61,7 @@ _ALREADY_STAGED = ("Staged in the ghost workspace. Review the diff and commit it
 _SCAFFOLDING = (
     "Here is what I would do:",
     "Staged:",
+    "Done:",
     "- run the tests",
     _HOW_TO_CONFIRM,
     _ALREADY_STAGED,
@@ -81,12 +82,20 @@ _SCAFFOLDING = (
 # module writes names a path in backticks, and "- write the tests first"
 # does not.
 _DESCRIBED_ACTION = re.compile(
-    r"^-\s+(write|create|delete|move|rename|copy)\b[^`]*`", re.IGNORECASE)
+    r"^-\s+(write|created|create|delete|move|rename|copy)\b[^`]*`", re.IGNORECASE)
 
 
-def _describe(invocation) -> str:
+def _describe(invocation, created=()) -> str:
     args = invocation.args or {}
     path = args.get("path", "")
+
+    # Past tense for a file that now exists. A new file is committed as
+    # soon as it is asked for -- it destroys nothing, so there is nothing
+    # for a second confirmation to protect.
+    if invocation.tool_name == "edit_file" and str(path) in set(created or ()):
+        content = str(args.get("content") or "")
+        lines = len(content.splitlines())
+        return f"created `{path}` ({lines} line{'' if lines == 1 else 's'})"
 
     if invocation.tool_name == "edit_file":
         content = str(args.get("content") or "")
@@ -117,7 +126,8 @@ def _describe(invocation) -> str:
 
 
 def render_actions_for_reading(answer_text: str, staged: bool = False,
-                               expected_action: bool = False) -> str:
+                               expected_action: bool = False,
+                               created=()) -> str:
     """The answer as a person should read it, with the blocks described.
 
     Returns the text unchanged when there are no actions in it, which is
@@ -140,16 +150,32 @@ def render_actions_for_reading(answer_text: str, staged: bool = False,
         # describing it.
         without_blocks = strip_action_json(_JSON_FENCE.sub("", text)).strip()
 
-        described = [f"- {_describe(invocation)}" for invocation in invocations]
-        heading = "Staged:" if staged else "Here is what I would do:"
+        made = {str(name) for name in (created or ())}
+        described = [f"- {_describe(invocation, made)}" for invocation in invocations]
+
+        # Three states, and the difference matters to whoever is reading.
+        # A file that now exists is reported in the past tense; one
+        # waiting for a commit is not; one waiting for a yes is neither.
+        if made:
+            heading = "Done:"
+        elif staged:
+            heading = "Staged:"
+        else:
+            heading = "Here is what I would do:"
 
         parts = [without_blocks] if without_blocks else []
         parts.append(heading)
         parts.append("\n".join(described))
-        # Says what happened, not what might. Passing staged=False while
-        # the executor had already staged produced a reply telling the
-        # user to say "yes, do it" about work that was already done.
-        parts.append(_ALREADY_STAGED if staged else _HOW_TO_CONFIRM)
+
+        # Only say how to commit when something is actually waiting.
+        # Telling the user to go and commit a file that already exists is
+        # the same lie as telling them to confirm work already staged.
+        still_waiting = [
+            invocation for invocation in invocations
+            if str(invocation.args.get("path") or "") not in made
+        ]
+        if still_waiting:
+            parts.append(_ALREADY_STAGED if staged else _HOW_TO_CONFIRM)
 
         return "\n\n".join(parts)
     except Exception:  # pragma: no cover - display must not fail a turn

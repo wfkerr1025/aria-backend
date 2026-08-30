@@ -456,6 +456,33 @@ def _report_status(outcome: OrchestrationResult) -> str:
     return STATUS_SUCCESS
 
 
+# Create a new file straight away rather than staging it for a second
+# confirmation. Overwrites, deletes, moves and renames are unaffected --
+# see ghost_workspace.commit_additions, which refuses anything that
+# already exists.
+AUTO_COMMIT_NEW_FILES = True
+
+
+def _paths_that_do_not_exist(actions) -> set:
+    """Targets of edit_file actions that are not in the project yet."""
+    from backend.core import file_tools
+
+    missing = set()
+    for action in actions:
+        if action.tool_name != "edit_file":
+            continue
+        path = str(action.args.get("path") or "")
+        if not path:
+            continue
+        try:
+            if not file_tools.resolve_in_workspace(path).exists():
+                missing.add(path.replace(chr(92), "/"))
+        except Exception:
+            # An unresolvable path is refused later by the tool itself.
+            continue
+    return missing
+
+
 def run_answer_actions(answer_text: str, user_text: str) -> dict | None:
     """Parse the actions in an answer and run them for one turn.
 
@@ -513,8 +540,36 @@ def run_answer_actions(answer_text: str, user_text: str) -> dict | None:
     context = ExecutionContext(dry_run=not live)
     context.allowed_permissions.update(ACTION_PERMISSIONS)
 
+    # Which targets do not exist yet, recorded BEFORE anything runs.
+    # Asking afterwards would be asking about a file the turn had just
+    # staged, and every write would look like an addition.
+    new_paths = _paths_that_do_not_exist(actions)
+
     logger.info("running %d action(s) for this turn, live=%s", len(actions), live)
     outcome = execute_invocations(actions, context)
+
+    # A file that did not exist is created now, not queued behind a
+    # second confirmation in another window.
+    #
+    # The two-consent flow protects against LOSING something -- an
+    # overwrite loses the old contents, a delete loses the file. Creating
+    # a new file destroys nothing, and making the user visit the Control
+    # Center to approve it is friction wearing safety's clothes.
+    # Measured: one hello_world.py took five attempts, a trip to the
+    # workspace page and three commit clicks.
+    #
+    # commit_additions refuses any path that already exists, so this
+    # cannot become an overwrite however the actions were ordered, and
+    # deletes and moves never reach it -- they live in the fs_plan
+    # journal and are applied only by a real commit.
+    created: list[str] = []
+    if live and AUTO_COMMIT_NEW_FILES:
+        additions = [
+            name for name in ghost_workspace.staged_files()
+            if name in new_paths
+        ]
+        if additions:
+            created = ghost_workspace.commit_additions(additions)["created"]
 
     return {
         "actions": [
@@ -531,6 +586,7 @@ def run_answer_actions(answer_text: str, user_text: str) -> dict | None:
         "rollback": list(outcome.rolled_back),
         "status": _report_status(outcome),
         "dry_run": outcome.dry_run,
+        "created": created,
         "unsupported": unsupported,
         "notes": list(context.errors) + [
             # An empty create is legal and is almost never what was

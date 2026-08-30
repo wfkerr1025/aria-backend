@@ -979,10 +979,21 @@ class WebSocketHandler:
             # parsing that would take the action away from the executor.
             raw_answer = "".join(accumulated_tokens)
 
-            if BUFFER_FOR_SUPERVISION:
-                await self._deliver_supervised(raw_answer, request.model_id, answer)
+            # Actions first, THEN the reply. Buffering already means
+            # nothing has been sent, so running them now costs nothing
+            # and lets the message say what happened -- "Created
+            # hello_world.py" rather than "here is what I would do".
+            # Rendering before executing meant predicting the outcome and
+            # sometimes predicting it wrong.
+            report = await self._run_answer_actions(
+                self._supervise(raw_answer, request.model_id))
 
-            await self._run_answer_actions(self._supervise(raw_answer, request.model_id))
+            if BUFFER_FOR_SUPERVISION:
+                await self._deliver_supervised(
+                    raw_answer, request.model_id, answer, report)
+
+            if report is not None:
+                await self._send({"type": "answer_actions", **report})
         except Exception as e:
             # streaming_engine.stream() catches its own errors internally
             # and emits a stream_error packet instead of raising, so this
@@ -999,7 +1010,8 @@ class WebSocketHandler:
     # -----------------------------------------------------
     # Buffered delivery
     # -----------------------------------------------------
-    async def _deliver_supervised(self, answer_text: str, model_id, answer) -> str:
+    async def _deliver_supervised(self, answer_text: str, model_id, answer,
+                                  report: dict | None = None) -> str:
         """Supervise the whole reply, then send it.
 
         This is the trade the buffering makes explicit. Token-by-token
@@ -1055,6 +1067,7 @@ class WebSocketHandler:
             text,
             staged=requests_live_execution(self._turn_user_text),
             expected_action=self._turn_expects_action,
+            created=(report or {}).get("created") or [],
         )
 
         # The same filter the unbuffered path applies token by token. One
@@ -1114,7 +1127,7 @@ class WebSocketHandler:
     # -----------------------------------------------------
     # Actions the answer asked for
     # -----------------------------------------------------
-    async def _run_answer_actions(self, answer_text: str) -> None:
+    async def _run_answer_actions(self, answer_text: str) -> dict | None:
         """Run the actions in a finished answer, and report what happened.
 
         Here, and not earlier, because this is the first point at which
@@ -1147,19 +1160,23 @@ class WebSocketHandler:
             )
         except Exception:
             logger.exception("answer actions failed; the answer stands")
-            return
+            return None
 
         if report is None:
-            return
+            return None
 
-        logger.info("answer actions: status=%s dry_run=%s",
-                    report.get("status"), report.get("dry_run"))
+        logger.info("answer actions: status=%s dry_run=%s created=%s",
+                    report.get("status"), report.get("dry_run"),
+                    report.get("created"))
         unified_log("websocket", "INFO", "Answer actions run", {
             "status": report.get("status"),
             "dry_run": report.get("dry_run"),
+            "created": report.get("created"),
             "conversation_id": self.conversation_id,
         })
-        await self._send({"type": "answer_actions", **report})
+        # Returned rather than sent: the caller delivers the reply first,
+        # so the packet arrives after the message it describes.
+        return report
 
     # -----------------------------------------------------
     # Send packet to frontend
