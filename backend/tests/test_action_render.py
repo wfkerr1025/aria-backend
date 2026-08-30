@@ -363,3 +363,69 @@ def test_the_transport_knows_whether_an_action_was_expected():
 
     assert "_turn_expects_action" in source
     assert "expected_action=" in source
+
+
+# ======================================================
+# Asking permission for something already done
+#
+# Live: "Creating a new file for player inventory. Here's the proposed
+# content: / Please confirm if this meets your requirement." followed by
+# "Done: created player_inventory.cs". The model asks because the brief
+# tells it to; for a new file ARIA has already acted by the time the
+# reply is rendered, and the two together read as a contradiction.
+# ======================================================
+def test_a_confirmation_request_is_dropped_once_the_work_is_done():
+    import json
+
+    answer = ("Creating a new file for player inventory.\n\n"
+              "Please confirm if this meets your requirement.\n\n"
+              + block(json.dumps({"tool": "edit_file", "path": "a.cs",
+                                  "content": "class A {}\n"})))
+
+    out = render(answer, staged=True, created=["a.cs"])
+
+    assert "Please confirm" not in out
+    # The explanation stays. It says what was made, which is worth reading.
+    assert "Creating a new file for player inventory." in out
+    assert "created `a.cs`" in out
+
+
+def test_the_request_is_kept_while_something_is_still_waiting():
+    answer = ("I propose this.\n\nPlease confirm.\n\n"
+              + block('{"tool": "delete_file", "path": "notes.md"}'))
+
+    out = render(answer, staged=True)
+
+    # Nothing has happened yet, so the model asking is not a
+    # contradiction -- it is the truth.
+    assert "Please confirm." in out
+
+
+@pytest.mark.parametrize("line", [
+    "Please confirm if this meets your requirement.",
+    "Confirm whether that is right.",
+    "Let me know if you want changes.",
+    "Shall I add tests too?",
+    "Is this what you wanted?",
+])
+def test_the_shapes_a_model_asks_in(line):
+    import json
+
+    answer = line + "\n\n" + block(json.dumps(
+        {"tool": "edit_file", "path": "a.cs", "content": "class A {}\n"}))
+
+    assert line not in render(answer, staged=True, created=["a.cs"])
+
+
+@pytest.mark.parametrize("line", [
+    "I will confirm the build settings first.",
+    "The tests confirm the fix works.",
+    "This should be enough to get started.",
+])
+def test_prose_that_merely_uses_the_word_survives(line):
+    import json
+
+    answer = line + "\n\n" + block(json.dumps(
+        {"tool": "edit_file", "path": "a.cs", "content": "class A {}\n"}))
+
+    assert line in render(answer, staged=True, created=["a.cs"])

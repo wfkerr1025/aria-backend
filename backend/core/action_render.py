@@ -85,6 +85,31 @@ _DESCRIBED_ACTION = re.compile(
     r"^-\s+(write|created|create|delete|move|rename|copy)\b[^`]*`", re.IGNORECASE)
 
 
+# A request for confirmation, when the thing is already done.
+#
+# The model writes "Please confirm if this meets your requirement"
+# because the brief tells it to ask -- and for a new file ARIA has
+# already created it by the time the reply is rendered. Leaving both in
+# reads as a contradiction: an answer that says Done and then asks
+# permission.
+#
+# Only the ASK is dropped. Everything else the model wrote stays: it
+# explained what it was making, and that is worth reading.
+_ASKS_TO_CONFIRM = re.compile(
+    r"^\s*(please\s+)?(confirm|let me know|tell me)\b.*$|"
+    r"^\s*(shall|should|would|do)\s+(i|you)\b.*\?\s*$|"
+    r"^\s*is (this|that) (what|ok|okay|correct)\b.*$",
+    re.IGNORECASE,
+)
+
+
+def _drop_confirmation_requests(text: str) -> str:
+    """Remove "please confirm" once the work has already happened."""
+    kept = [line for line in str(text or "").splitlines()
+            if not _ASKS_TO_CONFIRM.match(line.strip())]
+    return "\n".join(kept).strip()
+
+
 def _describe(invocation, created=()) -> str:
     args = invocation.args or {}
     path = args.get("path", "")
@@ -151,6 +176,10 @@ def render_actions_for_reading(answer_text: str, staged: bool = False,
         without_blocks = strip_action_json(_JSON_FENCE.sub("", text)).strip()
 
         made = {str(name) for name in (created or ())}
+        if made:
+            # It is already done; asking permission now is noise at best
+            # and a contradiction at worst.
+            without_blocks = _drop_confirmation_requests(without_blocks)
         described = [f"- {_describe(invocation, made)}" for invocation in invocations]
 
         # Three states, and the difference matters to whoever is reading.
