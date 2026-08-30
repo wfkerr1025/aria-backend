@@ -463,6 +463,25 @@ def _report_status(outcome: OrchestrationResult) -> str:
 AUTO_COMMIT_NEW_FILES = True
 
 
+def _content_problems(actions) -> dict:
+    """Paths whose proposed content does not parse, with the reason."""
+    from backend.core.content_check import check_content, describe_problem
+
+    problems: dict[str, str] = {}
+    for action in actions:
+        if action.tool_name != "edit_file":
+            continue
+        path = str(action.args.get("path") or "")
+        if not path:
+            continue
+        result = check_content(path, action.args.get("content") or "")
+        if result.failed:
+            key = path.replace(chr(92), "/")
+            problems[key] = describe_problem(key, result)
+            logger.warning("content check: %s", problems[key])
+    return problems
+
+
 def _paths_that_do_not_exist(actions) -> set:
     """Targets of edit_file actions that are not in the project yet."""
     from backend.core import file_tools
@@ -562,11 +581,25 @@ def run_answer_actions(answer_text: str, user_text: str) -> dict | None:
     # cannot become an overwrite however the actions were ordered, and
     # deletes and moves never reach it -- they live in the fs_plan
     # journal and are applied only by a real commit.
+    # Does what the model wrote parse as what its extension says it is?
+    #
+    # Nothing checked this before. nemo-12b proposed "def open_world:" --
+    # not Python, the parentheses missing -- and it would have gone into
+    # the project as a file that cannot be imported. "ARIA created the
+    # file" and "ARIA created a working file" were the same claim and
+    # only the first was true.
+    #
+    # A failure loses the SHORTCUT, not the work: the file stays staged
+    # with the reason attached, where its diff can be read and committed
+    # deliberately. A model that writes broken code has still done most
+    # of the job, and the checker can be wrong about a dialect.
+    problems = _content_problems(actions)
+
     created: list[str] = []
     if live and AUTO_COMMIT_NEW_FILES:
         additions = [
             name for name in ghost_workspace.staged_files()
-            if name in new_paths
+            if name in new_paths and name not in problems
         ]
         if additions:
             created = ghost_workspace.commit_additions(additions)["created"]
@@ -587,8 +620,13 @@ def run_answer_actions(answer_text: str, user_text: str) -> dict | None:
         "status": _report_status(outcome),
         "dry_run": outcome.dry_run,
         "created": created,
+        "problems": problems,
         "unsupported": unsupported,
         "notes": list(context.errors) + [
+            f"{message} It is staged rather than written, so you can read it "
+            f"before it reaches the project."
+            for message in problems.values()
+        ] + [
             # An empty create is legal and is almost never what was
             # wanted: a model that proposes a file without writing its
             # contents produces a real, committable, useless file. The

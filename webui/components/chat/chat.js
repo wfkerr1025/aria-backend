@@ -569,6 +569,16 @@ const Chat = {
       return;
     }
 
+    if (type === "progress") {
+      this._handleProgress(packet);
+      return;
+    }
+
+    if (type === "message_revised") {
+      this._handleMessageRevised(packet);
+      return;
+    }
+
     if (type === IPC.STREAM_START) {
       this._handleStreamStart(packet);
       return;
@@ -945,6 +955,57 @@ const Chat = {
      stream_error from backend/core/streaming_engine.py)
      ----------------------------------------------------------- */
 
+  /* -----------------------------------------------------------
+     Progress, and the revision at the end of a turn
+     ----------------------------------------------------------- */
+
+  // A live line saying what ARIA is doing: "loading nemo-12b",
+  // "applying changes".
+  //
+  // Its own element, replaced each time, cleared when the stream ends --
+  // NOT part of the message. Progress in the token stream would end up
+  // in the transcript, in the history the next turn reads, and in the
+  // text actions are parsed from.
+  _handleProgress(packet) {
+    const label = String(packet.label || "").trim();
+    if (!label) return;
+
+    if (!this._progressLine) {
+      const line = document.createElement("div");
+      line.className = "aria-progress-line";
+      this.history?.appendChild(line);
+      this._progressLine = line;
+    }
+    this._progressLine.textContent = label + "…";
+    this._maybeScroll("progress");
+  },
+
+  _clearProgress() {
+    this._progressLine?.remove();
+    this._progressLine = null;
+  },
+
+  // Replace the streamed text with the checked text.
+  //
+  // Streaming shows tokens as they arrive and cannot take them back;
+  // this is how the cleanup still applies. It arrives before stream_end,
+  // so the corrected text is what _handleStreamEnd records in the
+  // history the next turn reads.
+  _handleMessageRevised(packet) {
+    const text = String(packet.text || "");
+    if (!text) return;
+
+    if (!this._activeStream) {
+      chatLog("message_revised with no active stream — ignored.");
+      return;
+    }
+
+    chatLog("message_revised: replacing " + this._activeStream.buffer.length +
+            " chars with " + text.length);
+    this._activeStream.buffer = text;
+    this._renderActiveStream();
+  },
+
   // Begin a new incrementally-rendered aria bubble for this requestId.
   _handleStreamStart(packet) {
     chatLog("stream_start received. requestId=" + packet.requestId);
@@ -1004,6 +1065,7 @@ const Chat = {
       this._activeStream = null;
       this._maybeScroll("stream_end");
     }
+    this._clearProgress();
     this.hideTyping();
   },
 

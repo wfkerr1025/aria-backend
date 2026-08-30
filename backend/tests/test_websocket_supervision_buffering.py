@@ -32,6 +32,25 @@ from backend.chat.supervisor_layer import (
 from backend.websocket import handlers
 
 
+def code_of(function) -> str:
+    """A function's CODE, without its docstring or comments.
+
+    Parsed and unparsed rather than filtered by line, because the trap
+    here is not comments alone -- it is the docstring. Five source
+    assertions in this codebase have now matched the sentence explaining
+    what the code must not do; two of them were in this file, where the
+    docstring says "deliberately NOT a stream_token" and the assertion
+    found that instead of the code.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    node = tree.body[0]
+    if (node.body and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)):
+        node.body = node.body[1:]
+    return ast.unparse(node)
+
+
 # ======================================================
 # The two stages exist under the names they were asked for
 # ======================================================
@@ -146,23 +165,132 @@ def test_leakage_inside_a_code_block_is_left_alone():
 # ======================================================
 # The transport buffers
 # ======================================================
-def test_buffering_is_on():
-    assert handlers.BUFFER_FOR_SUPERVISION is True
+def test_buffering_is_off():
+    # It was on, and on a 12B it read as a freeze: 55 seconds of blank
+    # screen for one file, most of it a cold model load with nothing to
+    # show. A supervision pass is not worth a minute of silence.
+    assert handlers.BUFFER_FOR_SUPERVISION is False
 
 
-def test_nothing_is_published_while_the_model_is_generating():
+def test_tokens_are_forwarded_as_they_arrive():
     source = inspect.getsource(handlers.WebSocketHandler._stream_inference)
     code = "\n".join(line for line in source.splitlines()
                      if not line.strip().startswith("#"))
 
-    # Each of the three packet kinds returns early while buffering. If
-    # any one of them still forwarded, the "buffered" claim would be
-    # false for part of the reply -- which is the same as being false.
-    for marker in ('packet.get("type") == "stream_start"',
-                   'packet.get("type") == "stream_token"',
-                   'packet.get("type") == "stream_end"'):
-        assert marker in code
-    assert code.count("if BUFFER_FOR_SUPERVISION") >= 3
+    # The token branch filters through AnswerStream and sends. If it
+    # returned early unconditionally the streaming claim would be false.
+    assert "answer.push(raw)" in code
+    assert "published.append(publishable)" in code
+
+
+def test_the_stream_is_held_open_past_generation():
+    source = inspect.getsource(handlers.WebSocketHandler._stream_inference)
+    code = "\n".join(line for line in source.splitlines()
+                     if not line.strip().startswith("#"))
+
+    # The provider's stream_end must not close the turn: the actions have
+    # not run, so the reply cannot yet say what happened. _finish_stream
+    # sends the revision and then the end.
+    assert "_finish_stream" in code
+    assert code.index("_run_answer_actions") < code.index("_finish_stream")
+
+
+def test_the_revision_carries_the_checked_text():
+    source = inspect.getsource(handlers.WebSocketHandler._finish_stream)
+
+    # Streaming cannot take a token back; this is how the cleanup still
+    # applies. Sent BEFORE stream_end, so the corrected text is what the
+    # client records in the history the next turn reads.
+    assert "supervise_full" in source
+    assert "render_actions_for_reading" in source
+    assert source.index("message_revised") < source.index('"stream_end"')
+
+
+def test_no_revision_when_the_cleaned_text_matches():
+    source = inspect.getsource(handlers.WebSocketHandler._finish_stream)
+
+    # Almost every ordinary chat turn. A revision on every turn would
+    # make the client re-render a message that did not change.
+    assert 'final.strip() != (streamed or "").strip()' in source
+
+
+def test_a_supervision_failure_still_closes_the_stream():
+    source = inspect.getsource(handlers.WebSocketHandler._finish_stream)
+
+    # A turn that streamed tokens and never sent stream_end leaves the
+    # client showing a live bubble forever -- worse than an untidy one.
+    assert "except Exception" in source
+    assert "final = raw_answer" in source
+
+
+# ======================================================
+# Progress
+#
+# The 55 seconds were a model LOAD, before a single token existed.
+# Streaming cannot fix that -- there is nothing to stream while a 12B is
+# read off disk -- but silence about it is what made it read as a freeze.
+# ======================================================
+def test_a_cold_load_is_announced():
+    source = inspect.getsource(handlers.WebSocketHandler._announce_model_load)
+
+    # Asked of the loader rather than guessed: it holds one model and
+    # knows which.
+    assert "active_model_id" in source
+    assert "_emit_progress" in source
+
+
+def test_a_warm_turn_announces_nothing():
+    source = inspect.getsource(handlers.WebSocketHandler._announce_model_load)
+
+    # A progress line on every turn is noise, and noise is what makes a
+    # real one invisible.
+    assert 'active_model_id", None) == model_id' in source
+
+
+def test_progress_is_not_part_of_the_answer():
+    source = code_of(handlers.WebSocketHandler._emit_progress)
+
+    # Progress in the token stream would end up in the transcript, in the
+    # history the next turn reads, and in the text actions are parsed
+    # from.
+    # Quote style comes from ast.unparse, which normalises to single
+    # quotes -- so the assertion is on the words, not the punctuation.
+    assert "progress" in source
+    assert "stream_token" not in source
+
+
+def test_the_load_is_announced_before_generation_starts():
+    source = code_of(handlers.WebSocketHandler._stream_inference)
+
+    # After it starts is after the wait it explains.
+    assert source.index("_announce_model_load") < source.index("run_in_executor")
+
+
+def test_the_client_handles_both_new_packets():
+    from pathlib import Path
+
+    chat = Path(__file__).resolve().parents[2] / "webui/components/chat/chat.js"
+    source = chat.read_text(encoding="utf-8")
+
+    # A backend packet nothing renders is a change that did not happen.
+    assert '"progress"' in source
+    assert '"message_revised"' in source
+    assert "_handleProgress" in source
+    assert "_handleMessageRevised" in source
+
+
+def test_the_revision_lands_before_history_is_recorded():
+    from pathlib import Path
+
+    chat = Path(__file__).resolve().parents[2] / "webui/components/chat/chat.js"
+    source = chat.read_text(encoding="utf-8")
+
+    # _handleStreamEnd pushes the buffer into history and
+    # _handleMessageRevised replaces that buffer. The revision arriving
+    # first is what puts the CHECKED text in the transcript the next turn
+    # reads, rather than the raw one.
+    assert "this._activeStream.buffer = text;" in source
+    assert '_pushHistory("assistant", this._activeStream.buffer)' in source
 
 
 def test_the_supervised_text_is_what_gets_sent():

@@ -11,37 +11,30 @@ from backend.core.streaming_engine import StreamingEngine
 from backend.core.local_inference_engine import InferenceRequest, InferenceMessage
 
 from backend.core.answer_stream import AnswerStream
+from backend.core.action_stream_filter import ActionBlockFilter
+from backend.core.action_plan import requests_live_execution
 from backend.core import turn_status
 from backend.chat import supervisor_layer
 from backend.core import action_render
 
-# Hold every token until the whole reply exists, supervise it, then send
-# it as one piece.
+# Hold every token until the whole reply exists, then send it as one
+# piece. OFF.
 #
-# The cost is real and is the point of the flag: nothing appears until
-# generation finishes, which on a 12B is the length of the answer. What
-# it buys is that a leaked role marker or a repeated paragraph never
-# reaches the screen -- and once read, those cannot be taken back.
+# It was on, and on a 12B it read as a freeze: 55 seconds of blank screen
+# for one file, most of that a cold model load with nothing to show. A
+# supervision pass is not worth a minute of silence.
 #
-# Set False to go back to token-by-token streaming, where AnswerStream
-# filters incrementally and supervision only reaches the text that drives
-# actions.
-BUFFER_FOR_SUPERVISION = True
+# Streaming is back, and the cleanup did not have to be given up for it.
+# The provider's stream_end is held, the actions run, and a
+# message_revised packet replaces the bubble with the checked text before
+# the stream is closed. The user reads tokens as they arrive and still
+# ends the turn with the tidied answer.
+#
+# Set True to go back to buffering, where nothing is shown until the
+# whole reply has been supervised.
+BUFFER_FOR_SUPERVISION = False
 
 
-def _expects_an_action(user_text: str) -> bool:
-    """Whether the user asked for file work on this turn."""
-    try:
-        from backend.chat.model_router import TURN_TOOLS, classify_turn
-
-        class _Request:
-            latest_user_text = user_text
-            messages = ()
-
-        return classify_turn(_Request()) == TURN_TOOLS
-    except Exception:  # pragma: no cover - a note is not worth a turn
-        logger.exception("could not classify the turn for the missing-action note")
-        return False
 from backend.core.turn_orchestrator import orchestrate_turn
 from backend.core.tool_orchestrator import run_answer_actions
 from backend.core.turn_types import (
@@ -85,6 +78,22 @@ from backend.logger import log as unified_log
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _expects_an_action(user_text: str) -> bool:
+    """Whether the user asked for file work on this turn."""
+    try:
+        from backend.chat.model_router import TURN_TOOLS, classify_turn
+
+        class _Request:
+            latest_user_text = user_text
+            messages = ()
+
+        return classify_turn(_Request()) == TURN_TOOLS
+    except Exception:  # pragma: no cover - a note is not worth a turn
+        logger.exception("could not classify the turn for the missing-action note")
+        return False
+
 
 
 class WebSocketHandler:
@@ -896,14 +905,28 @@ class WebSocketHandler:
         # is handling and only flushing packets in one burst at the end
         # once control finally returns to the loop. run_in_executor moves
         # that blocking call onto a worker thread so the loop stays free.
+        # The 55 seconds were a model LOAD, before a single token
+        # existed. Streaming cannot fix that -- there is nothing to
+        # stream while a 12B is being read off disk -- but silence about
+        # it is what made it read as a freeze. Saying so costs nothing
+        # and is the difference between waiting and wondering.
+        await self._announce_model_load(request.model_id)
+
         loop = asyncio.get_running_loop()
         accumulated_tokens: list[str] = []
+        # What the client has actually SEEN, which is not the same as
+        # what the model produced: AnswerStream drops scaffolding on the
+        # way out. The revision at the end is compared against this, so a
+        # turn whose cleaned text matches what was streamed sends no
+        # revision at all.
+        published: list[str] = []
 
         # The answer, separated from the scaffolding, before anything is
         # sent. optimize_response below still runs on the raw text, so the
         # log keeps recording what the model actually produced -- what
         # changed is that the client no longer has to see it.
         answer = AnswerStream()
+        action_blocks = ActionBlockFilter()
 
         def send_packet_sync(packet: dict):
             # Called from the executor's worker thread, not the event
@@ -934,12 +957,19 @@ class WebSocketHandler:
                     # the REST route already does.
                     return
 
-                publishable = answer.push(raw)
+                # AnswerStream removes scaffolding the model should not
+                # have written; this removes the action block, which it
+                # SHOULD have written and which the reader should see the
+                # effect of rather than the syntax of. Unbuffering put
+                # `{"tool": "edit_file"...` on screen one fragment at a
+                # time, replaced a second later by "Done:".
+                publishable = action_blocks.push(answer.push(raw))
                 if not publishable:
                     # Held back, stripped, or past a terminator. Sending an
                     # empty stream_token would make the client render a
                     # token that carries nothing.
                     return
+                published.append(publishable)
                 packet = {**packet, "token": publishable}
             elif packet.get("type") == "stream_end":
                 if BUFFER_FOR_SUPERVISION:
@@ -950,8 +980,9 @@ class WebSocketHandler:
 
                 # Anything the filter was still holding when generation
                 # stopped -- a final line that never got its newline.
-                tail = answer.finish()
+                tail = action_blocks.push(answer.finish()) + action_blocks.finish()
                 if tail:
+                    published.append(tail)
                     asyncio.run_coroutine_threadsafe(
                         self._send({**packet, "type": "stream_token", "token": tail}), loop,
                     )
@@ -979,18 +1010,21 @@ class WebSocketHandler:
             # parsing that would take the action away from the executor.
             raw_answer = "".join(accumulated_tokens)
 
-            # Actions first, THEN the reply. Buffering already means
-            # nothing has been sent, so running them now costs nothing
-            # and lets the message say what happened -- "Created
-            # hello_world.py" rather than "here is what I would do".
-            # Rendering before executing meant predicting the outcome and
-            # sometimes predicting it wrong.
+            # Actions first, THEN the reply is finished. The tokens are
+            # already on screen when streaming; what is still to come is
+            # the outcome -- "created hello_world.py" rather than "here
+            # is what I would do" -- and that cannot be written until the
+            # actions have actually run.
+            await self._emit_progress("applying changes")
             report = await self._run_answer_actions(
                 self._supervise(raw_answer, request.model_id))
 
             if BUFFER_FOR_SUPERVISION:
                 await self._deliver_supervised(
                     raw_answer, request.model_id, answer, report)
+            else:
+                await self._finish_stream(
+                    raw_answer, "".join(published), request, report)
 
             if report is not None:
                 await self._send({"type": "answer_actions", **report})
@@ -1010,6 +1044,94 @@ class WebSocketHandler:
     # -----------------------------------------------------
     # Buffered delivery
     # -----------------------------------------------------
+    async def _announce_model_load(self, model_id) -> None:
+        """Say "loading X" when X is not already in memory.
+
+        Asked of the loader rather than guessed: it holds exactly one
+        model at a time and knows which. A warm turn says nothing, which
+        is right -- a progress line on every turn is noise, and noise is
+        what makes a real one invisible.
+        """
+        try:
+            from backend.core.model_registry import get_model
+
+            loader = getattr(self.router, "loader", None) or getattr(
+                getattr(self.router, "local_provider", None), "loader", None)
+            if loader is None or model_id is None:
+                return
+            if getattr(loader, "active_model_id", None) == model_id:
+                return
+
+            name = (get_model(model_id) or {}).get("display_name") or model_id
+            await self._emit_progress(f"loading {name}")
+        except Exception:  # pragma: no cover - commentary is not worth a turn
+            logger.debug("could not announce the model load", exc_info=True)
+
+    async def _emit_progress(self, label: str) -> None:
+        """A live line in the chat saying what ARIA is doing right now.
+
+        Separate from the status packet, which drives the one-line
+        indicator. This is the running commentary a person reads while
+        waiting -- "loading nemo-12b", "applying changes" -- and the
+        reason a cold model load stopped looking like a freeze.
+
+        Deliberately NOT a stream_token. Progress is not part of the
+        answer: putting it in the token stream would put it in the
+        transcript, in the history the next turn reads, and in the text
+        actions are parsed from.
+        """
+        try:
+            await self._send({"type": "progress", "label": label,
+                              "conversationId": self.conversation_id})
+        except Exception:  # pragma: no cover - commentary is not worth a turn
+            logger.debug("could not send progress %r", label, exc_info=True)
+
+    async def _finish_stream(self, raw_answer: str, streamed: str,
+                             request, report: dict | None) -> None:
+        """Replace what was streamed with the checked text, then close.
+
+        This is what buys streaming back without giving up the cleanup.
+        The provider's stream_end was held; the actions have now run, so
+        the final text can describe what HAPPENED. If it differs from
+        what the user watched arrive, a message_revised packet replaces
+        the bubble before the stream is closed -- so the transcript ends
+        up holding the tidied answer rather than the raw one.
+
+        A turn whose cleaned text matches what was streamed sends no
+        revision at all, which is almost every ordinary chat turn.
+        """
+        final = raw_answer
+        try:
+            supervised = supervisor_layer.supervise_full(
+                raw_answer, request.model_id,
+                mode=self.router.mode_manager.get_mode(),
+            )
+            final = action_render.render_actions_for_reading(
+                supervised.text,
+                staged=requests_live_execution(self._turn_user_text),
+                expected_action=self._turn_expects_action,
+                created=(report or {}).get("created") or [],
+                problems=(report or {}).get("problems") or {},
+            )
+        except Exception:
+            logger.exception("could not build the revised answer; the streamed text stands")
+            final = raw_answer
+
+        if final.strip() and final.strip() != (streamed or "").strip():
+            unified_log("websocket", "INFO", "revised the streamed answer", {
+                "conversation_id": self.conversation_id,
+                "streamed_len": len(streamed or ""), "final_len": len(final),
+            })
+            await self._send({
+                "type": "message_revised",
+                "requestId": id(raw_answer),
+                "modelId": request.model_id,
+                "text": final,
+            })
+
+        await self._send({"type": "stream_end", "modelId": request.model_id,
+                          "requestId": id(raw_answer)})
+
     async def _deliver_supervised(self, answer_text: str, model_id, answer,
                                   report: dict | None = None) -> str:
         """Supervise the whole reply, then send it.
@@ -1058,8 +1180,7 @@ class WebSocketHandler:
         # so the sentence and the outcome cannot disagree. Without it the
         # reply said "say yes, do it and I will stage it" about work that
         # had already been staged.
-        from backend.core.action_plan import requests_live_execution
-
+        
         # expected_action: the routing layer already read this turn as
         # file work, so an answer with no action in it is a failure worth
         # naming rather than prose to be shown as though it worked.
@@ -1068,6 +1189,7 @@ class WebSocketHandler:
             staged=requests_live_execution(self._turn_user_text),
             expected_action=self._turn_expects_action,
             created=(report or {}).get("created") or [],
+            problems=(report or {}).get("problems") or {},
         )
 
         # The same filter the unbuffered path applies token by token. One

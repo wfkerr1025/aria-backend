@@ -152,7 +152,7 @@ def _describe(invocation, created=()) -> str:
 
 def render_actions_for_reading(answer_text: str, staged: bool = False,
                                expected_action: bool = False,
-                               created=()) -> str:
+                               created=(), problems=None) -> str:
     """The answer as a person should read it, with the blocks described.
 
     Returns the text unchanged when there are no actions in it, which is
@@ -205,6 +205,13 @@ def render_actions_for_reading(answer_text: str, staged: bool = False,
         ]
         if still_waiting:
             parts.append(_ALREADY_STAGED if staged else _HOW_TO_CONFIRM)
+
+        # A file that does not parse is named here, not left in a log. It
+        # is the difference between "ARIA created the file" and "ARIA
+        # created a working file", and the user is the one who has to
+        # know which of those happened.
+        for message in (problems or {}).values():
+            parts.append(f"[!] {message}")
 
         return "\n\n".join(parts)
     except Exception:  # pragma: no cover - display must not fail a turn
