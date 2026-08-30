@@ -722,3 +722,108 @@ def test_stripping_leaves_the_prose_and_removes_the_action():
 def test_stripping_leaves_ordinary_prose_alone():
     for text in ("Use {a: b}.", "", "Just talking."):
         assert ap.strip_action_json(text) == text
+
+
+# ======================================================
+# JSON a model actually writes
+# ======================================================
+def test_a_literal_newline_inside_a_string_is_repaired():
+    # The single most common way a model breaks JSON, and the one that
+    # matters most, because the value it breaks is a file's contents.
+    # Measured live twice: the action was correct, complete, and refused
+    # by json.loads with "Invalid control character", so nothing was
+    # staged and ARIA went on to explain how to create files by hand.
+    live = ('```json\n{"tool": "edit_file", "path": "open_world.py", '
+            '"content": "def open_world:\n    print(1)"}\n```')
+
+    parsed = ap.parse_actions(live)
+
+    assert len(parsed) == 1
+    assert parsed[0].args["content"] == "def open_world:\n    print(1)"
+
+
+def test_the_same_repair_works_without_a_fence():
+    live = ('{"tool": "edit_file", "path": "a.py", "content": "line one\nline two"}')
+
+    parsed = ap.parse_actions(live)
+
+    assert len(parsed) == 1
+    assert parsed[0].args["content"] == "line one\nline two"
+
+
+def test_a_tab_inside_a_string_is_repaired():
+    parsed = ap.parse_actions(
+        '{"tool": "edit_file", "path": "a.py", "content": "if x:\n\treturn 1"}')
+
+    assert parsed[0].args["content"] == "if x:\n\treturn 1"
+
+
+def test_escaped_newlines_are_left_exactly_alone():
+    import json
+
+    # Valid JSON must not be touched by the repair.
+    payload = json.dumps({"tool": "edit_file", "path": "a.py",
+                          "content": "line one\nline two"})
+
+    assert ap.parse_actions(payload)[0].args["content"] == "line one\nline two"
+
+
+def test_text_that_is_not_json_is_still_not_json():
+    assert ap.loads_lenient("this is prose") is None
+    assert ap.loads_lenient("") is None
+    assert ap.loads_lenient('{"unclosed": ') is None
+
+
+# ======================================================
+# The user's own words as the first consent
+# ======================================================
+@pytest.mark.parametrize("text", [
+    "Aria create a open_world.py file for me",
+    "create the actual file",
+    "create the file",
+    "make the file",
+    "delete notes.md",
+    "edit main.py and add logging",
+])
+def test_an_imperative_file_request_is_consent_to_stage(text):
+    # "Create the actual file" is a confirmation by any reading, and it
+    # matched nothing: the user asked for a file, ARIA proposed one, the
+    # user said create it, and nothing was staged. Then ARIA explained
+    # how to make files with a file manager.
+    #
+    # What this grants is STAGING. Commit is still separate and explicit.
+    assert ap.requests_live_execution(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "what would that do?",
+    "what files are in src/",
+    "how do I create a file in python",
+    "hello there",
+    "no",
+    "not yet",
+    "don't create the file",
+    "do not apply the changes",
+])
+def test_a_question_or_a_refusal_grants_nothing(text):
+    assert ap.requests_live_execution(text) is False
+
+
+def test_the_two_classifiers_do_not_call_each_other():
+    import ast
+    import inspect
+
+    from backend.chat import model_router
+
+    # requests_live_execution asks classify_turn whether the message is
+    # an imperative file request. classify_turn used to ask
+    # requests_live_execution the same question from the other side, and
+    # each re-entered the other -- the suite went from 96 seconds to a
+    # hang.
+    tree = ast.parse(inspect.getsource(model_router))
+    called = {
+        node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+        for node in ast.walk(tree) if isinstance(node, ast.Call)
+    }
+
+    assert "requests_live_execution" not in called

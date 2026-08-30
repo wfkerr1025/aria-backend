@@ -193,3 +193,80 @@ def test_prose_around_an_unfenced_action_survives():
     assert "Shall I?" in out
     assert "delete `a.py`" in out
     assert '"tool"' not in out
+
+
+# ======================================================
+# Saying what happened, not what might
+# ======================================================
+def test_an_already_staged_action_is_not_asked_about_again():
+    out = render(block('{"tool": "edit_file", "path": "a.py", "content": "x"}'),
+                 staged=True)
+
+    # Passing staged=False while the executor had already staged produced
+    # a reply telling the user to say "yes, do it" about work that was
+    # already done.
+    assert "yes, do it" not in out
+    assert "Staged" in out
+    assert "commit it in Settings" in out
+
+
+def test_an_unconfirmed_action_asks_for_confirmation():
+    out = render(block('{"tool": "edit_file", "path": "a.py", "content": "x"}'),
+                 staged=False)
+
+    assert "yes, do it" in out
+
+
+def test_the_transport_tells_the_renderer_what_happened():
+    import inspect
+
+    from backend.websocket import handlers
+
+    source = inspect.getsource(handlers.WebSocketHandler._deliver_supervised)
+
+    # From the same function the executor consults, so the sentence and
+    # the outcome cannot disagree.
+    assert "requests_live_execution" in source
+    assert "staged=" in source
+
+
+# ======================================================
+# ARIA's own text, out of the model's transcript
+# ======================================================
+def test_scaffolding_is_removed_from_a_previous_turn():
+    from backend.core.action_render import strip_scaffolding
+
+    rendered = render(block('{"tool": "edit_file", "path": "a.py", "content": "x"}'))
+
+    cleaned = strip_scaffolding(rendered)
+
+    # The model imitates what it sees itself having said: with the
+    # rendering in the transcript it produced three nested "Here is what
+    # I would do:" headings in one reply, one of them empty.
+    assert "Here is what I would do:" not in cleaned
+    assert "yes, do it" not in cleaned
+    assert "write `a.py`" in cleaned
+
+
+def test_stripping_leaves_the_models_own_words():
+    from backend.core.action_render import strip_scaffolding
+
+    text = "I will add the script.\n\nHere is what I would do:\n\n- write `a.py` (1 line)"
+
+    cleaned = strip_scaffolding(text)
+
+    assert "I will add the script." in cleaned
+    assert "- write `a.py` (1 line)" in cleaned
+
+
+def test_the_orchestrator_cleans_the_history_it_sends():
+    import inspect
+
+    from backend.core import turn_orchestrator
+
+    source = inspect.getsource(turn_orchestrator.orchestrate_turn)
+
+    assert "strip_scaffolding" in source
+    # On a copy: request.messages is the caller's list and the
+    # orchestrator mutates nothing it was handed.
+    assert "replace(request, messages=" in source

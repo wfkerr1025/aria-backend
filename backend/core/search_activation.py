@@ -151,6 +151,28 @@ def classify(query: str, generate: Callable[[str], str]) -> Optional[bool]:
     return verdict
 
 
+def _asks_for_file_work(query: str) -> bool:
+    """Whether this turn is about files in the project.
+
+    Asks the routing classifier rather than keeping a second vocabulary:
+    a turn routed to the tool model for file work is the same turn that
+    must not leave the machine to answer.
+    """
+    try:
+        from backend.chat.model_router import TURN_TOOLS, classify_turn
+
+        class _Request:
+            latest_user_text = query
+            messages = ()
+
+        # TURN_TOOLS only. TURN_HEAVY covers deep reasoning, which can
+        # legitimately want a lookup.
+        return classify_turn(_Request()) == TURN_TOOLS
+    except Exception:  # pragma: no cover - a veto must not break routing
+        logger.exception("could not classify the query for the file-work veto")
+        return False
+
+
 def wants_web_search(query: str, *, generate: Callable[[str], str] | None = None) -> bool:
     """Whether this turn should look something up.
 
@@ -166,6 +188,26 @@ def wants_web_search(query: str, *, generate: Callable[[str], str] | None = None
 
     if mentions_web_search(query):
         return True
+
+    # AFTER the explicit-web check, and that order is the whole of it. A
+    # web search is itself a tool turn as far as the routing classifier
+    # is concerned, so vetoing every tool turn here silenced search
+    # completely -- the first version of this did exactly that and two
+    # tests said so immediately.
+    #
+    # What is left is file work: create, edit, move, delete. That is
+    # about THIS project by definition and there is nothing on the web
+    # that answers it.
+    #
+    # Measured: "create the actual file" was sent to the classifier,
+    # which said WEB. The turn ran a search, escalated to the 12B, and
+    # took two minutes to reply with instructions for using a file
+    # manager. The veto costs nothing and removes that detour from the
+    # most common instruction a user gives.
+    if _asks_for_file_work(query):
+        logger.info("search_activation: file work is local; not searching for %r",
+                    query[:60])
+        return False
 
     key = _key(query)
     if not key:

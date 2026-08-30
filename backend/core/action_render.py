@@ -43,13 +43,27 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 
-__all__ = ["render_actions_for_reading"]
+__all__ = ["render_actions_for_reading", "strip_scaffolding"]
 
 # The same fence parse_actions matches, so this can only remove blocks
 # that were actually read as actions.
 _JSON_FENCE = re.compile(r"```(?:json)?\s*([\[{].*?[\]}])\s*```", re.DOTALL)
 
 _HOW_TO_CONFIRM = 'Say "yes, do it" and I will stage it. Nothing changes until you commit.'
+_ALREADY_STAGED = ("Staged in the ghost workspace. Review the diff and commit it in "
+                   "Settings -> Workspaces; your project is untouched until you do.")
+
+# ARIA's own scaffolding, when it comes back in the history as a previous
+# assistant turn. The model imitates whatever it sees itself having said,
+# so a rendered proposal in the transcript produces nested copies of the
+# rendering in the next answer -- observed, with three "Here is what I
+# would do:" headings in one reply, one of them empty.
+_SCAFFOLDING = (
+    "Here is what I would do:",
+    "Staged:",
+    _HOW_TO_CONFIRM,
+    _ALREADY_STAGED,
+)
 
 
 def _describe(invocation) -> str:
@@ -113,10 +127,28 @@ def render_actions_for_reading(answer_text: str, staged: bool = False) -> str:
         parts = [without_blocks] if without_blocks else []
         parts.append(heading)
         parts.append("\n".join(described))
-        if not staged:
-            parts.append(_HOW_TO_CONFIRM)
+        # Says what happened, not what might. Passing staged=False while
+        # the executor had already staged produced a reply telling the
+        # user to say "yes, do it" about work that was already done.
+        parts.append(_ALREADY_STAGED if staged else _HOW_TO_CONFIRM)
 
         return "\n\n".join(parts)
     except Exception:  # pragma: no cover - display must not fail a turn
         logger.exception("could not render actions for reading; showing the raw answer")
         return text
+
+
+def strip_scaffolding(text: str) -> str:
+    """ARIA's own rendering, removed from a previous assistant turn.
+
+    The model imitates what it sees itself having said. With a rendered
+    proposal in the history it produced a reply containing three nested
+    "Here is what I would do:" headings, one of them empty, and a
+    confirmation line for a proposal that no longer existed.
+
+    This is UI text, not something the model wrote, and it does not
+    belong in the transcript the model reads.
+    """
+    source = str(text or "")
+    kept = [line for line in source.splitlines() if line.strip() not in _SCAFFOLDING]
+    return "\n".join(kept).strip()

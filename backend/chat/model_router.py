@@ -271,14 +271,15 @@ def _mentions_tools(text: str) -> bool:
     except Exception:  # pragma: no cover - a vocabulary fault is not fatal
         logger.exception("could not consult search_intent while routing")
 
-    try:
-        from backend.core import action_plan
-
-        if action_plan.requests_live_execution(text):
-            return True
-    except Exception:  # pragma: no cover
-        logger.exception("could not consult action_plan while routing")
-
+    # action_plan.requests_live_execution used to be consulted here and
+    # must not be: it now asks classify_turn whether the message is an
+    # imperative file request, and classify_turn asks this function.
+    # Each call re-entered the other and the turn never returned -- the
+    # test suite went from 96 seconds to a hang.
+    #
+    # Nothing is lost. The phrases it recognised ("apply the changes",
+    # "make the edits") are in _WORKSPACE_PHRASES above, matched here
+    # directly, so the same sentences still route as tool work.
     return False
 
 

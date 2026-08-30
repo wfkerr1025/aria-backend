@@ -60,6 +60,7 @@ __all__ = [
     "LIVE_EXECUTION_PHRASES",
     "NEGATION_VETO",
     "parse_actions",
+    "loads_lenient",
     "strip_action_json",
     "unsupported_actions",
     "requests_live_execution",
@@ -139,6 +140,16 @@ NEGATION_VETO: tuple[str, ...] = (
 #
 # Consuming through the closing fence is what makes that impossible.
 _ANY_FENCE = re.compile(r"```([a-zA-Z0-9_+-]*)\n(.*?)```", re.DOTALL)
+BACKSLASH = chr(92)
+
+# Raw control characters are illegal inside a JSON string. Each has
+# exactly one escape it can have meant.
+_CONTROL_ESCAPES = {
+    "\n": BACKSLASH + "n",
+    "\r": BACKSLASH + "r",
+    "\t": BACKSLASH + "t",
+}
+
 _FENCED = re.compile(r"```(?:json)?\s*([\[{].*?[\]}])\s*```", re.DOTALL)
 
 _MAX_ACTIONS = 20
@@ -170,8 +181,48 @@ def requests_live_execution(user_text: str) -> bool:
     if any(f" {phrase} " in normalized for phrase in LIVE_EXECUTION_PHRASES):
         return True
 
-    # A bare "yes". Whole message only -- see BARE_AFFIRMATIVES.
-    return normalized.strip() in BARE_AFFIRMATIVES
+    if normalized.strip() in BARE_AFFIRMATIVES:
+        return True
+
+    return _is_an_imperative_file_request(user_text)
+
+
+def _is_an_imperative_file_request(user_text: str) -> bool:
+    """The user told ARIA to do the thing, in their own words.
+
+    "Create the actual file" is a confirmation by any reading, and it
+    matched nothing: the user asked for a file, ARIA proposed one, the
+    user said create it, and nothing was staged. Then ARIA explained how
+    to make files with a file manager. That loop is the complaint.
+
+    What this grants is STAGING -- a copy in the ghost workspace and a
+    diff to look at. The project is untouched, and commit is still a
+    separate, explicit act. So the two consents are intact; what changed
+    is that the first one no longer has to be phrased in ARIA's
+    vocabulary rather than the user's.
+
+    Narrow on two counts. detect_intent must read the message as a task
+    request rather than a question -- "what files are in src/" is a tool
+    turn and is not an instruction -- and the routing classifier must
+    read it as file work. Both already exist and are already tested; this
+    asks them, rather than adding a third opinion about what a sentence
+    means.
+    """
+    try:
+        from backend.chat.model_router import TURN_HEAVY, TURN_TOOLS, classify_turn
+        from backend.core.conversation_manager import INTENT_TASK_REQUEST, detect_intent
+
+        if detect_intent(user_text) != INTENT_TASK_REQUEST:
+            return False
+
+        class _Request:
+            latest_user_text = user_text
+            messages = ()
+
+        return classify_turn(_Request()) in (TURN_TOOLS, TURN_HEAVY)
+    except Exception:  # pragma: no cover - consent must fail closed
+        logger.exception("could not classify the request; not granting execution")
+        return False
 
 
 # What a model calls a tool when it has not read the list carefully.
@@ -302,6 +353,73 @@ def unsupported_actions(text: str) -> list[str]:
     return names
 
 
+def _escape_control_characters(candidate: str) -> str:
+    """Escape raw newlines and tabs that sit INSIDE a JSON string.
+
+    The single most common way a model breaks JSON, and the one that
+    matters most here, because the value it breaks is a file's contents.
+    Measured live, twice:
+
+        {"tool": "edit_file", "path": "open_world.py",
+         "content": "def open_world:
+            print(\"Opening the world...\")"}
+
+    That is a real newline inside a string, which json.loads refuses with
+    "Invalid control character". The action was correct, complete, and
+    unparseable -- so nothing was staged and ARIA went on to explain how
+    to create files by hand.
+
+    Escaping is exact rather than a guess: a control character inside a
+    JSON string is invalid, so there is only one thing it can have meant.
+    Characters outside strings are untouched, which is what keeps the
+    document's own formatting intact.
+    """
+    out = []
+    in_string = False
+    escaped = False
+
+    for char in candidate:
+        if in_string:
+            if escaped:
+                escaped = False
+                out.append(char)
+                continue
+            if char == BACKSLASH:
+                escaped = True
+                out.append(char)
+                continue
+            if char == '"':
+                in_string = False
+                out.append(char)
+                continue
+            replacement = _CONTROL_ESCAPES.get(char)
+            out.append(replacement if replacement else char)
+            continue
+
+        if char == '"':
+            in_string = True
+        out.append(char)
+
+    return "".join(out)
+
+
+def loads_lenient(candidate: str):
+    """json.loads, with the one repair a model reliably needs.
+
+    Returns None when the text is not JSON at all. Never raises.
+    """
+    text = str(candidate or "")
+    try:
+        return json.loads(text)
+    except (ValueError, TypeError):
+        pass
+
+    try:
+        return json.loads(_escape_control_characters(text))
+    except (ValueError, TypeError):
+        return None
+
+
 def _unfenced_payloads(text: str) -> list:
     """Action objects the model wrote without a code fence, with spans.
 
@@ -353,10 +471,7 @@ def _unfenced_payloads(text: str) -> list:
             return payloads
 
         candidate = source[start:end]
-        try:
-            parsed = json.loads(candidate)
-        except (ValueError, TypeError):
-            parsed = None
+        parsed = loads_lenient(candidate)
 
         if isinstance(parsed, dict) and isinstance(parsed.get("tool") or parsed.get("name"), str):
             # The span comes back too, so the display layer can remove
@@ -462,11 +577,10 @@ def parse_actions(text: str) -> list[ToolInvocation]:
             logger.warning("more than %d actions in one answer; ignoring the rest",
                            _MAX_ACTIONS)
             break
-        try:
-            payload = json.loads(block)
-        except (ValueError, TypeError):
+        payload = loads_lenient(block)
+        if payload is None:
             # A block that is not JSON is prose that happened to be
-            # fenced. Skipped rather than repaired: guessing at what a
+            # fenced. Skipped rather than guessed at: inventing what a
             # malformed action meant is how a wrong edit gets written.
             logger.info("action ignored: a fenced block was not valid JSON")
             continue

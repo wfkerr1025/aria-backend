@@ -35,6 +35,7 @@ richer of the two:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Callable
 
 from backend.core import (
@@ -48,6 +49,7 @@ from backend.core import (
 )
 from backend.chat import model_router
 from backend.core import complexity_router
+from backend.core import action_render
 from backend.core import search_activation
 from backend.core import tool_brief
 from backend.core.generation import make_generator
@@ -892,6 +894,20 @@ def orchestrate_turn(
     # budget. request.messages stays whole for the reasoning core, whose
     # turn selection exists precisely to reach past a trim.
     reason = reasoning_enabled and not _is_trivial(intent)
+
+    # ARIA's own rendering, taken back out of the transcript the model
+    # reads. It imitates whatever it sees itself having said, and a
+    # rendered proposal in the history produced a reply with three nested
+    # "Here is what I would do:" headings, one of them empty, plus a
+    # confirmation line for a proposal that no longer existed.
+    #
+    # Done on a copy. request.messages is the caller's list and the
+    # orchestrator mutates nothing it was handed.
+    request = replace(request, messages=[
+        {**message, "content": action_render.strip_scaffolding(message.get("content", ""))}
+        if message.get("role") == "assistant" else message
+        for message in request.messages
+    ])
 
     final_messages, policy_info = apply_history_policy(
         request.messages,

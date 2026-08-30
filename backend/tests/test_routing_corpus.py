@@ -300,3 +300,40 @@ def test_the_action_brief_reaches_a_tool_turn_in_that_mode(mode):
     # And not on ordinary chat: the brief is context spent making a
     # greeting more likely to propose a file operation.
     assert prompt_for("hello there") is False
+
+
+# ======================================================
+# File work does not go to the internet
+#
+# Measured: "create the actual file" was sent to the search classifier,
+# which said WEB. The turn ran a web search, escalated to the 12B, and
+# took two minutes to answer with instructions for using a file manager.
+# ======================================================
+@pytest.mark.parametrize("text", [
+    "create the actual file",
+    "Aria create a open_world.py file for me",
+    "delete notes.md",
+    "edit main.py",
+    "commit the staged changes",
+])
+def test_file_work_never_triggers_a_web_search(text):
+    from backend.core.search_activation import wants_web_search
+
+    # The classifier is forced to say WEB every time, so this asserts the
+    # veto rather than the classifier's judgement.
+    assert wants_web_search(text, generate=lambda prompt: "WEB") is False
+
+
+@pytest.mark.parametrize("text", [
+    "search the web for python 3.13 news",
+    "look up the pytest release notes",
+    "what is the current price of MSFT",
+])
+def test_a_real_lookup_still_reaches_the_web(text):
+    from backend.core.search_activation import wants_web_search
+
+    # The veto sits AFTER the explicit-web check, and that order is the
+    # whole of it: a web search is itself a tool turn as far as the
+    # routing classifier is concerned, so vetoing every tool turn
+    # silenced search completely. The first version did exactly that.
+    assert wants_web_search(text, generate=lambda prompt: "WEB") is True

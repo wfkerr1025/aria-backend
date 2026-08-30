@@ -1021,7 +1021,14 @@ class WebSocketHandler:
         # the same mistake as relying on it to spell the tool name right.
         # Measured: the entire reply on screen was the json block and
         # nothing else.
-        text = action_render.render_actions_for_reading(text)
+        # `staged` comes from the same function the executor consults,
+        # so the sentence and the outcome cannot disagree. Without it the
+        # reply said "say yes, do it and I will stage it" about work that
+        # had already been staged.
+        from backend.core.action_plan import requests_live_execution
+
+        text = action_render.render_actions_for_reading(
+            text, staged=requests_live_execution(self._turn_user_text))
 
         # The same filter the unbuffered path applies token by token. One
         # pass over the finished text is equivalent, which is what the
