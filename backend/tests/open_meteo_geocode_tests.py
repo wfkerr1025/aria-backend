@@ -69,6 +69,14 @@ def test(fn):
     return fn
 
 
+# Not a test. It is the registration decorator these files used before
+# they were collected by pytest, and pytest reads any module-level
+# callable named test_* or test as one -- then errors on the "fn"
+# parameter it cannot supply as a fixture. Three ERRORs, in three files,
+# from a helper doing its job.
+test.__test__ = False
+
+
 # ============================================================
 # PART 1 — hint extraction (NL normalization)
 # ============================================================

@@ -534,6 +534,39 @@ def strip_action_json(text: str) -> str:
     return source
 
 
+def _drop_repeated_actions(invocations: list) -> list:
+    """The same action, asked for twice, is one action.
+
+    Not the same as _collapse_duplicate_writes, which picks a winner
+    between two DIFFERENT writes to one path. This removes exact
+    repeats -- identical tool, identical arguments -- which a model
+    produces when it loops.
+
+    Measured live: nemo-12b emitted create_folder src eleven times and
+    run_tests three times in one answer. Every copy failed the same way,
+    so the reply was twenty identical error lines with the real content
+    somewhere in the middle. Running an operation eleven times is not
+    eleven times as correct, and reporting it eleven times is not
+    eleven times as clear.
+    """
+    seen = set()
+    kept = []
+    for invocation in invocations:
+        try:
+            fingerprint = (invocation.tool_name,
+                           tuple(sorted((str(k), str(v))
+                                        for k, v in (invocation.args or {}).items())))
+        except Exception:  # pragma: no cover - an unhashable arg is not a repeat
+            kept.append(invocation)
+            continue
+        if fingerprint in seen:
+            logger.info("dropping a repeated %s action", invocation.tool_name)
+            continue
+        seen.add(fingerprint)
+        kept.append(invocation)
+    return kept
+
+
 def _collapse_duplicate_writes(invocations: list) -> list:
     """One path, one write. The one that has contents wins.
 
@@ -629,6 +662,7 @@ def parse_actions(text: str) -> list[ToolInvocation]:
             if invocation is not None:
                 invocations.append(invocation)
 
+    invocations = _drop_repeated_actions(invocations)
     invocations = _collapse_duplicate_writes(invocations)
 
     if invocations:

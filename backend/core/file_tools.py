@@ -270,6 +270,29 @@ def _test_command() -> list[str]:
     return list(DEFAULT_TEST_COMMAND)
 
 
+def _tidy_test_command() -> list[str]:
+    """The configured test command, told not to leave anything behind.
+
+    Checking that a change does no harm must not itself be a change.
+    Measured: a verification run left .pytest_cache/ and __pycache__/ in
+    the user's project -- ARIA creating files nobody asked for, during
+    the step whose whole purpose is leaving the project alone.
+
+    The flag is only added when the configured command is actually
+    pytest. A different runner would reject it, and the run would then
+    fail for a reason that has nothing to do with the tests.
+    """
+    base = _test_command()
+    if any("pytest" in str(part) for part in base):
+        return [*base, "-p", "no:cacheprovider"]
+    return list(base)
+
+
+def _tidy_test_environment() -> dict:
+    """The same idea for bytecode: no __pycache__ left in the project."""
+    return {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+
+
 def run_test_files(paths, timeout: int | None = None) -> dict:
     """Run the configured test command over specific test files.
 
@@ -300,22 +323,8 @@ def run_test_files(paths, timeout: int | None = None) -> dict:
     if not selected:
         raise WorkspaceError("No test files were selected")
 
-    base = _test_command()
-
-    # Checking that a change does no harm must not itself be a change.
-    # Measured: a verification run left .pytest_cache/ and __pycache__/
-    # in the user's project -- ARIA introducing files nobody asked for,
-    # during the step whose whole purpose is leaving the project alone.
-    #
-    # Only added when the configured command is actually pytest, since a
-    # different runner would reject the flag and the run would fail for a
-    # reason that has nothing to do with the tests.
-    if any("pytest" in str(part) for part in base):
-        base = [*base, "-p", "no:cacheprovider"]
-
-    command = [*base, *selected]
-
-    environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    command = [*_tidy_test_command(), *selected]
+    environment = _tidy_test_environment()
 
     try:
         completed = subprocess.run(
@@ -357,7 +366,7 @@ def run_tests(scope: str = "") -> dict:
     if scope and not _SCOPE_ALLOWED.match(scope):
         raise WorkspaceError(f"Test scope contains unsupported characters: {scope!r}")
 
-    command = _test_command()
+    command = _tidy_test_command()
     if scope:
         command = [*command, scope]
 
@@ -370,6 +379,7 @@ def run_tests(scope: str = "") -> dict:
             text=True,
             timeout=_TEST_TIMEOUT_SECONDS,
             shell=False,
+            env=_tidy_test_environment(),
         )
     except FileNotFoundError as error:
         raise WorkspaceError(f"Test command not found: {command[0]}") from error

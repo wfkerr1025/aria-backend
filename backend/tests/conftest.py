@@ -24,9 +24,10 @@
 # suites whose subject is the key store itself -- round-tripping a module
 # key, migrating the legacy flat file format -- which then fail for a
 # reason that has nothing to do with what they test. Those live in files
-# named *_tests.py, which pytest's default collection does not match, so
-# they are invisible to a plain `pytest backend/tests` run and only
-# run_all_tests.py catches them.
+# named *_tests.py -- which pytest's default collection did not match,
+# so for a long time they were invisible to `pytest backend/tests` and
+# this guard was protecting suites that were not running. pytest.ini now
+# names both patterns, so they run, and so does this.
 #
 # A test that wants a key sets one: monkeypatch is applied in fixture
 # order, so anything requested after this replaces it.

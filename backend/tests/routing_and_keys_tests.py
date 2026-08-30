@@ -679,7 +679,15 @@ def test_explicit_model_override_persists_and_wins_over_auto_routing():
 
     original_mode = ModeManager().get_mode()
     original_active = model_registry.get_active_model_id()
-    target = "qwen2.5-0.5b-instruct-q4_k_m"
+    # Was the 0.5B, which the chat capability gate (f7ef7c3) is REQUIRED
+    # to redirect -- so the packet carried phi-3 and this test failed on
+    # the one line that had nothing to do with what it is named for.
+    #
+    # The subject here is "an explicit override persists and AutoSelector
+    # does not run". A model above the chat floor tests that without
+    # colliding with a different, deliberate rule; the gate's own
+    # behaviour is asserted separately, below.
+    target = "phi-3-mini-4k-instruct-q4"
     calls = []
     original_select = auto_selector_mod.AutoSelector.select_provider
 

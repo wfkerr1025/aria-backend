@@ -144,6 +144,10 @@ class Verification:
     # for again. Telling the user "it is staged" in the second case
     # would send them to look for something that is not there.
     work_note: str = ""
+    # The run did not finish. Not a pass and not a named failure, and at
+    # commit time it is treated as harm: what it would have found may be
+    # in the part it never reached.
+    inconclusive: bool = False
 
     # Set when the check could not be completed -- no tests, a missing
     # runner, a timeout. Not a pass and not a failure.
@@ -165,6 +169,11 @@ class Verification:
             return f"I did not test this: {self.skipped_because}."
         if not self.ran:
             return ""
+        if self.inconclusive:
+            note = f" {self.work_note}" if self.work_note else ""
+            return (f"I ran {self._scope()} and it did not finish, so I cannot "
+                    f"say this is safe. I put your project back the way it "
+                    f"was.{note}")
         if self.new_failures:
             listed = ", ".join(f"`{name}`" for name in self.new_failures[:3])
             more = (f", and {len(self.new_failures) - 3} more"
@@ -422,12 +431,17 @@ def verify_new_files(additions, commit, root: Path, on_progress=None) -> tuple:
         verification.skipped_because = "this project has no test suite I could find"
         return commit(names), verification
 
+    # A WRITE gets the cheap tiers: suites that name what changed, plus
+    # the project's guards. Never the whole suite -- that belongs to
+    # commit, once, and running it here as well would mean paying for it
+    # twice for one change and paying it before the user has agreed to
+    # anything.
     suites = select_suites(names, root)
-    whole = needs_the_whole_suite(names, root)
+    whole = False
     verification.suites = suites
     verification.whole_suite = whole
 
-    if not suites and not whole:
+    if not suites:
         verification.skipped_because = (
             "nothing in your suite bears on this file")
         return commit(names), verification
@@ -581,14 +595,24 @@ def verify_commit(names, operations, apply_commit, root: Path,
         verification.skipped_because = "this project has no test suite I could find"
         return apply_commit(), verification
 
-    suites = select_suites(touched, root)
-    whole = needs_the_whole_suite(touched, root)
+    # Commit runs the WHOLE unified suite, once. Not a selection: a
+    # selection is a guess about blast radius, and commit is the moment
+    # the guess stops being cheap to get wrong. Not twice either -- there
+    # is no baseline pass here. Every failure counts.
+    #
+    # That is only reasonable because the suite is green. It was not
+    # before pytest.ini: four assertions contradicting shipped behaviour
+    # and one real routing bug sat in the 33 suites nothing collected. A
+    # single-run policy over a suite with unexplained failures would
+    # block every commit forever, so the two halves of this change are
+    # the same change.
+    #
+    # The tests genuinely unfixable today are marked xfail with reasons,
+    # which is visible in every run and is not the same as hidden.
+    suites = []
+    whole = True
     verification.suites = suites
     verification.whole_suite = whole
-
-    if not suites and not whole:
-        verification.skipped_because = "nothing in your suite bears on these files"
-        return apply_commit(), verification
 
     started = time.monotonic()
 
@@ -604,35 +628,42 @@ def verify_commit(names, operations, apply_commit, root: Path,
     verification.seconds = time.monotonic() - started
 
     if after is None:
-        verification.skipped_because = "the test command did not produce a verdict"
+        # Inconclusive, and at commit time inconclusive is not safe. The
+        # run crashed or never finished, so what it would have found may
+        # be in the part it never reached -- and a commit is exactly
+        # where that doubt should cost the change rather than the
+        # project.
+        _say(on_progress, "the tests did not finish; putting your project back")
+        undone = _undo_commit(result, previous, existed, root)
+        verification.ran = True
+        verification.passed = False
+        verification.skipped_because = None
+        verification.new_failures = []
+        verification.inconclusive = True
+        verification.work_note = ("The staged work is untouched. Run your tests "
+                                  "and try again once they complete.")
+        result = dict(result or {})
+        result["status"] = "undone"
+        result["undone"] = undone
         return result, verification
 
     if not after:
         verification.ran = True
         return result, verification
 
-    # Red. Undo, then find out whether it was this change that did it.
-    _say(on_progress, "something went red; checking whether it was me")
+    # Red, so it goes back. One run, so there is no question of whose
+    # failure it is: the suite was green, this commit happened, the suite
+    # is not green. Anything else needs a second run, and a second run is
+    # what this policy deliberately does not do.
+    _say(on_progress, "the tests went red; putting your project back")
     undone = _undo_commit(result, previous, existed, root)
 
-    before = _run(suites, whole, root)
-    verification.seconds = time.monotonic() - started
-
-    if before is None:
-        verification.skipped_because = "the baseline run did not complete"
-        return apply_commit(), verification
-
-    new_failures = sorted(after - before)
+    new_failures = sorted(after)
     verification.ran = True
     verification.new_failures = new_failures
-    verification.passed = not new_failures
+    verification.passed = False
 
-    if not new_failures:
-        logger.info("those failures predate this commit; not attributing them")
-        verification.pre_existing = len(after)
-        return apply_commit(), verification
-
-    logger.warning("commit undone: new failures %s", new_failures)
+    logger.warning("commit undone: %s", new_failures)
     if operations:
         # apply_operations clears what it ran, so the plan is gone even
         # though the effect was reversed.

@@ -47,11 +47,38 @@ def _with_patched_snapshot(snapshot, fn):
 # ============================================================
 # PART 1 — complexity_router.py's ladder
 # ============================================================
-def test_trivial_prompt_selects_lightest_model():
+def test_trivial_prompt_picks_the_lightest_model_the_ladder_has():
+    """The raw ladder still bottoms out at the trivial tier.
+
+    Asked for the ladder's own answer -- allow_below_chat_floor -- a
+    trivial prompt gets the trivial model, which is what this test was
+    written to prove and still proves.
+    """
+    from backend.core.complexity_router import select_local_model_for_prompt, TRIVIAL_MODEL_ID
+
+    result = _with_patched_snapshot(
+        _snapshot(),
+        lambda: select_local_model_for_prompt("hi", allow_below_chat_floor=True))
+    assert result == TRIVIAL_MODEL_ID, f"expected {TRIVIAL_MODEL_ID}, got {result}"
+
+
+def test_a_trivial_chat_prompt_is_lifted_off_the_0_5b_by_the_chat_floor():
+    """And for an actual chat turn, the capability gate wins.
+
+    This test used to assert the 0.5B answered "hi". The chat capability
+    gate (f7ef7c3) exists because it could not: it answered with a
+    leaked system prompt in a live session. The gate is required
+    behaviour -- "it must still redirect 0.5B" -- so the old expectation
+    is obsolete rather than broken.
+
+    Nothing collected this file until pytest.ini did, which is why an
+    assertion contradicting a deliberate, tested feature sat green-by-
+    absence for months.
+    """
     from backend.core.complexity_router import select_local_model_for_prompt, TRIVIAL_MODEL_ID
 
     result = _with_patched_snapshot(_snapshot(), lambda: select_local_model_for_prompt("hi"))
-    assert result == TRIVIAL_MODEL_ID, f"expected {TRIVIAL_MODEL_ID}, got {result}"
+    assert result != TRIVIAL_MODEL_ID, "the chat floor must lift a chat turn off the 0.5B"
 
 
 def test_high_complexity_with_ample_ram_selects_difficult_tier():

@@ -663,7 +663,17 @@ def test_switch_to_lighter_model_grants_one_shot_safety_bypass():
     from backend.websocket import handlers as handlers_mod
 
     original_active = model_registry.get_active_model_id()
-    target = "qwen2.5-0.5b-instruct-q4_k_m"
+    # Was the 0.5B. The chat capability gate (f7ef7c3) is required to
+    # redirect that model on a chat turn, so the turn ran under a
+    # different model_id than the one the bypass was armed for, the
+    # one-shot did not match, and evaluate_safety fired -- failing a test
+    # about the bypass for a reason that has nothing to do with it.
+    #
+    # Still lighter than the 12B, which is what "switch to a lighter
+    # model" means here. Whether the gate SHOULD re-evaluate safety after
+    # substituting a model is a real question, and a separate one; this
+    # test is not the place it gets decided.
+    target = "phi-3-mini-4k-instruct-q4"
     assert model_registry.get_model(target) is not None, f"test target model {target!r} is not registered"
 
     # Explicit local model_ids are only honored in Local Mode or under

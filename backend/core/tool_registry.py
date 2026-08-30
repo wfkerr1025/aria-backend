@@ -294,8 +294,31 @@ def _run_tests_handler(scope: str = "") -> dict:
 # mutating tools instead of two rules that could drift apart.
 def _staging_handler(op: str):
     def handler(path: str, dest: str = "", new_name: str = "",
-                confirm: bool = False) -> dict:
+                confirm: bool = False, **unexpected) -> dict:
+        """Stage or preview one shape-changing operation.
+
+        **unexpected exists because a model supplies arguments the tool
+        does not have. Measured live: nemo-12b emitted
+        {"tool": "create_folder", "path": "src", "content": "..."} and
+        this raised TypeError, eleven times, so the reply was a wall of
+        "_staging_handler.<locals>.handler() got an unexpected keyword
+        argument 'content'".
+
+        They are REFUSED rather than ignored. Ignoring "content" on a
+        create_folder would make a folder and throw away the file the
+        model was trying to write -- silent data loss dressed as
+        tolerance. Refusing says what was wrong in words the user can act
+        on, and costs the turn nothing it was going to get anyway.
+        """
         from backend.core import fs_plan
+
+        if unexpected:
+            named = ", ".join(sorted(unexpected))
+            raise ValueError(
+                f"{op} does not take {named}. If you meant to write file "
+                f"contents, use edit_file; {op} only changes the shape of "
+                f"the tree."
+            )
 
         target = new_name or dest or None
         if confirm:

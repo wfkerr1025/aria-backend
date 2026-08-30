@@ -286,41 +286,102 @@ def test_no_turn_answers_with_the_retired_bypass_text(query, search_tool):
 # ======================================================
 # 5. The rules above are only enforced if the tests run
 # ======================================================
-def test_every_test_file_is_registered_with_the_runner():
+def test_pytest_collects_both_naming_conventions():
     """A suite nobody runs enforces nothing.
 
-    This belongs here because it is the same failure as the one this file
-    exists to prevent, one level up. Thirty-three *_tests.py suites were
-    collected by neither runner -- pytest's default patterns are test_*.py
-    and *_test.py, and *_tests.py matches neither -- so roughly five
-    hundred assertions never executed. Two genuine regressions in the
-    orchestrator extraction sat in that blind spot: a lost Cloud-Mode
-    provider gate, and a conversational model switch replying "Switched to
-    None."
+    This used to check a hand-maintained list in run_all_tests.py, which
+    was the wrong guard for the right worry: the list was the thing that
+    went stale. Thirty-three *_tests.py suites were named in it and still
+    never collected by pytest, because pytest's default python_files is
+    "test_*.py *_test.py" and *_tests.py matches neither. Roughly five
+    hundred assertions did not execute, and inside them sat four that had
+    been contradicting shipped behaviour for months plus one real routing
+    bug.
 
-    Adding a file to backend/tests/ and forgetting to name it in
-    run_all_tests.py is the easiest mistake in this directory to make and
-    the hardest to notice, because nothing goes red.
+    The registry is gone. Collection is the guard now, so this checks the
+    configuration that makes collection complete -- and it reads what
+    pytest itself resolved, not the file, so a config moved to
+    pyproject.toml or overridden on the command line still has to satisfy
+    it.
     """
-    import re
+    import shlex
+
+    patterns = pytestconfig_patterns()
+    assert "test_*.py" in patterns and "*_tests.py" in patterns, (
+        f"pytest is configured to collect {patterns}. Both naming "
+        f"conventions are in use in backend/tests/, so both must be "
+        f"collected or a suite silently stops running."
+    )
+    del shlex
+
+
+def pytestconfig_patterns():
+    """What pytest will actually treat as a test file, as it resolved it."""
+    import _pytest.config
+
+    config = _pytest.config.get_config()
+    config.parse([])
+    return list(config.getini("python_files"))
+
+
+def test_every_suite_in_the_directory_is_collectable():
+    """Named by the same rules pytest uses, and importable.
+
+    A file that matches neither pattern is invisible; a file that matches
+    one but cannot be imported is an ERROR that a "N passed" line does
+    not mention.
+    """
+    import fnmatch
 
     tests_dir = pathlib.Path(__file__).resolve().parent
-    runner = (tests_dir / "run_all_tests.py").read_text(encoding="utf-8")
-    registered = set(re.findall(r'"([\w.]+\.py)"', runner))
+    patterns = pytestconfig_patterns()
 
-    # Modules that hold fixtures or helpers for other suites, not tests.
+    # Modules that hold fixtures or helpers, plus the pytest wrapper.
     helpers = {"run_all_tests.py", "__init__.py", "conftest.py",
                "_sandbox_subprocess_fixtures.py", "phase3_upgrade_helpers.py"}
 
-    unregistered = sorted(
+    uncollected = sorted(
         path.name for path in tests_dir.glob("*.py")
-        if path.name not in helpers and path.name not in registered
+        if path.name not in helpers
+        and not any(fnmatch.fnmatch(path.name, pattern) for pattern in patterns)
     )
-    assert not unregistered, (
-        f"{unregistered} are in backend/tests/ but named in no list in "
-        f"run_all_tests.py, so nothing runs them. Add them to PYTEST_TESTS, "
-        f"LEGACY_TESTS, or NETWORK_TESTS."
+    assert not uncollected, (
+        f"{uncollected} are in backend/tests/ but match none of {patterns}, "
+        f"so pytest will never collect them and nothing will run them."
     )
+
+
+def test_the_runner_is_a_wrapper_and_not_a_second_source_of_truth():
+    """run_all_tests.py must not hold a list that can disagree with pytest.
+
+    It also must not run anything on import: it matches "*_tests.py", so
+    pytest collects this very file, and an unguarded runner would import,
+    run the whole suite, and collect itself again. That hung for four
+    minutes before the guard existed.
+    """
+    import ast
+
+    tests_dir = pathlib.Path(__file__).resolve().parent
+    source = (tests_dir / "run_all_tests.py").read_text(encoding="utf-8")
+    # Parsed, not grepped. The file EXPLAINS why those lists are gone, so
+    # a substring search finds its own documentation and fails -- which
+    # is the recurring way source assertions go wrong in this repo.
+    tree = ast.parse(source)
+
+    assert 'if __name__ == "__main__":' in source, (
+        "run_all_tests.py must not do its work on import; pytest collects it."
+    )
+
+    assigned = {
+        target.id
+        for node in tree.body if isinstance(node, ast.Assign)
+        for target in node.targets if isinstance(target, ast.Name)
+    }
+    for obsolete in ("TESTS", "PYTEST_TESTS", "LEGACY_TESTS", "NETWORK_TESTS"):
+        assert obsolete not in assigned, (
+            f"{obsolete} is a second registry of what to run. pytest.ini "
+            f"decides that now, and two answers is how the first one went stale."
+        )
 
 
 def test_the_bypass_survives_only_for_an_unhealthy_connection(search_tool):

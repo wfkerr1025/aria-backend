@@ -56,6 +56,8 @@ step further down after that if live conditions worsen mid-request.
 
 from __future__ import annotations
 
+import os
+
 import time
 from collections import deque
 from typing import Any, Deque, Dict, Optional
@@ -266,6 +268,48 @@ def _apply_chat_floor(chosen: Optional[str], allow_below: bool) -> Optional[str]
     return chosen
 
 
+# Weights, plus as much again for context, KV cache and the headroom a
+# loaded model actually wants. A rule of thumb, stated as one rather
+# than dressed up as a measurement -- but grounded in the file on disk
+# instead of a constant nobody re-checked.
+_MEMORY_HEADROOM = 2.0
+
+
+def _fits_in_memory(model_id: str) -> bool:
+    """Whether this model can be loaded with the RAM free right now.
+
+    Unknown size means yes. A router that refused every model it could
+    not measure would refuse everything on a machine whose registry has
+    no paths, which is worse than the thing it guards against.
+    """
+    try:
+        from backend.core import model_registry
+
+        entry = model_registry.get_model(model_id) or {}
+        path = entry.get("path")
+        if not path:
+            return True
+
+        size_gb = os.path.getsize(path) / (1024 ** 3)
+        if size_gb <= 0:
+            return True
+
+        snapshot = get_resource_snapshot()
+        free_gb = max(0.0, snapshot.ram_total_gb - snapshot.ram_used_gb)
+        needed = size_gb * _MEMORY_HEADROOM
+
+        if free_gb < needed:
+            logger.info(
+                "_fits_in_memory() -> %s needs about %.1fGB and %.1fGB is free",
+                model_id, needed, free_gb,
+            )
+            return False
+        return True
+    except Exception:  # pragma: no cover - a fit check must not break routing
+        logger.exception("could not size %s; assuming it fits", model_id)
+        return True
+
+
 def _apply_role_floor(chosen: Optional[str], prompt: str, tool_use: bool,
                       allow_below: bool = False) -> Optional[str]:
     """Floor the ladder at the tier this turn's WORK needs.
@@ -315,6 +359,40 @@ def _apply_role_floor(chosen: Optional[str], prompt: str, tool_use: bool,
             target = MEDIUM_MODEL_ID
         if not _is_installed(target):
             return chosen
+
+        # A floor raises the tier the WORK needs. It does not get to
+        # ignore what the machine can hold. Without this, a floor applied
+        # after the ladder's resource step-down quietly undid it, and a
+        # heavy-looking prompt put a 12B model on a machine with twelve
+        # gigabytes free.
+        #
+        # Found by model_routing_tests.py, which asserts exactly that and
+        # which nothing collected until pytest.ini did. It is also the
+        # failure mode this project has already met once: pinning a model
+        # without consulting resources refused turns on a loaded machine,
+        # and was removed for it.
+        #
+        # WHY NOT MIN_FREE_RAM_GB_FOR_DIFFICULT_TIER
+        # ------------------------------------------
+        # That constant is the LADDER's rule, and it is a spec number
+        # rather than a measurement: 48GB free to run a model that is
+        # 8.1GB on disk. Applying it here would have taken the 12B away
+        # from tool work on this very machine -- 63.7GB total, 43.7GB
+        # free, five times the model's size -- where it has been creating
+        # files correctly all session. A floor that refuses a model the
+        # machine is demonstrably running is not caution, it is a bug
+        # with a safety-sounding name.
+        #
+        # So the floor asks the question it actually cares about: does
+        # this model fit right now. Weights plus as much again for
+        # context, KV cache and headroom.
+        if not _fits_in_memory(target):
+            logger.info(
+                "select_local_model_for_prompt() -> %s prompt wants %s, which does "
+                "not fit in free memory; flooring at %s instead",
+                kind, target, MEDIUM_MODEL_ID,
+            )
+            target = MEDIUM_MODEL_ID
 
         if _LADDER.index(chosen) > _LADDER.index(target):
             logger.info(

@@ -454,3 +454,161 @@ def test_the_archive_is_never_mistaken_for_staged_work(project):
     fs_plan.apply_operations(project)
 
     assert ghost.staged_files() == []
+
+
+# ======================================================
+# The commit policy: one full run, and every failure counts
+# ======================================================
+
+def test_a_commit_runs_the_whole_suite_not_a_selection(project):
+    """Commit is where guessing the blast radius stops being cheap."""
+    stage_edit("greet.py", "def hello():\n    return 'hi'  # same\n")
+    report = commit(project)
+
+    assert report["verification"]["whole_suite"] is True
+
+
+def test_a_write_does_not_run_the_whole_suite(project):
+    """That belongs to commit, once. Here it would be paid twice."""
+    report, _ = create("NOTES.md", "Notes.\n")
+
+    assert report["verification"].whole_suite is False
+    assert report["verification"].suites
+
+
+def test_a_run_that_does_not_finish_is_not_treated_as_safe(project, monkeypatch):
+    """Inconclusive is harm at commit time.
+
+    A crashed run prints no failures, so "nothing failed" and "the runner
+    died" are the same output. At commit that doubt costs the change, not
+    the project.
+    """
+    original = (project / "greet.py").read_bytes()
+    stage_edit("greet.py", "def hello():\n    return 'changed'\n")
+    monkeypatch.setattr(cv, "_run", lambda *a, **k: None)
+
+    report = commit(project)
+
+    assert report["status"] == "undone"
+    assert (project / "greet.py").read_bytes() == original
+    assert report["verification"]["ran"] is True
+    assert report["verification"]["passed"] is False
+    assert "did not finish" in report["verification"]["message"]
+    assert "cannot say this is safe" in report["verification"]["message"].replace(
+        "I cannot", "cannot")
+
+
+# --- revert covers every kind of change --------------------------------
+
+def test_a_move_that_breaks_the_tests_is_moved_back(project):
+    """test_greet.py imports greet; moving it out of reach breaks that."""
+    from backend.core import fs_plan
+
+    original = (project / "greet.py").read_bytes()
+    (project / "lib").mkdir()
+    fs_plan.stage_operation(fs_plan.OP_MOVE, "greet.py", "lib/greet.py", root=project)
+
+    report = commit(project)
+
+    assert report["status"] == "undone"
+    assert (project / "greet.py").read_bytes() == original
+    assert not (project / "lib" / "greet.py").exists()
+
+
+def test_a_rename_that_breaks_the_tests_is_renamed_back(project):
+    from backend.core import fs_plan
+
+    original = (project / "greet.py").read_bytes()
+    fs_plan.stage_operation(fs_plan.OP_RENAME, "greet.py", "salutation.py", root=project)
+
+    report = commit(project)
+
+    assert report["status"] == "undone"
+    assert (project / "greet.py").read_bytes() == original
+    assert not (project / "salutation.py").exists()
+
+
+def test_a_new_file_committed_by_hand_is_removed_on_revert(project):
+    """A creation has no previous bytes, so undoing it means deleting it."""
+    (project / "MANIFEST").write_text("greet.py\n", encoding="utf-8", newline="")
+    (project / "tests" / "test_manifest_guard.py").write_text(
+        GUARD, encoding="utf-8", newline="")
+
+    # Staged, but NOT auto-committed -- the content check is bypassed by
+    # staging it directly, so this is the commit path creating a file.
+    stage_edit("extra.py", "def extra():\n    return 1\n")
+
+    report = commit(project)
+
+    assert report["status"] == "undone"
+    assert not (project / "extra.py").exists()
+    assert ghost.staged_files() == ["extra.py"]
+
+
+def test_the_project_is_byte_identical_after_a_revert(project):
+    """Not "looks right" -- identical, every file, including mtimes' worth
+    of content."""
+    def fingerprint():
+        return {
+            str(p.relative_to(project)).replace(chr(92), "/"): p.read_bytes()
+            for p in sorted(project.rglob("*"))
+            if p.is_file() and ".aria_staging" not in str(p)
+        }
+
+    before = fingerprint()
+    stage_edit("greet.py", "def hello():\n    return 'BROKEN'\n")
+    commit(project)
+
+    assert fingerprint() == before
+
+
+def test_a_commit_run_leaves_no_cache_directories_behind(project):
+    """The whole suite runs here, so this is where litter would appear."""
+    stage_edit("greet.py", "def hello():\n    return 'hi'  # ok\n")
+    commit(project)
+
+    left = {p.name for p in project.rglob("*") if p.is_dir()}
+    assert ".pytest_cache" not in left
+    assert "__pycache__" not in left
+
+
+# ======================================================
+# What a live run turned up
+# ======================================================
+
+def test_an_operation_refuses_an_argument_it_does_not_have(project):
+    """Measured live: nemo-12b sent create_folder a "content" argument.
+
+    The handler raised TypeError and the reply became a wall of
+    "_staging_handler.<locals>.handler() got an unexpected keyword
+    argument 'content'".
+
+    Refused, not ignored: dropping "content" from a create_folder would
+    make the folder and throw away the file the model was writing.
+    """
+    from backend.core.tool_registry import execute_tool, PERMISSION_FILESYSTEM
+
+    result = execute_tool(
+        "create_folder",
+        {"path": "src", "content": "print('hi')", "confirm": True},
+        {PERMISSION_FILESYSTEM},
+    )
+
+    assert result.ok is False
+    assert "does not take content" in str(result.error)
+    assert "edit_file" in str(result.error)
+    assert not (project / "src").exists()
+
+
+def test_the_same_action_repeated_is_run_once(project):
+    """Eleven create_folders and three run_tests came back in one answer.
+
+    Running an operation eleven times is not eleven times as correct, and
+    reporting it eleven times is not eleven times as clear.
+    """
+    from backend.core.action_plan import parse_actions
+
+    block = '```json\n{"tool": "create_folder", "path": "src"}\n```\n'
+    actions = parse_actions(block * 11)
+
+    assert [a.tool_name for a in actions] == ["create_folder"]

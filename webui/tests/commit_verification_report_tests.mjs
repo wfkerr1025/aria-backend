@@ -59,6 +59,23 @@ test("an undone commit says something even with no message", () => {
   assert.ok(!said.includes("1 file"), said);
 });
 
+test("a run that did not finish is shown as undone, not as passing", () => {
+  // Inconclusive is harm at commit time. The page must not soften it
+  // into "committed" just because no test was named.
+  const said = describeReport({
+    status: "undone",
+    files: ["greet.py"],
+    verification: {
+      message: "I ran your full test suite and it did not finish, so I cannot "
+             + "say this is safe. I put your project back the way it was.",
+    },
+  });
+
+  assert.ok(said.startsWith("Undone."), said);
+  assert.ok(said.includes("did not finish"), said);
+  assert.ok(!said.includes("committed"), said);
+});
+
 test("a successful commit reports that the tests ran", () => {
   const said = describeReport({
     status: "committed",

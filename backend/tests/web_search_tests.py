@@ -26,6 +26,8 @@ import os
 import sys
 import traceback
 
+import pytest
+
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -48,12 +50,51 @@ def _fake_http_ok(data):
     return {"status": "ok", "data": data, "url": "http://x", "code": 200, "ok": True, "headers": {}, "elapsed_ms": 1.0}
 
 
+# ------------------------------------------------------------------
+# PRESERVED, NOT PASSING, AND NOT HIDDEN.
+#
+# Every test below imports tools.web_search._normalize_data. That
+# function no longer exists: it was added in a1035b0 to fix the crash
+# described above, and removed in 9e0c90b when search became
+# multi-provider and normalization moved into the per-provider
+# collectors. The tests were never updated, and nothing noticed for the
+# same reason nothing noticed anything else in this file -- pytest's
+# default python_files never matched "*_tests.py", so the suite was
+# collected by neither runner.
+#
+# They are marked xfail rather than deleted or rewritten. Deleting them
+# throws away a documented production crash and the shape of the fix.
+# Rewriting them against the current multi-provider code would mean
+# asserting whatever it happens to do today, which is not a regression
+# test, it is a snapshot with an assert in front of it.
+#
+# So they run, they report as XFAIL in every run, and the reason says
+# what has to happen: work out where per-item normalization lives now
+# and point these at it.
+#
+# strict=False deliberately -- if the API comes back, an XPASS should
+# say "you can unmark these", not fail the suite and block a commit.
+pytestmark = pytest.mark.xfail(
+    reason="tools.web_search._normalize_data was removed in 9e0c90b "
+           "(multi-provider search); these need repointing at whatever "
+           "normalizes per-item data now",
+    strict=False,
+)
+
 tests = []
 
 
 def test(fn):
     tests.append(fn)
     return fn
+
+
+# Not a test. It is the registration decorator these files used before
+# they were collected by pytest, and pytest reads any module-level
+# callable named test_* or test as one -- then errors on the "fn"
+# parameter it cannot supply as a fixture. Three ERRORs, in three files,
+# from a helper doing its job.
+test.__test__ = False
 
 
 # ============================================================
