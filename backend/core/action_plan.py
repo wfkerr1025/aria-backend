@@ -56,6 +56,7 @@ logger = get_logger(__name__)
 
 __all__ = [
     "ACTION_TOOLS",
+    "BARE_AFFIRMATIVES",
     "LIVE_EXECUTION_PHRASES",
     "NEGATION_VETO",
     "parse_actions",
@@ -65,7 +66,17 @@ __all__ = [
 
 # The tools a model may ask to run as an action, as opposed to the ones a
 # turn uses to answer a question. Narrow on purpose.
-ACTION_TOOLS = frozenset({"edit_file", "run_tests"})
+# The tools a model may ask for in an answer.
+#
+# The five shape-changing operations are here because they are safe to
+# be here: their handlers stage and cannot touch the project (see
+# backend/core/tool_registry.register_fs_operation_tools). Adding them to
+# this set widens what ARIA can PROPOSE, not what it can do without
+# being asked twice.
+ACTION_TOOLS = frozenset({
+    "edit_file", "run_tests",
+    "delete_file", "create_folder", "move_file", "rename_file", "copy_file",
+})
 
 # What a user says to mean "do it for real". Matched whole-word, and read
 # from the user's message only.
@@ -75,7 +86,34 @@ LIVE_EXECUTION_PHRASES: tuple[str, ...] = (
     "run the plan", "make the edits", "make the edit",
     "perform the actions", "perform the action",
     "go ahead and do it", "do it for real",
+
+    # Answering the question ARIA just asked.
+    #
+    # The first consent is a reply to "I will delete X and move Y.
+    # Proceed?", and the natural reply to that is "yes, do it" -- which
+    # matched nothing. The specification for this feature names that
+    # exact phrase, and a consent step that does not recognise its own
+    # standard answer is a consent step that quietly never fires.
+    #
+    # Safe to widen because of what this consent BUYS: staging, and only
+    # staging. Nothing here reaches the project. The plan then has to be
+    # read and committed -- a second, separate act -- so the worst case
+    # for an over-eager match is an operation the user sees listed and
+    # discards.
+    "yes do it", "yes please do it", "do it", "go ahead",
+    "please do", "please proceed", "proceed", "confirmed",
 )
+
+# Affirmatives that count only as a WHOLE message.
+#
+# "yes" is the most natural answer to "Proceed?" and the most dangerous
+# substring in the language -- "yes, but not the delete" contains it, and
+# so does "yesterday". Matched only when the entire message is one of
+# these, which is exactly the shape of a reply to a yes/no question.
+BARE_AFFIRMATIVES: frozenset[str] = frozenset({
+    "yes", "yep", "yeah", "y", "ok", "okay", "sure", "confirm", "approved",
+    "yes please", "do it", "go", "go ahead", "affirmative",
+})
 
 # What turns a directive into its opposite. Checked first, and
 # deliberately blunt: "I don't want to wait, apply the changes" is
@@ -116,7 +154,11 @@ def requests_live_execution(user_text: str) -> bool:
         logger.info("live execution not granted: the request was negated")
         return False
 
-    return any(f" {phrase} " in normalized for phrase in LIVE_EXECUTION_PHRASES)
+    if any(f" {phrase} " in normalized for phrase in LIVE_EXECUTION_PHRASES):
+        return True
+
+    # A bare "yes". Whole message only -- see BARE_AFFIRMATIVES.
+    return normalized.strip() in BARE_AFFIRMATIVES
 
 
 def _invocation(payload, index: int) -> ToolInvocation | None:

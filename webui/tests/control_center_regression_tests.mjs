@@ -128,6 +128,34 @@ test("a cancelled prompt sends nothing", () => {
   assert.ok(commits.includes("=== null) return"));
 });
 
+test("the commit dialog lists the staged plan", () => {
+  // This dialog IS the second consent. The first was a sentence in a
+  // chat, possibly several turns ago; this one has to say what will
+  // actually happen, now, to this project.
+  assert.ok(pageJs.includes("planSummary"));
+  assert.ok(/and runs:/.test(pageJs));
+});
+
+test("the plan in that dialog is readable", () => {
+  // Set with textContent, so without pre-wrap three operations collapse
+  // into one run-on sentence -- found by opening it and looking.
+  assert.ok(/\.ws-dialog-message\s*\{[^}]*white-space:\s*pre-wrap/.test(pageCss));
+});
+
+test("staged operations are shown separately from diffs", () => {
+  // They change the shape of the tree and carry no diff, so a plan that
+  // only deletes would otherwise render as an empty workspace with a
+  // live Commit button.
+  assert.ok(pageJs.includes("renderOperations"));
+  assert.ok(pageJs.includes("pending_operations"));
+  assert.ok(pageCss.includes(".ws-op-destructive"));
+});
+
+test("commit is enabled when only operations are staged", () => {
+  assert.ok(/const anything = pending\.length \+ operations\.length/.test(pageJs));
+  assert.ok(/data-all="commit" \$\{anything \?/.test(pageJs));
+});
+
 test("removing a workspace says what will survive it", () => {
   // Removing is bookkeeping, never a delete, and a user about to click
   // it should know their staged work stays on disk.

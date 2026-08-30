@@ -234,7 +234,12 @@ def test_the_model_cannot_commit_by_writing_the_words():
     # enforced by nothing but the model's manners.
     assert "commit_changes" not in ACTION_TOOLS
     assert "discard_staged_changes" not in ACTION_TOOLS
-    assert ACTION_TOOLS == frozenset({"edit_file", "run_tests"})
+    # The property is that COMMIT is not an action, not that the set has
+    # two members. Five staging operations were added above it and the
+    # invariant is untouched: none of them writes to the project, and
+    # nothing a model can name applies a staged plan.
+    for never in ("commit_changes", "discard_staged_changes", "commit", "apply_operations"):
+        assert never not in ACTION_TOOLS
 
 
 # ------------------------------------------------------

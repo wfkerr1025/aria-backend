@@ -13,6 +13,19 @@ from backend.core.local_inference_engine import InferenceRequest, InferenceMessa
 from backend.core.answer_stream import AnswerStream
 from backend.core import turn_status
 from backend.chat import supervisor_layer
+
+# Hold every token until the whole reply exists, supervise it, then send
+# it as one piece.
+#
+# The cost is real and is the point of the flag: nothing appears until
+# generation finishes, which on a 12B is the length of the answer. What
+# it buys is that a leaked role marker or a repeated paragraph never
+# reaches the screen -- and once read, those cannot be taken back.
+#
+# Set False to go back to token-by-token streaming, where AnswerStream
+# filters incrementally and supervision only reaches the text that drives
+# actions.
+BUFFER_FOR_SUPERVISION = True
 from backend.core.turn_orchestrator import orchestrate_turn
 from backend.core.tool_orchestrator import run_answer_actions
 from backend.core.turn_types import (
@@ -885,9 +898,19 @@ class WebSocketHandler:
                     self._emit_status(turn_status.WRITING, tool_runs=list(tool_runs or [])),
                     loop,
                 )
+                if BUFFER_FOR_SUPERVISION:
+                    # Nothing reaches the client during generation. The
+                    # status above is what says work is happening.
+                    return
             elif packet.get("type") == "stream_token":
                 raw = packet.get("token", "")
                 accumulated_tokens.append(raw)
+
+                if BUFFER_FOR_SUPERVISION:
+                    # Accumulated above; held back here. AnswerStream runs
+                    # over the whole text at the end instead, exactly as
+                    # the REST route already does.
+                    return
 
                 publishable = answer.push(raw)
                 if not publishable:
@@ -897,6 +920,12 @@ class WebSocketHandler:
                     return
                 packet = {**packet, "token": publishable}
             elif packet.get("type") == "stream_end":
+                if BUFFER_FOR_SUPERVISION:
+                    # The supervised text has not been produced yet, so
+                    # there is nothing to end. _deliver_supervised sends
+                    # start, token and end together once it has.
+                    return
+
                 # Anything the filter was still holding when generation
                 # stopped -- a final line that never got its newline.
                 tail = answer.finish()
@@ -921,9 +950,15 @@ class WebSocketHandler:
 
         try:
             await loop.run_in_executor(None, self.streamer.stream, request, send_packet_sync)
-            await self._run_answer_actions(self._supervise(
-                "".join(accumulated_tokens), request.model_id,
-            ))
+
+            answer_text = "".join(accumulated_tokens)
+
+            if BUFFER_FOR_SUPERVISION:
+                answer_text = await self._deliver_supervised(
+                    answer_text, request.model_id, answer,
+                )
+
+            await self._run_answer_actions(self._supervise(answer_text, request.model_id))
         except Exception as e:
             # streaming_engine.stream() catches its own errors internally
             # and emits a stream_error packet instead of raising, so this
@@ -936,6 +971,69 @@ class WebSocketHandler:
                 "type": "error",
                 "message": f"Inference error: {str(e)}"
             })
+
+    # -----------------------------------------------------
+    # Buffered delivery
+    # -----------------------------------------------------
+    async def _deliver_supervised(self, answer_text: str, model_id, answer) -> str:
+        """Supervise the whole reply, then send it.
+
+        This is the trade the buffering makes explicit. Token-by-token
+        streaming shows progress immediately and cannot be taken back;
+        buffering can clean the text before anyone reads it and costs the
+        length of the whole answer in silence. Both are real. The choice
+        here is buffering, because a leaked "**assistant:**" or a
+        half-repeated paragraph is permanent once it has been read, and
+        the status packet keeps the UI honest about the wait.
+
+        Never fails the turn. If supervision raises, the unsupervised
+        answer is sent -- silence would be the one outcome worse than
+        untidy prose.
+        """
+        loop = asyncio.get_running_loop()
+
+        try:
+            supervised = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    supervisor_layer.supervise_full,
+                    answer_text, model_id,
+                    mode=self.router.mode_manager.get_mode(),
+                ),
+            )
+            text = supervised.text
+            if supervised.changed:
+                unified_log("websocket", "INFO", "supervisor revised the reply", {
+                    "model_id": model_id, "repairs": supervised.repairs,
+                    "supervised": supervised.supervised,
+                    "rejected": supervised.rejected,
+                    "conversation_id": self.conversation_id,
+                })
+        except Exception:
+            logger.exception("supervision failed; sending the unsupervised answer")
+            text = answer_text
+
+        # The same filter the unbuffered path applies token by token. One
+        # pass over the finished text is equivalent, which is what the
+        # REST route has always relied on.
+        text = (answer.push(text) or "") + (answer.finish() or "")
+        if any(answer.stats.values()):
+            unified_log("websocket", "INFO", "answer_stream filtered model output", {
+                **answer.stats, "conversation_id": self.conversation_id,
+            })
+
+        _, optimize_info = optimize_response(text)
+        log_response_optimized("websocket", optimize_info, self.conversation_id)
+
+        request_id = id(text)
+        await self._send({"type": "stream_start", "modelId": model_id,
+                          "requestId": request_id})
+        if text:
+            await self._send({"type": "stream_token", "modelId": model_id,
+                              "requestId": request_id, "token": text})
+        await self._send({"type": "stream_end", "modelId": model_id,
+                          "requestId": request_id})
+        return text
 
     # -----------------------------------------------------
     # Checking the answer before acting on it

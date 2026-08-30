@@ -151,10 +151,15 @@ const Workspaces = {
   // EMPTY. A pre-filled "commit the changes" would be this page writing
   // the consent and the user pressing OK.
   async commit(id, files) {
+    // The second consent, and the reason it is worth having: the first
+    // one was a sentence in a chat, possibly several turns ago. This one
+    // lists what will actually happen, now, to this project.
+    const plan = this.planSummary();
     const user_text = await dialog.text({
       title: files ? "Commit this file" : "Commit all staged changes",
-      message: "This writes the staged version into the project. "
-             + "Say what you want to happen, in your own words.",
+      message: "This writes the staged version into the project"
+             + (plan ? " and runs:\n" + plan : "")
+             + "\n\nSay what you want to happen, in your own words.",
       label: "For example: commit the changes",
     });
     if (user_text === null) return;
@@ -176,6 +181,12 @@ const Workspaces = {
   rollback(id, files) {
     this.setBusy(true);
     bridge.send(IPC.WORKSPACE_ROLLBACK_REQUEST, { id, files });
+  },
+
+  planSummary() {
+    const operations = this.details?.pending_operations || [];
+    if (!operations.length) return "";
+    return operations.map((op) => `  - ${op.summary}`).join("\n");
   },
 
   showError(message) {
@@ -295,6 +306,11 @@ const Workspaces = {
     if (!d) { host.innerHTML = ""; return; }
 
     const pending = d.pending_changes || [];
+    const operations = d.pending_operations || [];
+    // A plan that only deletes stages no content, so gating the buttons
+    // on pending_changes alone left Commit greyed out with a deletion
+    // waiting -- the user asked twice and the second ask was disabled.
+    const anything = pending.length + operations.length > 0;
     const report = d.report;
 
     host.innerHTML = `
@@ -306,10 +322,12 @@ const Workspaces = {
       ${report ? `<p class="ws-report ws-report-${esc(report.status)}">${esc(describeReport(report))}</p>` : ""}
 
       <div class="ws-actions">
-        <button type="button" data-all="commit" ${pending.length ? "" : "disabled"}>Commit All</button>
-        <button type="button" data-all="discard" ${pending.length ? "" : "disabled"}>Discard All</button>
+        <button type="button" data-all="commit" ${anything ? "" : "disabled"}>Commit All</button>
+        <button type="button" data-all="discard" ${anything ? "" : "disabled"}>Discard All</button>
         <button type="button" data-all="rollback" ${pending.length ? "" : "disabled"}>Rollback All</button>
       </div>
+
+      ${renderOperations(d.pending_operations || [])}
 
       <h3>Pending changes</h3>
       ${pending.length === 0 ? '<p class="ws-empty">Nothing staged.</p>' : pending.map((p) => `
@@ -416,6 +434,24 @@ const dialog = {
   text(options) { return this.open({ ...options, withInput: true }); },
   confirm(options) { return this.open({ ...options, withInput: false }); },
 };
+
+function renderOperations(operations) {
+  if (!operations.length) return "";
+  // Destructive first. They are what the user is actually deciding
+  // about, and a delete listed under three folder creations is a delete
+  // that gets skimmed past.
+  const ordered = [...operations].sort((a, b) => (b.destructive === true) - (a.destructive === true));
+  return `
+    <h3>Staged operations</h3>
+    <p class="ws-op-note">These change the shape of the project. Nothing runs until you commit.</p>
+    <ul class="ws-ops">
+      ${ordered.map((op) => `
+        <li class="ws-op ${op.destructive ? "ws-op-destructive" : ""}">
+          <span class="ws-tag ${op.destructive ? "ws-tag-warn" : "ws-tag-ok"}">${esc(op.op)}</span>
+          <span>${esc(op.summary)}</span>
+        </li>`).join("")}
+    </ul>`;
+}
 
 function describeReport(report) {
   if (report.status === "refused") {

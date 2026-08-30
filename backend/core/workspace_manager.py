@@ -106,6 +106,16 @@ def refresh_workspace() -> dict:
     return describe_workspace()
 
 
+def _pending_ops(root) -> list:
+    from backend.core import fs_plan
+
+    try:
+        return fs_plan.pending_operations(root)
+    except Exception:  # pragma: no cover - a listing fault is not fatal
+        logger.exception("could not list staged operations")
+        return []
+
+
 def describe_workspace() -> dict:
     """What the working-directory panel shows.
 
@@ -142,6 +152,9 @@ def describe_workspace() -> dict:
         # and a status line that has to wait for another packet shows a
         # wrong number until it arrives.
         "workspace_count": len(_state.workspaces),
+        # Counted alongside staged files: "0 staged" while a delete is
+        # waiting would be a true statement and a misleading one.
+        "staged_operations": len(_pending_ops(project)),
     }
 
 
@@ -352,9 +365,16 @@ def get_workspace_list() -> list:
 
 def get_workspace_details(workspace_id: str) -> dict:
     """One project, with its pending changes and their diffs."""
+    from backend.core import fs_plan
+
     info = get_workspace(workspace_id)
     details = info.describe()
     details["pending_changes"] = ghost_workspace.get_pending_changes(info.root)
+    # The staged OPERATIONS -- delete, move, rename, copy, new folder.
+    # They carry no diff because they are not content changes, so the
+    # page has to render them separately or a plan that only deletes
+    # looks like an empty workspace with a live Commit button.
+    details["pending_operations"] = fs_plan.pending_operations(info.root)
     return details
 
 

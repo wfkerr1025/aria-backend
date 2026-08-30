@@ -284,11 +284,14 @@ def _workspace_reply(request: TurnRequest, telemetry: list) -> TurnResult:
         )
 
     staged = int(described.get("staged_count") or 0)
+    operations = int(described.get("staged_operations") or 0)
     lines = [
         f"My active workspace is: {described.get('project_root')}",
         f"Ghost workspace: {described.get('ghost_root')}",
         f"Staged files: {staged}",
     ]
+    if operations:
+        lines.append(f"Staged operations: {operations}")
 
     # Named, not summarised as a number: with more than one project
     # registered, "which one is active" is the actual question behind the
@@ -302,12 +305,17 @@ def _workspace_reply(request: TurnRequest, telemetry: list) -> TurnResult:
             for w in others
         )
 
-    if staged:
+    if staged or operations:
         lines.append("")
         lines.append(
-            "Staged edits live in the ghost workspace and reach the project "
-            "only when you commit them."
+            "Staged changes live in the ghost workspace and reach the project "
+            "only when you commit them, in Settings -> Workspaces."
         )
+        # Said explicitly because a chat message cannot commit, and will
+        # not be made able to: the second consent is a separate act, in a
+        # place that shows what is about to happen. Answering "commit the
+        # staged changes" with a status report and no route forward is
+        # accurate and useless.
 
     return TurnResult(
         kind=KIND_TEXT,

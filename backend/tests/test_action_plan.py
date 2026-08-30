@@ -101,7 +101,7 @@ def test_a_malformed_action_is_refused_not_repaired(body):
 
 
 @pytest.mark.parametrize("tool", ["web_search", "weather", "read_file",
-                                  "rm", "shell", "delete_file", "run_shell"])
+                                  "rm", "shell", "format_disk", "run_shell"])
 def test_only_action_tools_may_be_named(tool):
     body = '{"tool": "%s", "args": {"path": "a.txt"}}' % tool
 
@@ -112,9 +112,33 @@ def test_only_action_tools_may_be_named(tool):
 
 
 def test_the_allowlist_is_narrow_and_deliberate():
-    assert ap.ACTION_TOOLS == frozenset({"edit_file", "run_tests"})
+    # Seven now, not two. The five that were added change the SHAPE of
+    # the tree -- delete, move, rename, copy, mkdir -- and they are safe
+    # to name here for a structural reason rather than a careful one:
+    # their handlers stage into fs_plan's journal and contain no code
+    # that touches the project. Widening this set widened what ARIA may
+    # PROPOSE, not what it may do unasked.
+    assert ap.ACTION_TOOLS == frozenset({
+        "edit_file", "run_tests",
+        "delete_file", "create_folder", "move_file", "rename_file", "copy_file",
+    })
     for never in ("read_file", "web_search", "weather"):
         assert never not in ap.ACTION_TOOLS
+
+
+def test_no_action_tool_can_reach_the_project_by_itself():
+    # The invariant behind the widening. Every mutating action either
+    # writes into the ghost workspace (edit_file, redirected by
+    # tool_orchestrator) or appends to the staged plan (the five below).
+    # None of them has a path to the project; only commit does.
+    import inspect
+
+    from backend.core import tool_registry
+
+    source = inspect.getsource(tool_registry._staging_handler)
+    for forbidden in ("unlink", "rmtree", "os.remove", "shutil.move", "mkdir"):
+        assert forbidden not in source, (
+            f"the staging handler calls {forbidden}; it must only record")
 
 
 def test_an_answer_full_of_actions_is_capped():
@@ -219,7 +243,7 @@ def test_an_action_is_shaped_for_the_orchestrator():
 # Tools ARIA does not have
 #
 # Found in the audit. ARIA implements two action tools, edit_file and
-# run_tests. There is no delete_file and no folder tool, so an answer
+# run_tests. There was no delete_file and no folder tool, so an answer
 # saying "I'll remove notes.md" and emitting a delete_file block parsed
 # to zero actions, returned None, and reported NOTHING -- the file was
 # not deleted and nobody was told. A user reading that answer has every
@@ -231,9 +255,9 @@ def test_an_action_is_shaped_for_the_orchestrator():
 def test_a_tool_that_does_not_exist_is_named():
     from backend.core.action_plan import unsupported_actions
 
-    text = '```json\n{"tool": "delete_file", "path": "notes.md"}\n```'
+    text = '```json\n{"tool": "send_email", "to": "a@b.c"}\n```'
 
-    assert unsupported_actions(text) == ["delete_file"]
+    assert unsupported_actions(text) == ["send_email"]
 
 
 def test_a_supported_tool_is_not_reported_as_missing():
@@ -255,10 +279,10 @@ def test_prose_in_a_fence_is_not_a_missing_tool():
 def test_each_missing_tool_is_named_once():
     from backend.core.action_plan import unsupported_actions
 
-    text = ('```json\n{"tool": "delete_file", "path": "a"}\n```\n'
-            '```json\n{"tool": "delete_file", "path": "b"}\n```')
+    text = ('```json\n{"tool": "send_email", "to": "a"}\n```\n'
+            '```json\n{"tool": "send_email", "to": "b"}\n```')
 
-    assert unsupported_actions(text) == ["delete_file"]
+    assert unsupported_actions(text) == ["send_email"]
 
 
 def test_the_turn_reports_a_tool_it_could_not_run(tmp_path, monkeypatch):
@@ -268,14 +292,14 @@ def test_the_turn_reports_a_tool_it_could_not_run(tmp_path, monkeypatch):
     monkeypatch.setenv(file_tools.ENV_WORKSPACE, str(tmp_path))
 
     report = run_answer_actions(
-        'I will remove it.\n\n```json\n{"tool": "delete_file", "path": "notes.md"}\n```',
+        'I will remove it.\n\n```json\n{"tool": "send_email", "to": "a@b.c"}\n```',
         "please delete it",
     )
 
     assert report is not None, "a refused action reported nothing at all"
     assert report["status"] == "unsupported"
-    assert report["unsupported"] == ["delete_file"]
-    assert any("delete_file" in note for note in report["notes"])
+    assert report["unsupported"] == ["send_email"]
+    assert any("send_email" in note for note in report["notes"])
 
 
 def test_an_answer_with_no_actions_still_reports_nothing(tmp_path, monkeypatch):

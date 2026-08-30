@@ -81,6 +81,11 @@ __all__ = [
 
 STAGING_DIRNAME = ".aria_staging"
 
+# What lives in the staging root and is NOT the user's work. Anything
+# here is skipped by staged_files(), so it is never diffed, never listed
+# as a pending change, and never committed into the project.
+_BOOKKEEPING = frozenset({".snapshots", ".fs_plan.json"})
+
 COMMIT_PHRASES: tuple[str, ...] = (
     "commit the changes", "commit changes", "commit it", "commit this",
     "apply the changes", "apply the change", "apply it",
@@ -189,21 +194,30 @@ def stage_path(path: str, root: Path | None = None) -> str:
 def staged_files(root: Path | None = None) -> list[str]:
     """Project-relative paths with something staged, sorted.
 
-    Snapshots are not staged files. They live under the staging root
-    because that is where ARIA's scratch belongs, but listing them here
-    would put .snapshots/index.json in the pending-changes list, show it
-    a diff, and -- on the next commit -- write ARIA's own bookkeeping
-    into the user's project.
+    ARIA's own bookkeeping is not a staged file. Snapshots and the
+    operation journal live under the staging root because that is where
+    ARIA's scratch belongs, but listing them here would put
+    .snapshots/index.json and .fs_plan.json in the pending-changes list,
+    show each a diff, and -- on the next commit -- write ARIA's
+    bookkeeping into the user's project.
+
+    Named explicitly rather than excluded by the leading dot. A blanket
+    dotfile rule reads as tidier and would silently refuse to stage
+    .gitignore, .env and .editorconfig, which are files a user edits.
+    _BOOKKEEPING is the list, and a test fails if something is added to
+    the staging root without being added to it.
     """
     base = staging_root(root)
     if not base.is_dir():
         return []
 
-    snapshots = base / SNAPSHOT_DIRNAME
+    def is_bookkeeping(relative: Path) -> bool:
+        return relative.parts and relative.parts[0] in _BOOKKEEPING
+
     return sorted(
-        str(p.relative_to(base)).replace("\\", "/")
+        str(relative).replace("\\", "/")
         for p in base.rglob("*")
-        if p.is_file() and snapshots not in p.parents
+        if p.is_file() and not is_bookkeeping(relative := p.relative_to(base))
     )
 
 
@@ -520,12 +534,25 @@ def commit_changes(user_text: str, files=None, root: Path | None = None) -> dict
         return {"status": "refused", "reason": "no explicit request",
                 "files": [], "unknown": []}
 
+    from backend.core import fs_plan
+
     names, unknown = _selected(files, root)
-    if not names:
+
+    # Staged OPERATIONS are part of the same commit. A plan that deletes
+    # notes.md and stages no content would otherwise report "nothing
+    # staged" and quietly do nothing -- the user asked twice and got
+    # silence.
+    #
+    # Applied only on a whole-workspace commit. A per-file commit names
+    # content, and there is no sensible reading of "commit main.py" that
+    # also means "and delete notes.md".
+    operations = fs_plan.pending_operations(root) if files is None else []
+
+    if not names and not operations:
         return {
             "status": "empty",
             "reason": "nothing staged" if not unknown else "none of those are staged",
-            "files": [], "unknown": unknown,
+            "files": [], "unknown": unknown, "operations": [],
         }
 
     written: list[str] = []
@@ -546,9 +573,18 @@ def commit_changes(user_text: str, files=None, root: Path | None = None) -> dict
             logger.exception("commit failed for %s", name)
             failed.append({"file": name, "error": str(error)})
 
+    # Content first, then the shape of the tree. "Rewrite main.py, then
+    # move it into src/" is a sequence a user would say out loud and
+    # expect to work; the reverse order writes to a path that has just
+    # stopped existing.
+    applied = fs_plan.apply_operations(root) if operations else {"applied": [], "failed": []}
+    failed.extend({"file": entry["summary"], "error": entry["error"]}
+                  for entry in applied["failed"])
+
     return {
         "status": "committed" if not failed else "partial",
         "files": written,
+        "operations": applied["applied"],
         "failed": failed,
         "unknown": unknown,
         "diffs": {name: diff_for(name, root) for name in written},
@@ -556,20 +592,40 @@ def commit_changes(user_text: str, files=None, root: Path | None = None) -> dict
 
 
 def discard_changes(user_text: str, files=None, root: Path | None = None) -> dict:
-    """Throw staged files away, if the user asked. Never touches the project."""
+    """Throw staged files away, if the user asked. Never touches the project.
+
+    A whole-workspace discard drops the staged OPERATIONS too. Leaving
+    them behind would mean a user who discarded everything still had a
+    delete waiting for their next commit -- which is the single worst
+    thing a staging system can get wrong.
+    """
     if not requests_discard(user_text):
         return {"status": "refused", "reason": "no explicit request",
                 "files": [], "unknown": []}
 
+    from backend.core import fs_plan
+
     names, unknown = _selected(files, root)
-    if not names:
-        return {"status": "empty", "files": [], "unknown": unknown}
+    operations = fs_plan.pending_operations(root) if not files else []
+
+    if not names and not operations:
+        return {"status": "empty", "files": [], "unknown": unknown, "operations": 0}
 
     if not files:
-        # Everything: the directory goes, snapshots with it.
+        # Everything: the directory goes, snapshots and the operation
+        # journal with it.
+        #
+        # The early return above used to fire whenever no CONTENT was
+        # staged, which meant a plan holding only "delete notes.md"
+        # survived a discard and waited for the next commit. A staged
+        # deletion outliving the discard that was meant to cancel it is
+        # the single worst thing this system could get wrong.
+        dropped = len(operations)
         shutil.rmtree(staging_root(root), ignore_errors=True)
-        logger.info("discarded %d staged file(s)", len(names))
-        return {"status": "discarded", "files": names, "unknown": unknown}
+        logger.info("discarded %d staged file(s) and %d operation(s)",
+                    len(names), dropped)
+        return {"status": "discarded", "files": names, "unknown": unknown,
+                "operations": dropped}
 
     for name in names:
         (staging_root(root) / name).unlink(missing_ok=True)

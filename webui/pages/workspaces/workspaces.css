@@ -164,6 +164,12 @@
   font-size: 12px;
   line-height: 1.5;
   opacity: 0.75;
+  /* The commit dialog lists the staged plan one operation per line, and
+     it is set with textContent -- without this the newlines collapse and
+     three separate operations read as one run-on sentence. This dialog
+     is the second consent; the thing being consented to has to be
+     legible. */
+  white-space: pre-wrap;
 }
 
 .ws-dialog-message[hidden], .ws-dialog-label[hidden], .ws-dialog-input[hidden] {
@@ -198,4 +204,46 @@
   gap: 8px;
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+
+/* ==============================================================
+   Staged operations
+
+   Delete, move, rename, copy, new folder. They carry no diff -- they
+   change the shape of the tree rather than a file's contents -- so
+   they render as a list rather than in the <details> blocks below.
+   Destructive ones are marked and sorted first: a delete listed under
+   three folder creations is a delete that gets skimmed past.
+   ============================================================== */
+.ws-op-note {
+  margin: 4px 0 10px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.ws-ops {
+  list-style: none;
+  margin: 0 0 18px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ws-op {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 8px;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 6px;
+  font-size: 12px;
+  /* Paths are long and the middle matters least. */
+  word-break: break-all;
+}
+
+.ws-op-destructive {
+  border-left: 3px solid var(--warn-fg, #f0c274);
+  background: rgba(240, 194, 116, 0.07);
 }

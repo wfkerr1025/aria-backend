@@ -279,6 +279,68 @@ def _run_tests_handler(scope: str = "") -> dict:
     return run_tests(scope)
 
 
+# The five shape-changing operations. Every one of these handlers STAGES
+# and none of them touches the project.
+#
+# That is the safety argument, and it is structural rather than
+# procedural: there is no os.remove in the delete handler, so there is no
+# argument, flag or permission that makes it delete during a turn. The
+# only code that removes anything is fs_plan.apply_operations(), reached
+# from the commit path, which needs the user to have asked twice.
+#
+# `confirm` here means "record this in the plan" rather than "do it".
+# tool_orchestrator sets it exactly where it sets edit_file's, so a dry
+# run previews and a chat-consented turn stages -- one rule for all six
+# mutating tools instead of two rules that could drift apart.
+def _staging_handler(op: str):
+    def handler(path: str, dest: str = "", new_name: str = "",
+                confirm: bool = False) -> dict:
+        from backend.core import fs_plan
+
+        target = new_name or dest or None
+        if confirm:
+            return fs_plan.stage_operation(op, path, target)
+        return fs_plan.preview_operation(op, path, target)
+
+    handler.__name__ = f"_{op}_handler"
+    return handler
+
+
+def register_fs_operation_tools() -> None:
+    common = {
+        "path": {"type": "string", "required": True,
+                 "description": "Workspace-relative path"},
+        "confirm": {"type": "boolean", "required": False,
+                    "description": "Stage the operation. Omit or false to preview it."},
+    }
+    described = {
+        "delete_file": ("Stage a file or folder for deletion. Nothing is removed "
+                        "until the workspace is committed.", {}),
+        "create_folder": ("Stage the creation of a folder.", {}),
+        "move_file": ("Stage moving a file to another path.",
+                      {"dest": {"type": "string", "required": True,
+                                "description": "Workspace-relative destination path"}}),
+        "rename_file": ("Stage renaming a file in place.",
+                        {"new_name": {"type": "string", "required": True,
+                                      "description": "The new file name, not a path"}}),
+        "copy_file": ("Stage copying a file to another path.",
+                      {"dest": {"type": "string", "required": True,
+                                "description": "Workspace-relative destination path"}}),
+    }
+
+    for name, (description, extra) in described.items():
+        register_tool(
+            ToolSchema(
+                name=name,
+                description=description,
+                parameters={**common, **extra},
+                permission=PERMISSION_FILESYSTEM,
+                timeout_seconds=10.0,
+            ),
+            _staging_handler(name),
+        )
+
+
 def register_file_tools() -> None:
     register_tool(
         ToolSchema(
@@ -333,6 +395,7 @@ def register_file_tools() -> None:
 
 
 register_file_tools()
+register_fs_operation_tools()
 
 
 # ============================================================

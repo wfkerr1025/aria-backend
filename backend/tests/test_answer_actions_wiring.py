@@ -220,7 +220,15 @@ def test_the_wiring_reads_consent_from_the_user_not_the_answer():
 def test_only_the_permitted_tools_can_run():
     from backend.core.action_plan import ACTION_TOOLS
 
-    assert ACTION_TOOLS == frozenset({"edit_file", "run_tests"})
+    # Seven, and the five that were added cannot reach the project: they
+    # append to fs_plan's journal and are applied by commit. What must
+    # stay out of this set is anything that APPLIES a plan.
+    assert ACTION_TOOLS == frozenset({
+        "edit_file", "run_tests",
+        "delete_file", "create_folder", "move_file", "rename_file", "copy_file",
+    })
+    for never in ("commit", "commit_changes", "apply_operations", "run_shell"):
+        assert never not in ACTION_TOOLS
 
 
 def test_no_action_run_is_granted_the_network():

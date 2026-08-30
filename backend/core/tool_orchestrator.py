@@ -90,6 +90,14 @@ STATUS_ROLLED_BACK = "rolled_back"
 # recorded before they run. Everything else is a read.
 _MUTATING_TOOLS = frozenset({"edit_file"})
 
+# The operations that change the SHAPE of the tree rather than a file's
+# contents. They cannot be staged by redirecting a path -- a delete has
+# no contents to redirect -- so they are recorded in fs_plan's journal
+# and applied at commit. `confirm` means "record it", never "do it".
+_STAGING_TOOLS = frozenset({
+    "delete_file", "create_folder", "move_file", "rename_file", "copy_file",
+})
+
 
 @dataclass
 class ActionResult:
@@ -278,6 +286,20 @@ def _run_one(invocation, context: ExecutionContext) -> ActionResult:
         # writes nothing, which is exactly what a dry run wants and is
         # already the tool's default. Anything else is simply not run --
         # a dry run that executed a test suite would not be one.
+        if tool_name in _STAGING_TOOLS:
+            # Previewed, not skipped. A dry run whose answer is "nothing
+            # ran" tells the user nothing about what WOULD run, and this
+            # is the turn where they decide whether to allow it.
+            args["confirm"] = False
+            result = execute_tool(tool_name, args, context.allowed_permissions)
+            value = result.value if result.ok else None
+            return ActionResult(
+                step_id=invocation.step_id, tool_name=tool_name,
+                status=STATUS_OK if result.ok else STATUS_FAILED,
+                value=value, error=result.error, error_code=result.error_code,
+                preview=(value or {}).get("preview") if isinstance(value, dict) else None,
+            )
+
         if tool_name == "edit_file":
             args["confirm"] = False
             result = execute_tool(tool_name, args, context.allowed_permissions)
@@ -294,6 +316,20 @@ def _run_one(invocation, context: ExecutionContext) -> ActionResult:
         return ActionResult(
             step_id=invocation.step_id, tool_name=tool_name,
             status=STATUS_SKIPPED,
+        )
+
+    if tool_name in _STAGING_TOOLS:
+        # "Live" here still writes nothing to the project. The handler
+        # appends to fs_plan's journal and returns; the operation runs
+        # when the workspace is committed, which is the second consent.
+        args["confirm"] = True
+        result = execute_tool(tool_name, args, context.allowed_permissions)
+        value = result.value if result.ok else None
+        return ActionResult(
+            step_id=invocation.step_id, tool_name=tool_name,
+            status=STATUS_OK if result.ok else STATUS_FAILED,
+            value=value, error=result.error, error_code=result.error_code,
+            preview=(value or {}).get("preview") if isinstance(value, dict) else None,
         )
 
     if tool_name == "edit_file":
