@@ -339,7 +339,7 @@ def test_active_model_changed_cloud_turn_has_non_null_fields_and_correct_locatio
     original_stream_method = getattr(openai_provider, "stream", None)
     openai_provider.stream = lambda request, callback: callback({"content": "hi"})
     original_resolve = engine.provider_router.resolve
-    engine.provider_router.resolve = lambda model_id, prompt: (openai_provider, None)
+    engine.provider_router.resolve = lambda model_id, prompt, *a: (openai_provider, None)
 
     original_select = model_selector.select_cloud_model
     fake_info = _fake_cloud_model("openai")
@@ -383,7 +383,7 @@ def test_active_model_changed_local_turn_has_non_null_fields_and_correct_locatio
     local_provider.stream = lambda request, callback: callback({"content": "hi"})
     original_resolve = engine.provider_router.resolve
     default_id = get_default_model_id()
-    engine.provider_router.resolve = lambda model_id, prompt: (local_provider, default_id)
+    engine.provider_router.resolve = lambda model_id, prompt, *a: (local_provider, default_id)
 
     try:
         request = InferenceRequest(model_id=None, messages=[InferenceMessage(role="user", content="hi")])
@@ -415,7 +415,7 @@ def test_active_model_changed_never_emitted_when_local_selection_fails():
     engine = StreamingEngine()
     local_provider = get_provider("local")
     original_resolve = engine.provider_router.resolve
-    engine.provider_router.resolve = lambda model_id, prompt: (local_provider, "not-a-real-model-id")
+    engine.provider_router.resolve = lambda model_id, prompt, *a: (local_provider, "not-a-real-model-id")
 
     try:
         request = InferenceRequest(model_id=None, messages=[InferenceMessage(role="user", content="hi")])

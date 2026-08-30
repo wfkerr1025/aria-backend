@@ -151,19 +151,26 @@ def classify(query: str, generate: Callable[[str], str]) -> Optional[bool]:
     return verdict
 
 
-def _asks_for_file_work(query: str) -> bool:
+def _asks_for_file_work(query: str, history=()) -> bool:
     """Whether this turn is about files in the project.
 
     Asks the routing classifier rather than keeping a second vocabulary:
     a turn routed to the tool model for file work is the same turn that
     must not leave the machine to answer.
+
+    The history goes with it, because the classifier now reads it. "ok, I
+    need you to add some things to the inventory" names no file, so with
+    an empty history it is not file work, and this turn went to the web:
+    it came back with a tutorial citing UhiyamaLab, on a small model,
+    while the file it was about sat unchanged on disk. The message before
+    it said "created player_inventory.cs".
     """
     try:
         from backend.chat.model_router import TURN_TOOLS, classify_turn
 
         class _Request:
             latest_user_text = query
-            messages = ()
+            messages = list(history or ())
 
         # TURN_TOOLS only. TURN_HEAVY covers deep reasoning, which can
         # legitimately want a lookup.
@@ -173,7 +180,8 @@ def _asks_for_file_work(query: str) -> bool:
         return False
 
 
-def wants_web_search(query: str, *, generate: Callable[[str], str] | None = None) -> bool:
+def wants_web_search(query: str, *, generate: Callable[[str], str] | None = None,
+                     history=()) -> bool:
     """Whether this turn should look something up.
 
     With no `generate`, this is exactly the deterministic answer the
@@ -204,7 +212,7 @@ def wants_web_search(query: str, *, generate: Callable[[str], str] | None = None
     # took two minutes to reply with instructions for using a file
     # manager. The veto costs nothing and removes that detour from the
     # most common instruction a user gives.
-    if _asks_for_file_work(query):
+    if _asks_for_file_work(query, history):
         logger.info("search_activation: file work is local; not searching for %r",
                     query[:60])
         return False
@@ -229,11 +237,11 @@ def wants_web_search(query: str, *, generate: Callable[[str], str] | None = None
     return _remember(key, verdict)
 
 
-def prime(query: str, generate: Callable[[str], str] | None) -> bool:
+def prime(query: str, generate: Callable[[str], str] | None, history=()) -> bool:
     """Decide this turn's verdict once, before routing and planning run.
 
     Separate from wants_web_search only to make the call site read as
     what it is: the one place that spends an inference, so the two
     consumers behind it can be lookups.
     """
-    return wants_web_search(query, generate=generate)
+    return wants_web_search(query, generate=generate, history=history)

@@ -702,8 +702,13 @@ def orchestrate_turn(
     # for X" and a question about the user's own notes both cost nothing.
     # What it costs is one short completion on a turn where neither
     # applied -- which is every ordinary chat message.
+    # The history goes too. "add some things to the inventory" names no
+    # file, so without it this turn looked like a research question --
+    # and came back with a web tutorial while the file it was about sat
+    # unchanged on disk.
     search_activation.prime(
-        text, _classifier_generator(request, default_local_model, generator))
+        text, _classifier_generator(request, default_local_model, generator),
+        history=request.messages)
 
     is_followup = request.multi_turn and len(request.messages) > 1
     intent = detect_intent(text, is_multi_turn_followup=is_followup)

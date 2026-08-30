@@ -118,16 +118,12 @@ def _failed_paths(report) -> dict:
     return failed
 
 
-def _expects_an_action(user_text: str) -> bool:
+def _expects_an_action(user_text: str, history=()) -> bool:
     """Whether the user asked for file work on this turn."""
     try:
-        from backend.chat.model_router import TURN_TOOLS, classify_turn
+        from backend.chat.model_router import TURN_TOOLS, classify_text
 
-        class _Request:
-            latest_user_text = user_text
-            messages = ()
-
-        return classify_turn(_Request()) == TURN_TOOLS
+        return classify_text(user_text, history) == TURN_TOOLS
     except Exception:  # pragma: no cover - a note is not worth a turn
         logger.exception("could not classify the turn for the missing-action note")
         return False
@@ -157,6 +153,11 @@ class WebSocketHandler:
         # through _dispatch reads as "no consent given", which is the
         # safe answer and the one a dry run needs.
         self._turn_user_text = ""
+        # The conversation this turn belongs to. Read for the same
+        # reason the model is chosen from it: "add some things to the
+        # inventory" is file work when the message before it created
+        # player_inventory.cs, and ordinary chat when it did not.
+        self._turn_history = []
         self._turn_expects_action = False
 
         # Set by _handle_model_override ("Proceed Anyway") to the exact
@@ -515,11 +516,13 @@ class WebSocketHandler:
         # apply an action is read from what the USER said, and by the
         # time the answer exists the packet is long out of scope.
         self._turn_user_text = self._latest_user_text(packet)
+        self._turn_history = list(packet.get("messages") or [])
 
         # Whether this turn was routed as file work. Read here, from the
         # same classifier the router uses, so the delivery path can tell
         # "answered a question" from "was asked to act and did not".
-        self._turn_expects_action = _expects_an_action(self._turn_user_text)
+        self._turn_expects_action = _expects_an_action(
+            self._turn_user_text, self._turn_history)
 
         request = TurnRequest(
             messages=packet.get("messages", []),
@@ -1226,7 +1229,8 @@ class WebSocketHandler:
             )
             final = action_render.render_actions_for_reading(
                 supervised.text,
-                staged=requests_live_execution(self._turn_user_text),
+                staged=requests_live_execution(self._turn_user_text,
+                                               self._turn_history),
                 expected_action=self._turn_expects_action,
                 created=(report or {}).get("created") or [],
                 problems=(report or {}).get("problems") or {},
@@ -1309,7 +1313,8 @@ class WebSocketHandler:
         # naming rather than prose to be shown as though it worked.
         text = action_render.render_actions_for_reading(
             text,
-            staged=requests_live_execution(self._turn_user_text),
+            staged=requests_live_execution(self._turn_user_text,
+                                           self._turn_history),
             expected_action=self._turn_expects_action,
             created=(report or {}).get("created") or [],
             problems=(report or {}).get("problems") or {},
@@ -1417,7 +1422,8 @@ class WebSocketHandler:
                 None,
                 lambda: run_answer_actions(
                     answer_text, self._turn_user_text,
-                    on_progress=report_progress),
+                    on_progress=report_progress,
+                    history=self._turn_history),
             )
         except Exception:
             logger.exception("answer actions failed; the answer stands")

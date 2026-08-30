@@ -510,7 +510,7 @@ def test_auto_mode_is_reachable_from_live_chat_request():
     calls = []
     original_select = auto_selector_mod.AutoSelector.select_provider
 
-    def spy_select(self, prompt):
+    def spy_select(self, prompt, *a, **k):
         calls.append(prompt)
         return original_select(self, prompt)
 
@@ -691,7 +691,7 @@ def test_explicit_model_override_persists_and_wins_over_auto_routing():
     calls = []
     original_select = auto_selector_mod.AutoSelector.select_provider
 
-    def spy(self, prompt):
+    def spy(self, prompt, *a, **k):
         calls.append(prompt)
         return original_select(self, prompt)
 

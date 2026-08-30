@@ -109,7 +109,7 @@ def test_a_plain_turn_is_untouched(local_only):
 # ------------------------------------------------------
 def test_an_untrusted_local_model_does_not_capture_the_turn(monkeypatch, local_only):
     monkeypatch.setattr(sel, "select_local_model_for_prompt",
-                        lambda prompt: "qwen2.5-0.5b-instruct-q4_k_m")
+                        lambda prompt, **k: "qwen2.5-0.5b-instruct-q4_k_m")
     monkeypatch.setattr(sel.key_manager, "list_configured_providers",
                         lambda: {"openai": True})
 

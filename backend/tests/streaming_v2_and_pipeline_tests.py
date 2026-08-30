@@ -156,7 +156,7 @@ def test_pipeline_reports_no_provider_cleanly_when_none_can_resolve():
     from backend.core.provider_router import ProviderRouter
 
     original_resolve = ProviderRouter.resolve
-    ProviderRouter.resolve = lambda self, model_id, prompt=None: (None, None)
+    ProviderRouter.resolve = lambda self, model_id, prompt=None, *a: (None, None)
     try:
         class FakeRequest:
             model_id = None
@@ -182,7 +182,7 @@ def test_pipeline_blocks_on_a_safety_violation_without_allow_override():
 
     original_resolve = ProviderRouter.resolve
     original_evaluate = safety_manager.evaluate_safety
-    ProviderRouter.resolve = lambda self, model_id, prompt=None: (FakeProviderObj(), "fake-model-id")
+    ProviderRouter.resolve = lambda self, model_id, prompt=None, *a: (FakeProviderObj(), "fake-model-id")
 
     class FakeDecision:
         requires_warning = True
@@ -226,7 +226,7 @@ def test_pipeline_allow_override_bypasses_a_safety_block():
     original_evaluate = ep.evaluate_safety
     original_get_model = ep.get_model
 
-    ProviderRouter.resolve = lambda self, model_id, prompt=None: (FakeProviderObj(), "fake-model-id")
+    ProviderRouter.resolve = lambda self, model_id, prompt=None, *a: (FakeProviderObj(), "fake-model-id")
 
     class FakeProfile:
         n_threads = 8
@@ -277,7 +277,7 @@ def test_pipeline_streaming_mode_returns_a_stream_handle_immediately():
 
     original_resolve = ProviderRouter.resolve
     original_get_model = ep.get_model
-    ProviderRouter.resolve = lambda self, model_id, prompt=None: (FakeProviderObj(), None)  # None model_id → no safety check, cloud-ish path
+    ProviderRouter.resolve = lambda self, model_id, prompt=None, *a: (FakeProviderObj(), None)  # None model_id → no safety check, cloud-ish path
     ep.get_model = lambda model_id: None
 
     try:

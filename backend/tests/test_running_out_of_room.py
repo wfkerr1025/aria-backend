@@ -278,3 +278,61 @@ def test_a_complete_block_is_never_reported_as_running_out_of_room():
 
     shown = render_actions_for_reading(UNESCAPED, expected_action=True)
     assert "ran out of room" not in shown
+
+
+# ======================================================
+# A fence the model opened and never closed
+# ======================================================
+#
+# From the same session. The payload was stripped, the ```json marker was
+# not, and the UI rendered everything after it as a code block -- so a
+# correct reply appeared inside a fence:
+#
+#     To create a basic player inventory system, I propose the
+#     following content for player_inventory.cs:
+#     ```json
+#
+#     Done:
+#     - created `player_inventory.cs` (44 lines)
+#     I ran 8 related suites (21s) and they pass.
+#
+# _JSON_FENCE needs both markers to match and strip_action_json removes
+# the object rather than the fence around it, so an unclosed fence fell
+# between the two.
+
+PROSE = "To create a basic player inventory system, I propose the following content:"
+PAYLOAD = '{"tool": "edit_file", "path": "player_inventory.cs", "content": "class X {}"}'
+
+
+def test_an_unclosed_action_fence_is_not_left_on_screen():
+    raw = PROSE + "\n\n```json\n" + PAYLOAD + "\n"
+
+    shown = render_actions_for_reading(raw, expected_action=True,
+                                       created=["player_inventory.cs"])
+
+    assert "```json" not in shown
+    assert "Done:" in shown
+    assert PROSE in shown
+
+
+def test_a_closed_action_fence_is_still_removed():
+    raw = PROSE + "\n\n```json\n" + PAYLOAD + "\n```\n"
+
+    shown = render_actions_for_reading(raw, expected_action=True,
+                                       created=["player_inventory.cs"])
+
+    assert "```" not in shown
+
+
+def test_the_users_own_code_block_is_never_touched():
+    """The json tag is what makes the removal safe. A ```csharp block is
+    the code being discussed, however the model punctuated it."""
+    raw = (PROSE + "\n\n```json\n" + PAYLOAD + "\n```\n\n"
+           "For example:\n```csharp\nvar x = 1;\n")
+
+    shown = render_actions_for_reading(raw, expected_action=True,
+                                       created=["player_inventory.cs"])
+
+    assert "```csharp" in shown
+    assert "var x = 1;" in shown
+    assert "```json" not in shown

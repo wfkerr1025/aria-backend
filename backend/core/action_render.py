@@ -196,7 +196,8 @@ def render_actions_for_reading(answer_text: str, staged: bool = False,
         # action with no fence at all in a live session, and stripping
         # only fences left the raw JSON on screen beside a sentence
         # describing it.
-        without_blocks = strip_action_json(_JSON_FENCE.sub("", text)).strip()
+        without_blocks = _drop_dangling_action_fences(
+            strip_action_json(_JSON_FENCE.sub("", text))).strip()
 
         made = {str(name) for name in (created or ())}
         refused = dict(failed or {})
@@ -322,6 +323,44 @@ _UNCLOSED_ACTION_FENCE = re.compile(
     r'```(?:json)?\s*\{\s*"tool".*\Z', re.DOTALL | re.IGNORECASE)
 
 
+# A ```json marker the model opened and never closed.
+#
+# Measured live. The payload was removed, the marker was not, and the
+# UI rendered everything after it as a code block -- so a perfectly good
+# reply appeared inside a fence:
+#
+#     To create a basic player inventory system, I propose the
+#     following content for player_inventory.cs:
+#     ```json
+#
+#     Done:
+#     - created `player_inventory.cs` (44 lines)
+#     I ran 8 related suites (21s) and they pass.
+#
+# _JSON_FENCE needs both markers to match, and strip_action_json removes
+# the object rather than the fence around it, so an unclosed fence fell
+# between them.
+#
+# The "json" tag is what makes this safe: it marks an ACTION fence. A
+# ```csharp block the model opened and never closed is the user's code
+# and is left exactly where it is, however broken.
+_DANGLING_JSON_FENCE = re.compile(r"```json[ \t]*\r?\n?", re.IGNORECASE)
+
+
+def _drop_dangling_action_fences(text: str) -> str:
+    """Remove ```json markers that have nothing left to fence."""
+    source = str(text or "")
+    while True:
+        match = _DANGLING_JSON_FENCE.search(source)
+        if not match:
+            return source
+        # A marker with a closing fence after it still delimits
+        # something; only the unmatched one is scaffolding.
+        if "```" in source[match.end():]:
+            return source
+        source = source[:match.start()] + source[match.end():]
+
+
 def _without_any_action_block(text: str) -> str:
     """The prose, with machine syntax removed however the block ended.
 
@@ -332,7 +371,8 @@ def _without_any_action_block(text: str) -> str:
     from backend.core.action_plan import strip_action_json
 
     without = _UNCLOSED_ACTION_FENCE.sub("", str(text or ""))
-    return strip_action_json(_JSON_FENCE.sub("", without)).strip()
+    return _drop_dangling_action_fences(
+        strip_action_json(_JSON_FENCE.sub("", without))).strip()
 
 
 def _note_a_missing_action(text: str, expected_action: bool) -> str:

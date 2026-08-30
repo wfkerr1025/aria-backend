@@ -165,7 +165,7 @@ def _normalize(text) -> str:
     return f" {' '.join(re.sub(r'[^a-z0-9]+', ' ', lowered).split())} "
 
 
-def requests_live_execution(user_text: str) -> bool:
+def requests_live_execution(user_text: str, history=()) -> bool:
     """Whether the USER asked for the actions to be applied for real.
 
     Deliberately takes the user's message and nothing else. A model that
@@ -185,10 +185,10 @@ def requests_live_execution(user_text: str) -> bool:
     if normalized.strip() in BARE_AFFIRMATIVES:
         return True
 
-    return _is_an_imperative_file_request(user_text)
+    return _is_an_imperative_file_request(user_text, history)
 
 
-def _is_an_imperative_file_request(user_text: str) -> bool:
+def _is_an_imperative_file_request(user_text: str, history=()) -> bool:
     """The user told ARIA to do the thing, in their own words.
 
     "Create the actual file" is a confirmation by any reading, and it
@@ -210,13 +210,9 @@ def _is_an_imperative_file_request(user_text: str) -> bool:
     means.
     """
     try:
-        from backend.chat.model_router import TURN_HEAVY, TURN_TOOLS, classify_turn
+        from backend.chat.model_router import TURN_HEAVY, TURN_TOOLS, classify_text
 
-        class _Request:
-            latest_user_text = user_text
-            messages = ()
-
-        if classify_turn(_Request()) not in (TURN_TOOLS, TURN_HEAVY):
+        if classify_text(user_text, history) not in (TURN_TOOLS, TURN_HEAVY):
             return False
 
         return not _is_a_question(user_text)

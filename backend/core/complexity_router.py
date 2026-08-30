@@ -311,7 +311,7 @@ def _fits_in_memory(model_id: str) -> bool:
 
 
 def _apply_role_floor(chosen: Optional[str], prompt: str, tool_use: bool,
-                      allow_below: bool = False) -> Optional[str]:
+                      allow_below: bool = False, history=()) -> Optional[str]:
     """Floor the ladder at the tier this turn's WORK needs.
 
     The same shape as the evidence floor above it, for the same reason
@@ -335,13 +335,9 @@ def _apply_role_floor(chosen: Optional[str], prompt: str, tool_use: bool,
         return chosen
 
     try:
-        from backend.chat.model_router import TURN_CHAT, TURN_HEAVY, classify_turn
+        from backend.chat.model_router import TURN_CHAT, TURN_HEAVY, classify_text
 
-        class _Prompt:
-            latest_user_text = prompt
-            messages = ()
-
-        kind = TURN_HEAVY if tool_use is None else classify_turn(_Prompt())
+        kind = TURN_HEAVY if tool_use is None else classify_text(prompt, history)
 
         if kind == TURN_CHAT and not tool_use:
             return chosen
@@ -412,6 +408,7 @@ def select_local_model_for_prompt(
     tool_use: bool = False,
     evidence_present: Optional[bool] = None,
     allow_below_chat_floor: bool = False,
+    history=(),
 ) -> str:
     """
     Pick the best installed local model for `prompt`'s task complexity.
@@ -541,7 +538,8 @@ def select_local_model_for_prompt(
                 break
 
     chosen = _apply_chat_floor(chosen, allow_below_chat_floor)
-    chosen = _apply_role_floor(chosen, prompt, tool_use, allow_below_chat_floor)
+    chosen = _apply_role_floor(chosen, prompt, tool_use,
+                              allow_below_chat_floor, history)
 
     if chosen is None:
         # Truly nothing usable is registered — let the caller's own

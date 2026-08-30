@@ -302,6 +302,119 @@ def _is_heavy(text: str, context_chars: int) -> bool:
         return False
 
 
+# A follow-up that changes the file ARIA just wrote.
+#
+# Measured live, two turns apart:
+#
+#   "create a player_inventory.cs file..."          -> tools. Worked.
+#   "ok, I need you to add some things to the
+#    inventory. First the inventory needs to be
+#    36 slots..."                                   -> chat. Did nothing.
+#
+# The second names no file, so nothing here saw file work: no tool floor
+# fired, phi-3-mini answered, and it wrote a ```csharp block into the
+# chat. The user had asked for their file to be changed and got a code
+# listing to copy by hand -- the exact thing this system exists to stop.
+#
+# A person reading those two messages has no doubt what the second one
+# means. The only reason ARIA did is that it looked at one message at a
+# time.
+#
+# WHAT MAKES THIS SAFE TO INFER
+# -----------------------------
+# Both halves are required, and each is narrow.
+#
+# The turn has to READ like a change: an imperative or a stated need,
+# not a question. "How does the inventory work" stays chat.
+#
+# And the conversation has to have a file in it already -- a path named
+# in a recent message by either side. Talking about inventories does not
+# make a turn file work; having just written player_inventory.cs does.
+#
+# Only recent messages count. A file mentioned once, twenty turns ago,
+# in a conversation that has moved on, is not what "the inventory" means
+# any more.
+_RECENT_MESSAGES = 6
+
+# Said as an instruction rather than asked as a question. Deliberately
+# not a general imperative list: these are the verbs of modification,
+# because the file already exists and the turn is about changing it.
+_CHANGE_INTENT = re.compile(
+    r"\b(add|adjust|change|expand|extend|fix|implement|include|"
+    r"increase|make (?:it|them|that)|modify|move|put|refactor|remove|"
+    r"rename|rewrite|set|support|update)\b",
+    re.IGNORECASE,
+)
+
+# The other half of how people phrase a change: not an imperative verb
+# but a stated requirement. "I need the inventory to be 36 slots."
+_STATED_NEED = re.compile(
+    r"\b(i (?:need|want|would like)|it (?:needs|should|has) to be|"
+    r"needs to (?:be|have|support)|should (?:be|have|support))\b",
+    re.IGNORECASE,
+)
+
+
+def _file_in_recent_history(turn_request) -> bool:
+    """Whether this conversation is already working on a named file."""
+    messages = getattr(turn_request, "messages", None) or []
+    for message in list(messages)[-_RECENT_MESSAGES:]:
+        content = (message.get("content") if isinstance(message, dict)
+                   else getattr(message, "content", ""))
+        text = str(content or "")
+        if not text:
+            continue
+        if _PATH_TOKEN.search(text):
+            return True
+        if any(match.group(0).lower() not in _NOT_FILENAMES
+               for match in _FILENAME.finditer(text)):
+            return True
+    return False
+
+
+def _continues_file_work(turn_request, text: str) -> bool:
+    """A change to the file this conversation is already about.
+
+    Requires both halves: the turn has to read like a change, and there
+    has to be a file to change.
+    """
+    # Imported here, not at module scope. action_plan imports this
+    # module's classifier, and a top-level import back would close the
+    # loop -- which it did once before, turning a 96-second suite into a
+    # hang.
+    try:
+        from backend.core.action_plan import _is_a_question
+    except Exception:  # pragma: no cover - a classifier must not break a turn
+        return False
+
+    if _is_a_question(text):
+        return False
+    if not (_CHANGE_INTENT.search(text) or _STATED_NEED.search(text)):
+        return False
+    return _file_in_recent_history(turn_request)
+
+
+def classify_text(text: str, history=()) -> str:
+    """Classify a bare string, with the conversation it came from.
+
+    Three call sites built this request object themselves and every one
+    of them passed no history: the consent check, the ladder's role
+    floor, and the transport's "did this turn expect an action". So a
+    follow-up naming no file -- "add some things to the inventory" --
+    read as ordinary chat at all three, and a turn that was plainly
+    about a file got a chat model, no tool floor, and no action.
+
+    One function, one shape, one place to pass the history. A caller
+    that genuinely has none passes none and gets exactly the old
+    answer.
+    """
+    class _Request:
+        latest_user_text = str(text or "")
+
+    _Request.messages = list(history or ())
+    return classify_turn(_Request())
+
+
 def classify_turn(turn_request, workspace_state=None, *, intent=None,
                   classification_only=False) -> str:
     """What kind of work this turn is. Decided from the request alone."""
@@ -318,7 +431,8 @@ def classify_turn(turn_request, workspace_state=None, *, intent=None,
     except Exception:  # pragma: no cover
         tool_intent = False
 
-    tools = tool_intent or _mentions_tools(text)
+    tools = (tool_intent or _mentions_tools(text)
+             or _continues_file_work(turn_request, text))
     heavy = _is_heavy(text, context_chars)
 
     if tools:

@@ -39,7 +39,7 @@ class ProviderRouter:
     # ---------------------------------------------------------
     # Resolve provider + model_id
     # ---------------------------------------------------------
-    def resolve(self, model_id: str | None, prompt: str | None = None):
+    def resolve(self, model_id: str | None, prompt: str | None = None, history=()):
         logger.debug(
             f"resolve() called → model_id={model_id}, prompt_len={len(prompt or '')}"
         )
@@ -225,7 +225,8 @@ class ProviderRouter:
         # re-evaluate every single request.
         # -----------------------------------------------------
         logger.debug("Mode=automatic → delegating to AutoSelector")
-        mode_used, provider, local_model = self.auto_selector.select_provider(prompt or "")
+        mode_used, provider, local_model = self.auto_selector.select_provider(
+            prompt or "", history)
         logger.debug(
             f"AutoSelector result → mode_used={mode_used}, provider={provider}, model={local_model}"
         )

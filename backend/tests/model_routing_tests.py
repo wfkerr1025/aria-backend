@@ -247,7 +247,7 @@ def test_stream_sends_active_model_changed_before_any_token():
     local_provider.stream = lambda request, callback: callback({"content": "hi"})
 
     original_resolve = engine.provider_router.resolve
-    engine.provider_router.resolve = lambda model_id, prompt: (local_provider, "mistral-7b-q4km")
+    engine.provider_router.resolve = lambda model_id, prompt, *a: (local_provider, "mistral-7b-q4km")
 
     packets = []
     try:

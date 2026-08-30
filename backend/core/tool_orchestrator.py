@@ -653,7 +653,7 @@ def _paths_that_do_not_exist(actions) -> set:
 
 
 def run_answer_actions(answer_text: str, user_text: str,
-                       on_progress=None) -> dict | None:
+                       on_progress=None, history=()) -> dict | None:
     """Parse the actions in an answer and run them for one turn.
 
     The seam a transport calls, kept here so wiring it in is one call
@@ -697,7 +697,12 @@ def run_answer_actions(answer_text: str, user_text: str,
             }
         return None
 
-    live = requests_live_execution(user_text)
+    # With the conversation. "ok, I need you to add some things to the
+    # inventory" is an instruction to change a file when the message
+    # before it created one, and reads as chat without that context --
+    # so the turn ran as a dry run, staged nothing, and reported nothing
+    # wrong.
+    live = requests_live_execution(user_text, history)
 
     # Filesystem either way, and dry_run is what holds the line. A dry
     # run still needs the permission, because edit_file's preview reads

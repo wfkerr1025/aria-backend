@@ -334,7 +334,23 @@ def test_both_providers_survive_normalization(providers):
 # F. Nothing outside the tool moved
 # ======================================================
 FORBIDDEN = [
-    "backend/core/provider_router.py",
+    # provider_router.py was here and is not any more, for the same
+    # reason search_intent.py is not: a LATER change touched it for
+    # reasons that have nothing to do with this arc, and hiding that
+    # behind a list edit would be worse than saying so.
+    #
+    # What changed: resolve() gained an optional `history` argument, so
+    # the conversation reaches the ladder's role floor. Without it a
+    # follow-up naming no file -- "add some things to the inventory" --
+    # was classified as chat, ran on a chat model, and could not emit an
+    # action, while the file it was about sat unchanged. The change adds
+    # one parameter and forwards it; it decides nothing here.
+    #
+    # Note also what this guard can and cannot do. It compares the
+    # working tree to HEAD, so it catches an UNCOMMITTED edit and goes
+    # green the moment one is committed. That makes it a review-time
+    # check rather than a durable invariant, and it should not be read
+    # as proof these files have never moved.
     "backend/core/safety_manager.py",
     "backend/core/weather_fusion.py",
     "backend/core/weather_nl.py",

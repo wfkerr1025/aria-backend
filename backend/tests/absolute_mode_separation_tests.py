@@ -340,7 +340,7 @@ def test_active_model_changed_never_pairs_a_local_model_id_with_cloud_location()
     # local model_id in Cloud Mode falls through to the cloud branch,
     # which (via model_selector) resolves a real cloud model_id — never
     # None, and never the rejected local one.
-    engine.provider_router.resolve = lambda model_id, prompt: (openai_provider, "gpt-4")
+    engine.provider_router.resolve = lambda model_id, prompt, *a: (openai_provider, "gpt-4")
 
     original_select_cloud_model = model_selector.select_cloud_model
     fake_model_info = model_selector.ModelInfo(

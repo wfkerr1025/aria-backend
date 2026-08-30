@@ -447,7 +447,7 @@ def test_execution_pipeline_never_creates_a_balancer_for_a_cloud_provider():
 
     original_resolve = ProviderRouter.resolve
     original_get_model = ep.get_model
-    ProviderRouter.resolve = lambda self, model_id, prompt=None: (FakeCloudProvider(), None)
+    ProviderRouter.resolve = lambda self, model_id, prompt=None, *a: (FakeCloudProvider(), None)
     ep.get_model = lambda model_id: None  # cloud: no local model_cfg
 
     active_before = dict(auto_balancer._active_sessions)
@@ -489,7 +489,7 @@ def test_execution_pipeline_creates_a_balancer_for_a_7b_cpu_only_model_too():
     original_resolve = ProviderRouter.resolve
     original_get_model = ep.get_model
     original_evaluate = ep.evaluate_safety
-    ProviderRouter.resolve = lambda self, model_id, prompt=None: (FakeLocalProvider(), "small-7b-model")
+    ProviderRouter.resolve = lambda self, model_id, prompt=None, *a: (FakeLocalProvider(), "small-7b-model")
     ep.get_model = lambda model_id: _model_cfg(model_id="small-7b-model", params=7_000_000_000)
     ep.evaluate_safety = lambda model_cfg: FakeDecision()
 
@@ -531,7 +531,7 @@ def test_execution_pipeline_creates_a_balancer_for_an_eligible_12b_cpu_only_requ
     original_resolve = ProviderRouter.resolve
     original_get_model = ep.get_model
     original_evaluate = ep.evaluate_safety
-    ProviderRouter.resolve = lambda self, model_id, prompt=None: (FakeLocalProvider(), "test-12b-eligible")
+    ProviderRouter.resolve = lambda self, model_id, prompt=None, *a: (FakeLocalProvider(), "test-12b-eligible")
     ep.get_model = lambda model_id: _model_cfg(model_id="test-12b-eligible", params=12_000_000_000)
     ep.evaluate_safety = lambda model_cfg: FakeDecision()
 

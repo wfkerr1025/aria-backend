@@ -230,7 +230,7 @@ def test_active_model_changed_includes_display_name_fields():
     original_stream_method = local_provider.stream
     local_provider.stream = lambda request, callback: callback({"content": "hi"})
     original_resolve = engine.provider_router.resolve
-    engine.provider_router.resolve = lambda model_id, prompt: (local_provider, "nemo-12b-q5")
+    engine.provider_router.resolve = lambda model_id, prompt, *a: (local_provider, "nemo-12b-q5")
 
     packets = []
     try:

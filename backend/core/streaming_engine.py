@@ -38,6 +38,19 @@ def _describe_provider(provider, resolved_model_id):
     return location, provider_name
 
 
+def _extract_history(request):
+    """The conversation, for routing only.
+
+    _extract_prompt_text returns the LAST user message, which is the
+    right prompt and the wrong basis for classifying a follow-up. "ok, I
+    need you to add some things to the inventory" names no file, so on
+    its own it reads as ordinary chat -- and the ladder's role floor left
+    it on a chat model while the file it was about went unchanged. The
+    message before it said "created player_inventory.cs".
+    """
+    return list(getattr(request, "messages", None) or ())
+
+
 def _extract_prompt_text(request) -> str:
     """
     Pull the text to hand to routing/classification (AutoSelector) out of
@@ -115,7 +128,8 @@ class StreamingEngine:
             # (Local / Cloud / Automatic Model Routing)
             # ---------------------------------------------------------
             logger.debug("Resolving provider via ProviderRouter")
-            provider, resolved_model_id = self.provider_router.resolve(model_id, prompt)
+            provider, resolved_model_id = self.provider_router.resolve(
+                model_id, prompt, _extract_history(request))
 
             if provider is None:
                 logger.debug("ERROR: No available provider")

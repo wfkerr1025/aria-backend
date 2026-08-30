@@ -67,7 +67,7 @@ class AutoSelector:
     # ---------------------------------------------------------
     # Main selection logic
     # ---------------------------------------------------------
-    def select_provider(self, prompt: str):
+    def select_provider(self, prompt: str, history=()):
         logger.debug(f"select_provider() called with prompt length={len(prompt)}")
 
         # Step 1: Complexity
@@ -88,7 +88,8 @@ class AutoSelector:
         # for the ladder/hardware-gate logic). Falls back to
         # ensure_default_local_model() only if the registry has no
         # usable local model at all.
-        active_local_model = select_local_model_for_prompt(prompt) or ensure_default_local_model()
+        active_local_model = (select_local_model_for_prompt(prompt, history=history)
+                              or ensure_default_local_model())
         logger.debug(f"Active local model → {active_local_model}")
 
         local_provider = get_provider("local") if active_local_model else None
