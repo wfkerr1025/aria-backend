@@ -174,13 +174,25 @@ def test_a_repaired_block_is_what_the_planner_would_parse():
     raw = ('Here is the change.\n\n'
            '```json\n{"tool": "edit_file", "path": "a.py", "content": "x",}\n```')
 
-    before = parse_actions(raw)
     after = parse_actions(repair_deterministically(raw).text)
 
-    # The point of repairing at all: an edit that silently did not happen
-    # now happens.
-    assert before == []
+    # The point of repairing at all: whatever the model punctuated
+    # wrongly, what comes out is something the planner can execute.
     assert len(after) == 1
+    assert after[0].args["path"] == "a.py"
+
+    # This used to also assert parse_actions(raw) == [] -- that a
+    # trailing comma defeated the parser, which is what made the repair
+    # necessary. It no longer does: action_plan gained a structural
+    # salvage for a single action whose JSON is malformed, written for a
+    # model that put unescaped quotes in a C# file, and a trailing comma
+    # is the same kind of fault.
+    #
+    # The old assertion was describing the parser's limitation rather
+    # than anything that ought to be true, so it is gone. What matters is
+    # that the edit happens, and it now happens by two routes instead of
+    # one.
+    assert len(parse_actions(raw)) == 1
 
 
 # ======================================================

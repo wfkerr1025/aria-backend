@@ -315,6 +315,26 @@ _SOUNDS_LIKE_A_PROPOSAL = (
 )
 
 
+# An action block, closed or not. _JSON_FENCE requires a closing fence,
+# and a stream that stopped mid-block never wrote one -- so the raw
+# payload reached the screen through the one path that had no stripper.
+_UNCLOSED_ACTION_FENCE = re.compile(
+    r'```(?:json)?\s*\{\s*"tool".*\Z', re.DOTALL | re.IGNORECASE)
+
+
+def _without_any_action_block(text: str) -> str:
+    """The prose, with machine syntax removed however the block ended.
+
+    Showing the user a JSON block is what this module exists to prevent,
+    and the failure path was doing precisely that: the whole block,
+    followed by a note saying it had not worked.
+    """
+    from backend.core.action_plan import strip_action_json
+
+    without = _UNCLOSED_ACTION_FENCE.sub("", str(text or ""))
+    return strip_action_json(_JSON_FENCE.sub("", without)).strip()
+
+
 def _note_a_missing_action(text: str, expected_action: bool) -> str:
     """Say when a file turn produced words and no action.
 
@@ -324,6 +344,25 @@ def _note_a_missing_action(text: str, expected_action: bool) -> str:
     costs a line and removes the whole class of "she said she did it and
     did not".
     """
+    from backend.core.action_plan import truncated_action
+
+    # Cut off part-way through, rather than never attempted. The model
+    # did what it was asked and ran out of room, which is a different
+    # failure from wandering off and has an obvious next step.
+    unfinished = truncated_action(text)
+    if unfinished and unfinished.get("path"):
+        prose = _without_any_action_block(text)
+        lines = unfinished.get("lines") or 0
+        parts = [prose] if prose else []
+        parts.append(
+            f"I ran out of room part-way through writing "
+            f"`{unfinished['path']}` -- about {lines} "
+            f"line{'' if lines == 1 else 's'} of it arrived, so I have not "
+            f"written anything. Ask for it again and I will have more room, "
+            f"or ask for it in pieces."
+        )
+        return "\n\n".join(parts)
+
     if not expected_action:
         return text
 
@@ -331,7 +370,10 @@ def _note_a_missing_action(text: str, expected_action: bool) -> str:
     if not any(marker in lowered for marker in _SOUNDS_LIKE_A_PROPOSAL):
         return text
 
-    return f"{text}\n\n{_NO_ACTION}"
+    # The block goes, whatever became of it. A note explaining that
+    # nothing was staged, printed underneath the raw JSON that was
+    # supposed to do the staging, is the worst of both.
+    return f"{_without_any_action_block(text)}\n\n{_NO_ACTION}".strip()
 
 
 def strip_scaffolding(text: str) -> str:

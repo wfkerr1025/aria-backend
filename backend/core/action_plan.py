@@ -55,6 +55,7 @@ from logger import get_logger
 logger = get_logger(__name__)
 
 __all__ = [
+    "truncated_action",
     "ACTION_TOOLS",
     "BARE_AFFIRMATIVES",
     "LIVE_EXECUTION_PHRASES",
@@ -440,6 +441,129 @@ def _escape_control_characters(candidate: str) -> str:
     return "".join(out)
 
 
+# The one action, rebuilt by hand when JSON cannot read it.
+#
+# A model writing a file into a JSON string has to escape every quote in
+# that file, and it does not. Measured live, asked for a complete
+# inventory system, nemo-12b produced a well-formed block whose content
+# contained a C# dictionary initializer:
+#
+#     _items = new Dictionary<string, int>
+#     {
+#         {"wood", 10},
+#
+# It escaped the quotes in `throw new Exception(\"...\")` and left these
+# alone. So the JSON string ended at `{"`, the next character was `w`,
+# and json.loads stopped there. parse_actions returned nothing, nothing
+# was staged, and the user was told no usable action had been produced --
+# for an answer that was complete and correct in every way except its
+# punctuation.
+#
+# This is not a rare shape. Any file with a string literal in it hits it,
+# which is most files, and no amount of prompt wording fixes a model's
+# escaping reliably.
+#
+# WHY THIS IS SAFE TO DO STRUCTURALLY
+# -----------------------------------
+# The shape is fixed and small: one object, a tool name, a path, and a
+# content blob that runs to the end. tool and path are short identifiers
+# that models do not mangle. Content is whatever lies between the opening
+# quote and the LAST quote before the closing brace -- which is exactly
+# the file, however many quotes are inside it.
+#
+# Only attempted when json has already failed, and only for a payload
+# holding exactly one action. Two actions have two places the content
+# could end, and guessing between them is how a salvage becomes a
+# corruption.
+_ONE_TOOL = re.compile(r'"tool"\s*:\s*"([a-z_]+)"', re.IGNORECASE)
+_ONE_PATH = re.compile(r'"path"\s*:\s*"([^"\n]{1,200})"')
+_CONTENT_OPENS = re.compile(r'"content"\s*:\s*"')
+
+
+def _salvage_one_action(payload: str):
+    """A dict for a single-action payload whose content is badly escaped.
+
+    Returns None whenever it is not certain -- more than one action, no
+    recognisable tool, or no content to rescue.
+    """
+    text = str(payload or "")
+
+    tools = _ONE_TOOL.findall(text)
+    if len(tools) != 1:
+        return None
+
+    path = _ONE_PATH.search(text)
+    if not path:
+        return None
+
+    opens = _CONTENT_OPENS.search(text)
+    if not opens:
+        # No content at all is a perfectly good action -- delete, create
+        # a folder -- and json can read those, so it did not need us.
+        return None
+
+    # Everything to the last quote before the object closes. rstrip
+    # first, because the payload may carry trailing whitespace from the
+    # fence.
+    tail = text.rstrip()
+    if not tail.endswith("}"):
+        return None
+    closing = tail.rfind('"', 0, len(tail) - 1)
+    if closing <= opens.end():
+        return None
+
+    content = tail[opens.end():closing]
+
+    # The escapes the model DID write are still escapes. Undoing them is
+    # what turns \" into " and \n into a newline, and leaving them would
+    # write the backslashes into the file.
+    content = _unescape_json_body(content)
+
+    logger.info("salvaged a single %s action for %s that json could not read",
+                tools[0], path.group(1))
+    return {"tool": tools[0], "path": path.group(1), "content": content}
+
+
+_JSON_ESCAPES = {
+    '"': '"', "\\": "\\", "/": "/",
+    "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t",
+}
+
+
+def _unescape_json_body(text: str) -> str:
+    """Apply JSON's own escapes, and pass anything else through as written.
+
+    json.loads would refuse an unknown escape. Here an unknown one is far
+    more likely to be a Windows path or a regex the model wrote into the
+    file than a mistake worth failing over, so it survives verbatim.
+    """
+    out = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char != "\\" or index + 1 >= length:
+            out.append(char)
+            index += 1
+            continue
+
+        following = text[index + 1]
+        if following in _JSON_ESCAPES:
+            out.append(_JSON_ESCAPES[following])
+            index += 2
+            continue
+        if following == "u" and index + 5 < length:
+            try:
+                out.append(chr(int(text[index + 2:index + 6], 16)))
+                index += 6
+                continue
+            except ValueError:
+                pass
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def loads_lenient(candidate: str):
     """json.loads, with the one repair a model reliably needs.
 
@@ -454,7 +578,11 @@ def loads_lenient(candidate: str):
     try:
         return json.loads(_escape_control_characters(text))
     except (ValueError, TypeError):
-        return None
+        pass
+
+    # Last: rebuild it by hand. A model writing a file into a JSON string
+    # has to escape every quote in that file, and it does not.
+    return _salvage_one_action(text)
 
 
 def _unfenced_payloads(text: str) -> list:
@@ -532,6 +660,79 @@ def strip_action_json(text: str) -> str:
     for start, end in reversed(spans):
         source = source[:start] + source[end:]
     return source
+
+
+# An action block the model never finished.
+#
+# Measured live. Asked for "a complete standard inventory system",
+# nemo-12b generated for 64 seconds and stopped mid-string, because the
+# turn had 2048 tokens and the file needed more. An unterminated JSON
+# string parses to nothing, so parse_actions returned nothing, and the
+# reply was the raw block followed by "I described that but did not
+# produce a usable action".
+#
+# Two things were wrong with that, beyond the budget:
+#
+#   the user was shown machine syntax, which is the exact thing
+#   action_render exists to prevent, and
+#
+#   "did not produce a usable action" describes a model that wandered
+#   off. This model did exactly what it was asked and was cut off. Those
+#   are different failures and the second one has an obvious next step.
+#
+# The fence may be missing too: a stream that stops mid-block never
+# closes it, so this deliberately does not require one.
+_UNFINISHED_TOOL = re.compile(
+    r'\{\s*"tool"\s*:\s*"(?P<tool>[a-z_]+)"', re.IGNORECASE)
+_UNFINISHED_PATH = re.compile(r'"path"\s*:\s*"(?P<path>[^"\n]{1,200})"')
+_UNFINISHED_CONTENT = re.compile(r'"content"\s*:\s*"')
+
+
+def truncated_action(text: str) -> dict | None:
+    """What the model was part-way through, when nothing parsed.
+
+    Returns None whenever an action DID parse -- a complete action is not
+    a truncated one, and a turn that produced both should be described by
+    the one that worked.
+    """
+    source = str(text or "")
+    if not source.strip() or parse_actions(source):
+        return None
+
+    # It has to be genuinely unfinished. This claimed a COMPLETE block
+    # was truncated once already, and told the user "I ran out of room
+    # part-way through writing player_inventory.cs" about an answer that
+    # was whole -- the real fault was unescaped quotes in the content,
+    # and the confident wrong explanation was worse than the vague right
+    # one it replaced. A block that closed its string and its brace did
+    # not run out of room, whatever else is wrong with it.
+    closed = source.rstrip().rstrip("`").rstrip()
+    if closed.endswith('"}') or closed.endswith("}"):
+        return None
+
+    match = _UNFINISHED_TOOL.search(source)
+    if not match:
+        return None
+
+    tail = source[match.start():]
+    path = _UNFINISHED_PATH.search(tail)
+    content_at = _UNFINISHED_CONTENT.search(tail)
+
+    partial = ""
+    if content_at:
+        partial = tail[content_at.end():]
+        # Whatever closing the model did manage, removed -- it is
+        # punctuation from the block, not part of the file.
+        partial = partial.rstrip().rstrip("`").rstrip()
+        if partial.endswith('"}'):
+            partial = partial[:-2]
+
+    return {
+        "tool": match.group("tool"),
+        "path": path.group("path") if path else "",
+        "content": partial,
+        "lines": len(partial.splitlines()),
+    }
 
 
 def _drop_repeated_actions(invocations: list) -> list:

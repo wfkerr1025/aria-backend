@@ -528,6 +528,90 @@ def _classifier_generator(request, default_local_model, supplied):
         return None
 
 
+# Room to finish a file.
+#
+# The default is 2048 tokens, which is generous for a reply and not
+# enough for a file. Asked for "a complete standard inventory system",
+# nemo-12b generated for 64 seconds, ran out of budget part-way through
+# the action block, and the answer ended mid-string. An unterminated
+# JSON string parses to nothing, so nothing was staged and nothing was
+# created -- the user saw a wall of JSON and a note saying no action had
+# been produced.
+#
+# Nothing was wrong with the model or the prompt. It was told to write a
+# file and given room for two thirds of one.
+#
+# nemo-12b holds 16384 tokens. Spending 4096 of them on the answer to a
+# turn that is explicitly about writing a file is not extravagant, and
+# it is bounded below by whatever the caller asked for -- this raises a
+# ceiling, it never lowers one.
+_TOKENS_FOR_WRITING = 4096
+
+# What is left for the answer has to fit beside the prompt. Estimated
+# from characters because there is no tokenizer at this layer; 3.5 is
+# conservative for prose and about right for code, and the margin covers
+# the difference between an estimate and a count.
+_CHARS_PER_TOKEN = 3.5
+_CONTEXT_MARGIN_TOKENS = 512
+
+
+def _prompt_size(messages) -> int:
+    """How many characters the prompt is, whatever shape the messages are.
+
+    provider_messages holds InferenceMessage objects here and plain dicts
+    in some callers and tests. Reading one shape and assuming the other
+    cost 132 tests a moment after it was written; both are read now, and
+    an unreadable message contributes nothing rather than raising.
+    """
+    total = 0
+    for message in messages or ():
+        content = getattr(message, "content", None)
+        if content is None and isinstance(message, dict):
+            content = message.get("content")
+        total += len(str(content or ""))
+    return total
+
+
+def _room_to_finish_the_file(turn_kind, model_id, prompt_chars: int,
+                             requested: int) -> int:
+    """The token budget for this turn, raised when it has to write a file.
+
+    A floor, like the others in this codebase: it only ever increases the
+    budget, so a caller that asked for more keeps it.
+    """
+    from backend.chat.model_router import TURN_TOOLS
+
+    if turn_kind != TURN_TOOLS:
+        return requested
+
+    wanted = max(int(requested or 0), _TOKENS_FOR_WRITING)
+
+    # Bounded by what the model can actually hold alongside the prompt.
+    # Asking for more than the window is not ambition, it is an error the
+    # provider reports at load time.
+    try:
+        from backend.core.model_registry import get_model
+
+        context = int((get_model(model_id) or {}).get("maxContext") or 0)
+    except Exception:  # pragma: no cover - a budget must not break a turn
+        context = 0
+
+    if context > 0:
+        prompt_tokens = int(prompt_chars / _CHARS_PER_TOKEN)
+        available = context - prompt_tokens - _CONTEXT_MARGIN_TOKENS
+        if available < wanted:
+            wanted = max(int(requested or 0), available)
+
+    if wanted != requested:
+        logger.info(
+            "turn writes a file: raising the token budget from %s to %s "
+            "(model window %s, prompt about %s tokens)",
+            requested, wanted, context or "unknown",
+            int(prompt_chars / _CHARS_PER_TOKEN),
+        )
+    return wanted
+
+
 def orchestrate_turn(
     request: TurnRequest,
     *,
@@ -1105,7 +1189,10 @@ def orchestrate_turn(
     inference_request = InferenceRequest(
         model_id=model_id,
         messages=provider_messages,
-        max_tokens=request.max_tokens,
+        max_tokens=_room_to_finish_the_file(
+            routing.turn_kind, model_id,
+            _prompt_size(provider_messages),
+            request.max_tokens),
         temperature=request.temperature,
         intent=intent,
         allow_override=allow_override,
