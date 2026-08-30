@@ -443,7 +443,7 @@ class WebSocketHandler:
 
         if ptype in IPC_HANDLED_TYPES:
             logger.debug("Routing %s through ipc_router.", ptype)
-            response = ipc_dispatch(packet)
+            response = await self._dispatch_off_the_loop(packet)
             await self._send(response)
             return
 
@@ -452,6 +452,43 @@ class WebSocketHandler:
             "type": "error",
             "message": f"Unknown packet type: {ptype}"
         })
+
+    async def _dispatch_off_the_loop(self, packet: dict) -> dict:
+        """Run an ipc_router handler without stopping the event loop.
+
+        These handlers used to run inline, and that was fine while they
+        were all measured in milliseconds. Commit-time verification made
+        one of them take three minutes: it runs the whole pytest suite.
+
+        Measured from a live packet log. The commit request went out at
+        15:18:46.999, the last heartbeat was 15:18:44.222, and no
+        heartbeat followed -- the loop could not run _heartbeat_loop
+        because a subprocess was blocking it. At 15:19:24.174 the client
+        gave up and reported "reconnecting". The commit was working; the
+        connection died underneath it.
+
+        So the handler goes to the executor. The await keeps this
+        connection's packets in the order they arrived -- the response
+        still precedes anything after it -- while the heartbeat task,
+        which is a separate task, keeps beating throughout.
+
+        WHY EVERY TYPE AND NOT JUST COMMIT
+        ----------------------------------
+        A blocking call on the event loop is a bug at any duration; the
+        only thing that changed with commit is that it got long enough to
+        see. Special-casing the one known-slow handler would leave the
+        next one to be discovered the same way -- from a log, after a
+        user watched their connection drop.
+        """
+        loop = asyncio.get_running_loop()
+
+        def report(message: str) -> None:
+            """Called from the executor thread, delivered on the loop."""
+            asyncio.run_coroutine_threadsafe(self._emit_progress(message), loop)
+
+        return await loop.run_in_executor(
+            None, lambda: ipc_dispatch(packet, on_progress=report))
+
 
     # -----------------------------------------------------
     # Handle chat_request from frontend

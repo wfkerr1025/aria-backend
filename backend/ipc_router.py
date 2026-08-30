@@ -737,12 +737,13 @@ def _workspace_action(payload, request_type, action):
     return fmt.workspace_details_result(details)
 
 
-def _handle_workspace_commit(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _handle_workspace_commit(payload: Dict[str, Any], on_progress=None) -> Dict[str, Any]:
     logger.info("ipc_router: workspace_commit_request -> %r", payload.get("id"))
     return _workspace_action(
         payload, schema.WORKSPACE_COMMIT_REQUEST,
         lambda wm, wid, files: wm.commit_workspace(
-            wid, str(payload.get("user_text") or ""), files),
+            wid, str(payload.get("user_text") or ""), files,
+            on_progress=on_progress),
     )
 
 
@@ -933,7 +934,7 @@ _HANDLERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
 HANDLED_TYPES = frozenset(_HANDLERS.keys())
 
 
-def dispatch(packet: Dict[str, Any]) -> Dict[str, Any]:
+def dispatch(packet: Dict[str, Any], on_progress=None) -> Dict[str, Any]:
     """
     Route one parsed JSON packet ({"type", "payload"}) to its handler
     and return a fully-formed, JSON-serializable response packet.
@@ -946,6 +947,12 @@ def dispatch(packet: Dict[str, Any]) -> Dict[str, Any]:
     and raise TypeError). This function is still a public entry point in
     its own right, so it re-validates rather than assuming a well-behaved
     caller.
+
+    `on_progress` is for the one handler that is slow enough to need it.
+    Committing runs the whole test suite -- three minutes on this
+    project -- and a user watching a dialog for three minutes with no
+    output has been given no reason to believe anything is happening.
+    Every other handler ignores it.
     """
     if not isinstance(packet, dict):
         logger.error(f"ipc_router.dispatch() — expected an object, got {type(packet).__name__}: {packet!r}")
@@ -967,6 +974,8 @@ def dispatch(packet: Dict[str, Any]) -> Dict[str, Any]:
         return fmt.error_response(f"Unknown packet type: {ptype}", ptype, ipc_errors.UNKNOWN_PACKET_TYPE)
 
     try:
+        if ptype == schema.WORKSPACE_COMMIT_REQUEST:
+            return handler(payload, on_progress=on_progress)
         return handler(payload)
     except Exception as e:
         logger.exception(f"ipc_router: handler for '{ptype}' failed: {e}")
