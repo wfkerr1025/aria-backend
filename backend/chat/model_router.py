@@ -358,6 +358,29 @@ def select_model_for_turn(turn_request, workspace_state=None, *, intent=None,
 
     # Absolute mode separation, first and without exception. Nothing
     # below this line may name a local model when the turn is not local.
+    #
+    # Automatic defers too, and that is deliberate rather than an
+    # oversight -- but the comment that used to sit here was wrong about
+    # WHY, in a way that hid a real bug for a whole session.
+    #
+    # It said None meant "a frontier model answers". In Cloud Mode that
+    # is true. In Automatic mode it is not: None means a LOCAL model
+    # chosen AFTER this function, by complexity_router, from prompt
+    # length. And complexity_router rates "think carefully about the
+    # architecture" as low complexity, so it chose the 0.5B -- for chat,
+    # every turn, with this module, the capability gate and the role
+    # table all standing by having each deferred to the next.
+    #
+    # The deferral itself is kept. Naming a model here would put every
+    # Automatic turn in front of the safety gate, which was measured and
+    # removed once before, and would take away AutoSelector's ability to
+    # fall back to cloud when local is unsuitable.
+    #
+    # The fix is at the layer that actually decides: complexity_router
+    # now floors its ladder at the same chat capability floor this gate
+    # uses, and at the tool tier for a tool-bearing prompt. A floor works
+    # wherever the decision is made; a gate only works where it is
+    # placed.
     if mode != "local":
         return ModelChoice(None, TURN_CHAT, f"{mode} mode routes through the provider")
 

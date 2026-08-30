@@ -120,12 +120,19 @@ def run(text=QUERY, *, model=None, mode="automatic", cloud=False, debug=False, m
 def test_the_bug_the_length_heuristic_causes():
     """Pinned so the fix has something to be a fix of.
 
-    The bare question is short, so without evidence it still routes to the
-    emergency model. That is correct for an ordinary short chat message --
-    and catastrophic for this one, which is why the turn never reaches it
-    any more (see the evidence-missing tests below).
+    The heuristic still WANTS the emergency model for a short question --
+    that is the bug this file documents, and it is unchanged.
+
+    What changed is that wanting it is no longer enough. This used to
+    assert the 0.5B was actually returned, and called that "correct for
+    an ordinary short chat message". A live session proved otherwise: the
+    0.5B answered "Hello Aria" and leaked its own system prompt into the
+    reply. A user-facing turn now never goes below the chat floor, so the
+    heuristic's preference is visible only with the opt-out.
     """
-    assert select_local_model_for_prompt(QUERY) == TRIVIAL_MODEL_ID
+    assert select_local_model_for_prompt(
+        QUERY, allow_below_chat_floor=True) == TRIVIAL_MODEL_ID
+    assert select_local_model_for_prompt(QUERY) != TRIVIAL_MODEL_ID
 
 
 @pytest.mark.parametrize("prompt", [FULL_SYNTHESIS_PROMPT, SIMPLIFIED_PROMPT])
@@ -175,13 +182,28 @@ def test_a_busy_machine_cannot_step_below_the_floor(monkeypatch):
         ram_total_gb=64.0, ram_used_gb=60.0, cpu_usage=99.0,
     ))
     assert select_local_model_for_prompt(QUERY, evidence_present=True) in CAPABLE_TIERS
-    # The same pressure on an ordinary turn still steps down, as before.
-    assert select_local_model_for_prompt(QUERY) == TRIVIAL_MODEL_ID
+    # The same pressure on an ordinary turn still steps down -- but the
+    # step now stops at the chat floor. A loaded machine is a reason to
+    # use a smaller model, never a reason to use one that cannot hold a
+    # conversation.
+    assert select_local_model_for_prompt(
+        QUERY, allow_below_chat_floor=True) == TRIVIAL_MODEL_ID
+    assert select_local_model_for_prompt(QUERY) != TRIVIAL_MODEL_ID
 
 
-def test_an_ordinary_short_message_still_gets_the_small_model():
-    """The heuristic is overridden for evidence, not replaced."""
-    assert select_local_model_for_prompt("hello there") == TRIVIAL_MODEL_ID
+def test_an_ordinary_short_message_gets_the_smallest_model_that_can_chat():
+    """The heuristic is overridden for evidence, not replaced.
+
+    "Smallest that can chat" rather than "smallest": the ladder still
+    prefers the bottom rung for a greeting, and the chat floor lifts it
+    one step to the model that can actually answer. Both halves matter --
+    a greeting must not wake the 12B either.
+    """
+    from backend.core.complexity_router import SIMPLE_MODEL_ID
+
+    assert select_local_model_for_prompt(
+        "hello there", allow_below_chat_floor=True) == TRIVIAL_MODEL_ID
+    assert select_local_model_for_prompt("hello there") == SIMPLE_MODEL_ID
 
 
 # ======================================================

@@ -164,3 +164,75 @@ def test_a_named_file_beats_the_instructional_veto():
 def test_the_smallest_model_answers_nothing_a_user_reads():
     for text in TOOL_PHRASINGS + CHAT_PHRASINGS:
         assert select_model_for_turn(turn(text)).model_id != ROUTER
+
+
+# ======================================================
+# Automatic mode
+#
+# Everything above routes through model_router, which only runs when the
+# orchestrator resolves a concrete model -- Local mode. A live session in
+# AUTOMATIC mode showed what that missed:
+#
+#     the router deferred            (mode is not local)
+#     _resolve_model_id deferred     (same reason)
+#     the capability gate saw None   and passed it
+#     complexity_router then chose,  AFTER the orchestrator, by prompt
+#                                    length -- and picked the 0.5B
+#
+# The 0.5B answered "Hello Aria" and leaked its own system prompt. Three
+# layers built to prevent exactly that each deferred to the next.
+#
+# The fix is a floor rather than another gate, because a floor works
+# wherever the decision is made and a gate only works where it is placed.
+# These assert the routing table at THAT layer.
+# ======================================================
+from backend.core.complexity_router import select_local_model_for_prompt as ladder
+
+
+@pytest.mark.parametrize("text", ["Hello Aria", "hello there", "thanks!", "who are you"])
+def test_the_ladder_never_hands_chat_to_the_smallest_model(text):
+    assert ladder(text) != ROUTER
+    assert ladder(text) == CHAT
+
+
+@pytest.mark.parametrize("text", [
+    "create a new file called hello_world.py", "delete notes.md",
+    "edit main.py", "commit the staged changes",
+])
+def test_the_ladder_floors_tool_work_at_the_tool_model(text):
+    assert ladder(text) == TOOL
+
+
+@pytest.mark.parametrize("text", [
+    "think carefully about the architecture of this module",
+    "what is the root cause of this crash",
+])
+def test_the_ladder_floors_deep_work_at_the_heaviest_model(text):
+    assert ladder(text) == HEAVY
+
+
+def test_the_heuristic_underneath_is_unchanged():
+    # The floors are floors, not a rewrite. classify_task_complexity
+    # still rates "think carefully about the architecture" as low and
+    # still wants the 0.5B -- which is why the floors are needed and why
+    # removing them would silently restore the bug.
+    assert ladder("Hello Aria", allow_below_chat_floor=True) == ROUTER
+    assert ladder("think carefully about the architecture",
+                  allow_below_chat_floor=True) == ROUTER
+
+
+def test_classification_can_still_reach_the_smallest_model():
+    # The one legitimate use, and it must survive the floors: nobody
+    # reads a classifier's output.
+    assert ladder("Hello Aria", allow_below_chat_floor=True) == ROUTER
+
+
+def test_the_floor_uses_the_same_number_the_gate_does():
+    from backend.core.chat_capability_gate import CHAT_PARAM_FLOOR, too_weak_for_chat
+
+    # One authority on "too small to chat". A second threshold here would
+    # drift from the gate's, and the drift would show up as a model the
+    # gate rejects being chosen by the ladder.
+    assert CHAT_PARAM_FLOOR == 3_000_000_000
+    for text in ["Hello Aria", "edit main.py", "think carefully about this"]:
+        assert too_weak_for_chat(ladder(text)) is False

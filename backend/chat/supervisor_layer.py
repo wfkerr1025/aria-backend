@@ -127,6 +127,27 @@ _BARE_ROLE_LINE = re.compile(
 _PERSONA_ECHO = re.compile(
     r"^\s*(you are|i am)\s+aria[^.\n]{0,80}(\.|$)", re.IGNORECASE)
 
+# A role label opening a new clause MID-LINE, after a finished sentence.
+#
+# Captured live on this machine, from the 0.5B:
+#
+#     Hello! How can I assist you today? system: The user's latest
+#     message is just a greeting - reply in under 15 words ...
+#
+# Every leak rule in this file and in answer_stream is anchored to the
+# start of a line, and every one of them missed this. So is the
+# provider's stop sequence list, which holds a newline-anchored form.
+#
+# The sentence boundary is what makes the rule safe. "The build system: a
+# short description" has "system:" preceded by a word, not by the end of
+# a sentence, and survives. Everything from the label onward is dropped:
+# a model that has started narrating its instructions does not go back to
+# answering afterwards.
+_INLINE_LEAK = re.compile(
+    r"(?<=[.!?—])\s+(system|assistant|user)\s*:\s.*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
 # Below this length a repeated paragraph is probably a legitimate repeat
 # -- a heading, a short label, a closing line -- and removing it would
 # damage the answer to fix nothing.
@@ -218,6 +239,8 @@ def _restore_fences(text: str, blocks: list[str]) -> str:
 
 def _strip_leakage(text: str, repairs: list[str]) -> str:
     before = text
+
+    text = _INLINE_LEAK.sub("", text)
 
     for marker in _LEAK_MARKERS:
         if marker in text:

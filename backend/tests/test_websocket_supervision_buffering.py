@@ -263,3 +263,56 @@ def test_rest_and_websocket_call_the_same_thing():
     # to disagree about everything else in this codebase.
     assert "supervise_full" in rest_source
     assert "supervise_full" in ws_source
+
+
+# ======================================================
+# Leakage that is not at the start of a line
+#
+# Captured live from the 0.5B before the floor existed:
+#
+#     Hello! How can I assist you today? system: The user's latest
+#     message is just a greeting - reply in under 15 words, warmly.
+#
+# Every leak rule in supervisor_layer and answer_stream is anchored to a
+# line start, and the provider's stop sequences hold a newline-anchored
+# form. All of them missed it, so the system prompt reached the screen.
+# ======================================================
+LIVE_LEAK = ("Hello! How can I assist you today? system: The user's latest message "
+             "is just a greeting - reply in under 15 words, warmly.")
+
+
+def test_the_leak_that_actually_reached_a_user_is_removed():
+    result = deterministic_repair(LIVE_LEAK)
+
+    assert result.text == "Hello! How can I assist you today?"
+    assert "system:" not in result.text
+
+
+@pytest.mark.parametrize("raw", [
+    "Done. assistant: now I will narrate my instructions",
+    "That is all! system: you are ARIA",
+    "Finished. user: what should I ask next",
+])
+def test_a_role_label_opening_a_clause_is_leakage(raw):
+    assert ":" not in deterministic_repair(raw).text.split(".")[-1].strip(" !")
+
+
+@pytest.mark.parametrize("raw", [
+    "The build system: a short description follows.",
+    "Use the assistant: it helps.",
+    "What is a system: a set of parts.",
+    "I fixed it. The system: rebuilt.",
+])
+def test_prose_that_merely_contains_a_role_word_survives(raw):
+    # The sentence boundary is what makes the rule safe. A label preceded
+    # by a word is prose; one preceded by the end of a sentence is a model
+    # that has started narrating its own prompt.
+    assert deterministic_repair(raw).text == raw
+
+
+def test_everything_after_the_label_goes():
+    # A model that has begun narrating its instructions does not go back
+    # to answering afterwards, so the tail is not worth salvaging.
+    result = deterministic_repair("Answer here. system: instructions\n\nmore leaked text")
+
+    assert result.text == "Answer here."

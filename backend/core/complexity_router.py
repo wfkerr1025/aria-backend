@@ -201,11 +201,135 @@ def routing_diagnostics_snapshot() -> Dict[str, Any]:
     return {"recent_decisions": list(_ROUTING_HISTORY)[-50:]}
 
 
+def _apply_chat_floor(chosen: Optional[str], allow_below: bool) -> Optional[str]:
+    """Never hand a user-facing turn to a model that cannot hold one.
+
+    The last line of defence, and the one that was missing.
+
+    Everything above this decides by task complexity, and
+    classify_task_complexity rates "think carefully about the
+    architecture of this module" as low -- so the ladder handed
+    essentially every conversational prompt to the 0.5B. On a live
+    Automatic-mode session that is exactly what happened: the 0.5B
+    answered "Hello Aria" and leaked its own system prompt into the
+    reply.
+
+    chat_capability_gate had been added upstream for this, and never saw
+    the turn: in Automatic mode the orchestrator resolves model_id to
+    None and the model is chosen HERE, afterwards. A gate placed before
+    the decision cannot gate a decision made after it.
+
+    So the floor is applied at the point of choice, where every caller
+    reaches it -- auto_selector and provider_router both -- rather than
+    at one of the paths into it.
+
+    `allow_below` is for the one legitimate use of a sub-floor model:
+    classification, whose output nobody reads. It is off by default, so
+    a caller has to say so.
+    """
+    if allow_below or chosen is None:
+        return chosen
+
+    try:
+        from backend.core.chat_capability_gate import too_weak_for_chat
+
+        if not too_weak_for_chat(chosen):
+            return chosen
+
+        # The NEAREST model that clears the floor, not the strongest.
+        # _LADDER is heaviest-first, so stepping toward index 0 from where
+        # the complexity decision landed is one rung up. Taking the first
+        # entry instead sent "Hello Aria" to the 12B -- correct, and four
+        # times slower than the answer it needs.
+        try:
+            start = _LADDER.index(chosen)
+        except ValueError:
+            start = len(_LADDER)
+
+        for candidate in reversed(_LADDER[:start]):
+            if _is_installed(candidate) and not too_weak_for_chat(candidate):
+                logger.info(
+                    "select_local_model_for_prompt() -> %s is below the chat floor; "
+                    "stepping up to %s", chosen, candidate,
+                )
+                return candidate
+
+        # Nothing installed clears it. The original stands: a weak answer
+        # beats no answer, and the caller is told nothing has changed.
+        logger.warning(
+            "select_local_model_for_prompt() -> %s is below the chat floor and no "
+            "installed model clears it", chosen,
+        )
+    except Exception:  # pragma: no cover - the floor must not break routing
+        logger.exception("could not apply the chat floor; leaving %s in place", chosen)
+
+    return chosen
+
+
+def _apply_role_floor(chosen: Optional[str], prompt: str, tool_use: bool,
+                      allow_below: bool = False) -> Optional[str]:
+    """Floor the ladder at the tier this turn's WORK needs.
+
+    The same shape as the evidence floor above it, for the same reason
+    and at the same layer. In Automatic mode the orchestrator resolves
+    model_id to None and this function chooses -- so a role table that
+    says "tool turns use mistral-7b" has nothing to act on unless the
+    rule also exists here.
+
+    The prompt is classified with backend.chat.model_router's own
+    vocabulary rather than a second table. Two lists that answer "is this
+    a tool turn" would eventually disagree, and the disagreement would
+    surface as a model chosen for work it never did.
+
+    A floor, not a pin: a prompt already above the tool tier stays there.
+    """
+    # allow_below means "give me the raw ladder answer", and it has to
+    # lift BOTH floors or it lifts neither usefully: a classification
+    # turn floored up to the tool model is as wrong as one floored up to
+    # the chat model.
+    if chosen is None or allow_below:
+        return chosen
+
+    try:
+        from backend.chat.model_router import TURN_CHAT, TURN_HEAVY, classify_turn
+
+        class _Prompt:
+            latest_user_text = prompt
+            messages = ()
+
+        kind = TURN_HEAVY if tool_use is None else classify_turn(_Prompt())
+
+        if kind == TURN_CHAT and not tool_use:
+            return chosen
+
+        # Deep work goes higher than tool work. classify_task_complexity
+        # rates "think carefully about the architecture of this module"
+        # as low, so without this the same floor that rescues a tool turn
+        # would leave a reasoning turn on the 7B.
+        target = DIFFICULT_MODEL_ID if kind == TURN_HEAVY else MEDIUM_MODEL_ID
+        if not _is_installed(target):
+            target = MEDIUM_MODEL_ID
+        if not _is_installed(target):
+            return chosen
+
+        if _LADDER.index(chosen) > _LADDER.index(target):
+            logger.info(
+                "select_local_model_for_prompt() -> %s prompt; flooring %s at %s",
+                kind, chosen, target,
+            )
+            return target
+    except Exception:  # pragma: no cover - a floor must not break routing
+        logger.exception("could not apply the tool floor; leaving %s in place", chosen)
+
+    return chosen
+
+
 def select_local_model_for_prompt(
     prompt: str,
     context_length: Optional[int] = None,
     tool_use: bool = False,
     evidence_present: Optional[bool] = None,
+    allow_below_chat_floor: bool = False,
 ) -> str:
     """
     Pick the best installed local model for `prompt`'s task complexity.
@@ -333,6 +457,9 @@ def select_local_model_for_prompt(
                     f"installed; falling back to registry role model {candidate!r}"
                 )
                 break
+
+    chosen = _apply_chat_floor(chosen, allow_below_chat_floor)
+    chosen = _apply_role_floor(chosen, prompt, tool_use, allow_below_chat_floor)
 
     if chosen is None:
         # Truly nothing usable is registered — let the caller's own
