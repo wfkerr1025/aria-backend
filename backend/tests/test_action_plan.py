@@ -311,3 +311,131 @@ def test_an_answer_with_no_actions_still_reports_nothing(tmp_path, monkeypatch):
     # Almost every turn. A client that has never heard of answer_actions
     # must see exactly the traffic it saw before they existed.
     assert run_answer_actions("just talking", "hello") is None
+
+
+# ======================================================
+# Telling the model the tools exist
+#
+# Everything below the model was built first and none of it ever ran.
+# parse_actions read a block, tool_orchestrator executed it, fs_plan
+# staged it, two consents gated it, the Control Center rendered it -- and
+# nothing asked the model to write one. Asked to create a file, ARIA
+# answered "I'm unable to directly create files on your system", which
+# was true from where it was standing.
+# ======================================================
+def test_the_brief_names_every_action_tool():
+    from backend.core.action_plan import ACTION_TOOLS
+    from backend.core.tool_brief import action_tool_brief
+
+    brief = action_tool_brief()
+
+    for tool in ACTION_TOOLS:
+        assert tool in brief, f"{tool} is registered but the model is never told about it"
+
+
+def test_the_brief_uses_the_registrys_argument_names():
+    from backend.core.tool_brief import action_tool_brief
+    from backend.core.tool_registry import get_tool_schema
+
+    brief = action_tool_brief()
+
+    # Generated, not written out. A hand-kept list would be right on the
+    # day it was written and would then drift -- the model would emit
+    # `filename` where the tool wants `path`, the invocation would be
+    # discarded, and the symptom would be an action that silently does
+    # not happen.
+    for tool in ("edit_file", "move_file", "rename_file"):
+        schema = get_tool_schema(tool)
+        for name, spec in (schema.parameters or {}).items():
+            if isinstance(spec, dict) and spec.get("required"):
+                assert name in brief
+
+
+def test_the_brief_never_tells_the_model_it_can_apply_anything():
+    from backend.core.tool_brief import action_tool_brief
+
+    brief = action_tool_brief().lower()
+
+    # The block is a PROPOSAL. A brief that said "you can edit files"
+    # would produce a model announcing changes it has not made, which is
+    # the failure the staging system exists to prevent, reintroduced
+    # through its own instructions.
+    assert "proposal" in brief
+    assert "nothing happens until the user agrees" in brief
+    # And `confirm` is set by the orchestrator from the user's words. A
+    # model that knew about the flag could grant itself the consent.
+    assert "confirm=true" not in brief.replace(" ", "")
+
+
+def test_the_brief_reaches_a_tool_turn_and_not_a_chat_turn():
+    import inspect
+
+    from backend.core import turn_orchestrator
+
+    source = inspect.getsource(turn_orchestrator.orchestrate_turn)
+
+    # On ordinary chat the brief is context spent to make a greeting more
+    # likely to propose a file operation.
+    assert "action_tool_brief" in source
+    assert "model_router.TURN_TOOLS" in source
+
+
+# ------------------------------------------------------
+# What the model actually calls things
+# ------------------------------------------------------
+@pytest.mark.parametrize("said,meant", [
+    ("create_file", "edit_file"),
+    ("write_file", "edit_file"),
+    ("new_file", "edit_file"),
+    ("mkdir", "create_folder"),
+    ("make_folder", "create_folder"),
+    ("remove_file", "delete_file"),
+    ("rename", "rename_file"),
+])
+def test_a_models_own_vocabulary_is_normalised(said, meant):
+    # Told in the brief that there is no create_file and that edit_file
+    # makes a missing path, mistral-7b proposed create_file twice. The
+    # intent was never in doubt and the block parsed to nothing, which
+    # looks exactly like the refusal the brief was written to fix.
+    #
+    # Prompt wording is a weak lever on a 7B; normalising is exact. No
+    # alias widens anything -- each lands on a tool that stages and needs
+    # both consents.
+    text = block(f'{{"tool": "{said}", "path": "a.py", "dest": "b.py", "new_name": "b.py"}}')
+
+    parsed = ap.parse_actions(text)
+
+    assert len(parsed) == 1
+    assert parsed[0].tool_name == meant
+
+
+def test_an_alias_is_not_also_reported_as_missing():
+    # One action must not produce two contradictory messages: run
+    # correctly as edit_file AND be reported as a tool ARIA does not have.
+    text = block('{"tool": "create_file", "path": "a.py"}')
+
+    assert len(ap.parse_actions(text)) == 1
+    assert ap.unsupported_actions(text) == []
+
+
+def test_a_genuinely_unknown_tool_is_still_reported():
+    text = block('{"tool": "send_email", "to": "a@b.c"}')
+
+    assert ap.parse_actions(text) == []
+    assert ap.unsupported_actions(text) == ["send_email"]
+
+
+def test_a_create_with_no_content_is_an_empty_file():
+    # "Create hello_world.py" with no content is a request for an empty
+    # file, not a malformed action. Refusing would be technically right
+    # and would leave the user with nothing.
+    parsed = ap.parse_actions(block('{"tool": "create_file", "path": "a.py"}'))
+
+    assert parsed[0].args["content"] == ""
+
+
+def test_supplied_content_is_never_replaced():
+    parsed = ap.parse_actions(
+        block('{"tool": "edit_file", "path": "a.py", "content": "print(1)"}'))
+
+    assert parsed[0].args["content"] == "print(1)"

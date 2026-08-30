@@ -161,6 +161,44 @@ def requests_live_execution(user_text: str) -> bool:
     return normalized.strip() in BARE_AFFIRMATIVES
 
 
+# What a model calls a tool when it has not read the list carefully.
+#
+# Told in the brief that there is no create_file and that edit_file makes
+# a missing path, mistral-7b proposed create_file twice. The intent was
+# never in doubt -- "create hello_world.py" with a path argument -- and
+# the block parsed to nothing, which looks to the user exactly like the
+# refusal the brief was written to fix.
+#
+# Prompt wording is a weak lever on a 7B. This is the same principle the
+# supervisor uses on malformed JSON: what is exactly solvable in code
+# gets solved in code, and the model is left to do the part only it can.
+# Nothing here widens what can happen -- every alias lands on a tool that
+# stages and needs both consents.
+_TOOL_ALIASES = {
+    "create_file": "edit_file",
+    "write_file": "edit_file",
+    "new_file": "edit_file",
+    "save_file": "edit_file",
+    "update_file": "edit_file",
+    "make_folder": "create_folder",
+    "make_directory": "create_folder",
+    "create_directory": "create_folder",
+    "mkdir": "create_folder",
+    "remove_file": "delete_file",
+    # NOT "rm", and not "delete". An existing test lists rm alongside
+    # "shell" and "run_shell" as names that must never resolve to an
+    # action, and it is right to: this codebase forbids shell execution,
+    # and a shell verb quietly becoming a file tool is how that boundary
+    # stops being legible. Aliases here are tool-name variants a model
+    # reaches for, not command names.
+    "move": "move_file",
+    "rename": "rename_file",
+    "copy": "copy_file",
+    "run_test": "run_tests",
+    "test": "run_tests",
+}
+
+
 def _invocation(payload, index: int) -> ToolInvocation | None:
     if not isinstance(payload, dict):
         return None
@@ -169,6 +207,8 @@ def _invocation(payload, index: int) -> ToolInvocation | None:
     if not isinstance(name, str):
         return None
     name = name.strip()
+
+    name = _TOOL_ALIASES.get(name.lower(), name)
 
     if name not in ACTION_TOOLS:
         # Includes tools that exist but are not actions, and tools that do
@@ -187,6 +227,12 @@ def _invocation(payload, index: int) -> ToolInvocation | None:
         logger.info("action ignored: %r args were %s, not an object",
                     name, type(args).__name__)
         return None
+
+    if name == "edit_file" and "content" not in args:
+        # "Create hello_world.py" with no content is a request for an
+        # empty file, not a malformed action. Refusing it would be
+        # technically right and would leave the user with nothing.
+        args["content"] = ""
 
     return ToolInvocation(tool_name=name, args=args, step_id=f"action-{index}")
 
@@ -222,9 +268,15 @@ def unsupported_actions(text: str) -> list[str]:
             name = candidate.get("tool") or candidate.get("name")
             # Shaped like an action -- a "tool" key with a string in it --
             # but naming something that does not exist.
-            if isinstance(name, str) and name.strip() and name.strip() not in ACTION_TOOLS:
-                if name.strip() not in names:
-                    names.append(name.strip())
+            if not isinstance(name, str) or not name.strip():
+                continue
+            # The same aliases parse_actions applies. Without this a
+            # create_file block ran correctly as edit_file AND was
+            # reported as a tool ARIA does not have -- one action, two
+            # contradictory messages.
+            resolved = _TOOL_ALIASES.get(name.strip().lower(), name.strip())
+            if resolved not in ACTION_TOOLS and resolved not in names:
+                names.append(resolved)
 
     return names
 

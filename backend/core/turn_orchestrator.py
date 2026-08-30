@@ -49,6 +49,7 @@ from backend.core import (
 from backend.chat import model_router
 from backend.core import complexity_router
 from backend.core import search_activation
+from backend.core import tool_brief
 from backend.core.generation import make_generator
 from backend.core.conversation_manager import (
     INTENT_MODEL_SWITCH,
@@ -906,6 +907,27 @@ def orchestrate_turn(
     hint = intent_hint(intent)
     if hint:
         final_messages = final_messages[:1] + [{"role": "system", "content": hint}] + final_messages[1:]
+
+    # Tell the model its tools exist.
+    #
+    # This was missing, and its absence made every layer below it dead
+    # code. parse_actions reads a fenced block, tool_orchestrator runs
+    # it, fs_plan stages it, two consents gate it, the Control Center
+    # renders it -- and nothing ever asked the model to write one. Asked
+    # to create a file, ARIA answered "I'm unable to directly create
+    # files on your system", which was true from where it was standing.
+    #
+    # Only on turns the routing layer already read as tool-bearing. On
+    # ordinary chat the brief is context spent to make a greeting more
+    # likely to propose a file operation, which is the wrong trade in
+    # both directions.
+    if routing.turn_kind in (model_router.TURN_TOOLS, model_router.TURN_HEAVY):
+        brief = tool_brief.action_tool_brief()
+        if brief:
+            final_messages = (final_messages[:1]
+                              + [{"role": "system", "content": brief}]
+                              + final_messages[1:])
+            telemetry.append(_event("action_brief_supplied", turn_kind=routing.turn_kind))
 
     # --- Seam A + B: planning, tools and synthesis.
     #
