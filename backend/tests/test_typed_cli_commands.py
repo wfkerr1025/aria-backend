@@ -441,3 +441,43 @@ def test_a_unity_turn_is_classified_as_tool_bearing():
 
     assert kind in (model_router.TURN_TOOLS, model_router.TURN_HEAVY)
     assert kind != model_router.TURN_CHAT, "TURN_CHAT is what routed it to phi-3-mini"
+
+
+# ======================================================
+# A build log is not a chat message
+# ======================================================
+
+def test_short_output_is_shown_whole(registry):
+    assert engine._readable_output("one\ntwo\nthree") == "one\ntwo\nthree"
+    assert engine._readable_output("") == ""
+
+
+def test_a_long_log_keeps_the_end(registry):
+    """A real Unity build prints six hundred lines and says why it
+    failed in about the last ten. Keeping the head would keep the
+    licensing handshake and throw away the answer."""
+    lines = [f"line {i}" for i in range(500)]
+    lines.append("BuildFailedException: the actual reason")
+
+    shown = engine._readable_output("\n".join(lines))
+
+    assert "BuildFailedException: the actual reason" in shown
+    assert "line 0" not in shown
+    assert shown.count("\n") <= engine.MAX_REPLY_LINES
+
+
+def test_a_truncated_log_says_it_is_truncated(registry):
+    """A shortened log that looks whole is worse than a long one."""
+    shown = engine._readable_output("\n".join(f"line {i}" for i in range(200)))
+
+    assert "not shown" in shown
+
+
+def test_a_failing_build_leads_with_the_reason(registry):
+    """The CLI's own error comes first, before any of the log, because
+    it is the sentence that answers the question."""
+    result = _reply("unity boom")
+
+    first = result.text.splitlines()[0]
+    assert first.startswith("Ran `unity boom` and it failed:")
+    assert "it broke" in first

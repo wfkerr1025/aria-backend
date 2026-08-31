@@ -853,6 +853,37 @@ def run_command(command_id: str, args: Optional[Sequence[str]] = None,
     }
 
 
+# How many lines of a command's output belong in a chat message.
+#
+# A Unity build prints six hundred: licensing handshakes, package
+# registrations, domain reload profiling, shader imports. One of them
+# says why the build failed, and it is near the end. Pasting all of it
+# into the conversation buries the answer, and it also goes into the
+# history the next turn reads.
+#
+# The terminal view keeps two thousand. This is the chat, which is a
+# different thing with a different job.
+MAX_REPLY_LINES = 40
+
+
+def _readable_output(output: str) -> str:
+    """The part of a command's output worth putting in a message.
+
+    Keeps the END, because that is where a failure says what happened
+    -- Unity's build log opens with licensing and package resolution
+    and closes with the exception. Says plainly how much was left out,
+    so a truncated log never reads as a whole one.
+    """
+    lines = (output or "").strip().splitlines()
+    if len(lines) <= MAX_REPLY_LINES:
+        return "\n".join(lines)
+
+    hidden = len(lines) - MAX_REPLY_LINES
+    kept = lines[-MAX_REPLY_LINES:]
+    return (f"[{hidden} earlier line(s) not shown -- the end is where the "
+            f"reason usually is]\n" + "\n".join(kept))
+
+
 def answer_invocation(invocation: dict) -> dict:
     """Do what a typed Unity CLI line asked for, and report what happened.
 
@@ -895,12 +926,12 @@ def answer_invocation(invocation: dict) -> dict:
     outcome = run_invocation(command, args)
 
     if outcome["success"]:
-        body = (outcome["output"] or "").strip()
+        body = _readable_output(outcome["output"])
         return {"ran": True, "text": (
             f"Ran `{spoken}`.\n\n" + (body if body else "It finished and printed nothing."))}
 
     reason = outcome.get("error") or "it failed"
-    body = (outcome["output"] or "").strip()
+    body = _readable_output(outcome["output"])
     return {"ran": True, "text": (
         f"Ran `{spoken}` and it failed: {reason}\n\n"
         + (body if body else "It printed nothing."))}
