@@ -50,9 +50,10 @@ const FIELD_LABELS = {
   unity_cli_mode: { label: "Default mode", type: "select", optional: true,
                     hint: "Passed as --mode. Leave empty to pass no mode at all." },
   api_key: { label: "API key", type: "password",
-             hint: "Stored in aria_config/plugins.json." },
-  model: { label: "Model", type: "select", optional: true,
-           hint: "Which Ludo.ai model to use. Leave empty for their default." },
+             hint: "Sent as Authorization: ApiKey. Stored in aria_config/plugins.json." },
+  model: { label: "Preferred model", type: "select", optional: true,
+           hint: "Not every Ludo.ai feature accepts every model. Leave empty "
+                 + "to let each one use its own default." },
 };
 
 // Never editable on this page. id and configPage are identity -- a form

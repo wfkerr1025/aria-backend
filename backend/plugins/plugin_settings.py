@@ -167,8 +167,19 @@ _SECRET_FIELDS = frozenset({"api_key"})
 # so these are placeholders and are marked as such in the UI. An empty
 # value is always allowed and means "their default".
 FIELD_CHOICES = {
+    # Ludo.ai's real generation models, from its OpenAPI spec. These
+    # replace three invented names -- ludo-default, ludo-fast,
+    # ludo-quality -- that were placeholders written before the API was
+    # known and would have been refused by every endpoint.
+    #
+    # This is the union across endpoints, not a set any one of them
+    # accepts: sprite animation takes six of these, video takes five,
+    # motion transfer takes three, and each has its own default. So an
+    # empty value is the sensible setting and means "let each endpoint
+    # use its own default", which is what the page says it means.
     "ludo": {
-        "model": ("", "ludo-default", "ludo-fast", "ludo-quality"),
+        "model": ("", "blitz", "standard", "eagle", "eagle-audio",
+                  "forge", "forge-pixel", "tango"),
     },
     # The three the task names, plus empty for "do not pass --mode at
     # all", which is not the same as any of them.
@@ -179,24 +190,51 @@ FIELD_CHOICES = {
 
 # Where the Ludo.ai connection test goes.
 #
-# THE HOST IS VERIFIED, THE PATH IS NOT.
-# api.ludo.ai resolves and answers -- that much was checked from this
-# machine. What is not verified is the route, because Ludo.ai's API
-# documentation is not something ARIA has, and probing a third party's
-# server until something answers is not a reasonable way to find out.
+# VERIFIED against Ludo.ai's OpenAPI spec at
+# https://api.ludo.ai/api-documentation/swagger.json (Ludo.ai API 0.9.2)
+# and by calling the endpoint. An earlier version of this file guessed
+# /v1/models and said so; the guess was wrong and this replaces it.
 #
-# So the path below is a conventional guess, and both halves are
-# environment-configurable: when the real endpoint is known it is one
-# variable, not a code change.
+# /auth/validate-api-key exists for exactly this purpose -- "Returns 200
+# if valid, 403 if invalid" -- and, unlike every other endpoint here,
+# spends no generation credits. That matters: Ludo.ai meters API calls
+# against a monthly allowance, so a connection test that generated an
+# image to prove the key worked would cost the user money every time
+# they opened the page.
 #
-# The root path "/" was measured returning 200 with an empty body for
-# any request, which is why it is NOT used here. A probe that answers
-# "connected" to a key of "xxxxxxxx" is not a test of anything, and the
-# failure it hides is the one the user most needs to see.
+# Still environment-overridable, because an API version can move and a
+# setting is a cheaper fix than a release.
 ENV_LUDO_BASE = "ARIA_LUDO_API_BASE"
 ENV_LUDO_PATH = "ARIA_LUDO_API_PATH"
-LUDO_API_BASE = "https://api.ludo.ai"
-LUDO_PROBE_PATH = "/v1/models"
+LUDO_API_BASE = "https://api.ludo.ai/api"
+LUDO_PROBE_PATH = "/auth/validate-api-key"
+
+# HOW THE KEY IS SENT, AND WHY IT IS NOT WHAT THE DOCS PAGE SAYS
+#
+# Ludo.ai's own integration page states:
+#     Authentication: ApiKey YOUR_API_KEY
+# That is wrong for the REST API. The OpenAPI spec names the header
+# "Authorization", and the server agrees. Measured against the live
+# endpoint with a dummy key:
+#
+#     no header                        -> 403 "API Key is required"
+#     Authorization: ApiKey <dummy>    -> 403 "Error: Unauthorized"
+#     Authentication: ApiKey <dummy>   -> 403 "API Key is required"
+#
+# The third case is the tell: with "Authentication" the server never
+# saw a key at all. So "Authorization" it is. (The docs page may still
+# be right about MCP, which is a different server at mcp.ludo.ai and
+# not something this module talks to.)
+#
+# The scheme is "ApiKey", not "Bearer" -- also from the spec, and also
+# something an earlier version of this file got wrong.
+LUDO_AUTH_HEADER = "Authorization"
+LUDO_AUTH_SCHEME = "ApiKey"
+
+# What the server says when it did not receive a key at all. If ARIA
+# ever sees this, the fault is on this side, and the message says so
+# rather than blaming the user's key.
+_LUDO_NO_KEY = "API Key is required"
 
 # Short on purpose. This runs when somebody presses a button and watches
 # the page, so an unreachable host must say so quickly rather than
@@ -935,14 +973,17 @@ def _test_ludo(plugin: dict) -> dict:
     host and nothing else, it has a six-second budget, and it never logs
     the key or the response body.
 
-    THE PATH IS A GUESS, AND A 404 SAYS SO
-    --------------------------------------
-    The host answers; the route is unverified (see LUDO_PROBE_PATH). So
-    a 404 means "a server took this request and does not have this
-    path", which is emphatically not "your key is wrong" -- and the
-    message says the former rather than blaming the key, because a user
-    who deletes a working key on ARIA's bad advice has been actively
-    harmed by a test that was supposed to help.
+    It calls /auth/validate-api-key, which exists to answer this
+    question and costs no credits. Ludo.ai meters API calls against a
+    monthly allowance, so a test that proved the key worked by
+    generating something would bill the user for pressing a button.
+
+    A 403 has two meanings and they are told apart, because they point
+    at different people. "Unauthorized" means Ludo.ai read the key and
+    rejected it -- the user's problem. "API Key is required" means the
+    request arrived without a key at all, which can only be ARIA's
+    fault, and saying "your key was rejected" there would send someone
+    off to regenerate a key that was fine.
     """
     key = str(plugin.get("api_key") or "").strip()
     if not key:
@@ -962,24 +1003,35 @@ def _test_ludo(plugin: dict) -> dict:
         # Reusing the project's client rather than reaching for requests:
         # its own docstring says a caller that does that duplicates the
         # error handling and misses the next fix to it.
-        answer = http_fetch(url, headers={"Authorization": f"Bearer {key}"},
-                            timeout=LUDO_TIMEOUT_SECONDS)
+        answer = http_fetch(
+            url,
+            headers={LUDO_AUTH_HEADER: f"{LUDO_AUTH_SCHEME} {key}"},
+            timeout=LUDO_TIMEOUT_SECONDS)
     except Exception as error:
         logger.exception("the Ludo.ai connection test could not run")
         return {"ok": False, "message": f"The test could not run: {error}"}
 
     if answer.get("status") == "ok":
-        return {"ok": True, "message": f"Ludo.ai answered at {url}."}
+        return {"ok": True, "message": "Ludo.ai accepted that key."}
 
     code = answer.get("code")
+    body = str(answer.get("error") or "")
+
+    if _LUDO_NO_KEY.lower() in body.lower():
+        # The key never reached Ludo.ai. That is this end's fault, and
+        # telling the user their key was rejected would send them to
+        # regenerate a key that was fine.
+        return {"ok": False,
+                "message": ("Ludo.ai says no key was sent, which is ARIA's "
+                            "fault rather than the key's. The request went to "
+                            f"{url}.")}
     if code in (401, 403):
         return {"ok": False, "message": "Ludo.ai rejected that key."}
     if code == 404:
         return {"ok": False,
-                "message": (f"Reached Ludo.ai, but it has no {path}. Your key was "
-                            f"not checked and may be perfectly good -- ARIA does "
-                            f"not know Ludo.ai's API route. Set {ENV_LUDO_PATH} "
-                            f"(and {ENV_LUDO_BASE} if needed) to the real one.")}
+                "message": (f"Reached Ludo.ai, but it has no {path}. The key was "
+                            f"not checked. Ludo.ai's API may have moved -- set "
+                            f"{ENV_LUDO_PATH} (and {ENV_LUDO_BASE} if needed).")}
     if code == 429:
         return {"ok": False, "message": "Ludo.ai rate-limited the test. Try again shortly."}
     if code:

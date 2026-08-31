@@ -9,6 +9,7 @@
 // which is the thing that cannot silently stop being true.
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +20,32 @@ const read = (...parts) => fs.readFileSync(path.join(webui, ...parts), "utf8");
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
+
+/**
+ * The registry as committed, not as the local ARIA left it.
+ *
+ * aria_config/plugins.json is both shipped and live: it is tracked in
+ * git AND it is what discovery writes to. On a machine that has run
+ * ARIA it holds whatever was found there -- unity_cli, unreal,
+ * wordpress -- so a test that read the working copy would fail the
+ * moment somebody opened the Plugins page, which is the feature
+ * working correctly.
+ */
+function shippedRegistry() {
+  const root = path.join(webui, "..");
+  try {
+    return JSON.parse(execFileSync(
+      "git", ["show", "HEAD:aria_config/plugins.json"],
+      { cwd: root, encoding: "utf8" }));
+  } catch {
+    // No git available: fall back to the file, minus anything
+    // discovery added -- which is what this is looking past anyway.
+    const onDisk = JSON.parse(
+      fs.readFileSync(path.join(root, "aria_config", "plugins.json"), "utf8"));
+    return Object.fromEntries(Object.entries(onDisk)
+      .filter(([, plugin]) => !plugin.discovered && !plugin.type));
+  }
+}
 
 // --- the layout promise -------------------------------------------
 
@@ -173,8 +200,7 @@ test("identity fields are not editable", () => {
 // --- the logos -----------------------------------------------------
 
 test("every logo the registry names is a real PNG", () => {
-  const registry = JSON.parse(
-    fs.readFileSync(path.join(webui, "..", "aria_config", "plugins.json"), "utf8"));
+  const registry = shippedRegistry();
 
   for (const plugin of Object.values(registry)) {
     const file = path.join(webui, plugin.logo);
@@ -280,8 +306,7 @@ test("a saved value the backend no longer offers is still shown", () => {
 
 test("every plugin's fields have a label and a hint", () => {
   const js = read("pages", "plugin_config", "plugin_config.js");
-  const registry = JSON.parse(
-    fs.readFileSync(path.join(webui, "..", "aria_config", "plugins.json"), "utf8"));
+  const registry = shippedRegistry();
   const known = new Set(["id", "name", "version", "logo", "configPage", "enabled"]);
 
   for (const plugin of Object.values(registry)) {

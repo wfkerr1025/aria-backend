@@ -52,15 +52,40 @@ def registry(tmp_path, monkeypatch):
 # The shipped registry
 # ======================================================
 
-def test_the_shipped_registry_holds_exactly_the_three_plugins():
+# aria_config/plugins.json is BOTH shipped and live.
+#
+# It is tracked in git and it is what discovery writes to, so on a
+# machine that has run ARIA it holds whatever was found there --
+# unity_cli, unreal, wordpress -- alongside the three that ship. These
+# tests therefore ask what git ships, not what is on disk. An earlier
+# version read the working copy and started failing the moment the user
+# opened the Plugins page, which is the feature working correctly.
+def _shipped_registry() -> dict:
+    """The registry as committed, not as the local ARIA left it."""
+    import pathlib
+    import subprocess
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    committed = subprocess.run(
+        ["git", "show", "HEAD:aria_config/plugins.json"],
+        cwd=str(root), capture_output=True, text=True)
+
+    if committed.returncode == 0 and committed.stdout.strip():
+        return json.loads(committed.stdout)
+
+    # No git, or a fresh checkout mid-rebase: fall back to the file and
+    # ignore anything discovery added, which is what this is really
+    # trying to look past.
+    on_disk = json.loads((root / "aria_config" / "plugins.json").read_text("utf-8"))
+    return {key: value for key, value in on_disk.items()
+            if not value.get("discovered") and not value.get("type")}
+
+
+def test_the_shipped_registry_holds_the_three_core_plugins():
     """Self-Improvement Engine and Diagnostics Enhancer were hard-coded
     into the old page's markup. Nothing is hard-coded now, so this is
     the file that decides."""
-    import pathlib
-
-    shipped = json.loads(
-        (pathlib.Path(__file__).resolve().parents[2] / "aria_config" / "plugins.json")
-        .read_text(encoding="utf-8"))
+    shipped = _shipped_registry()
 
     assert sorted(shipped) == ["blender", "ludo", "unity"]
     for plugin_id, plugin in shipped.items():
@@ -74,7 +99,7 @@ def test_every_shipped_logo_is_a_real_png():
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parents[2]
-    shipped = json.loads((root / "aria_config" / "plugins.json").read_text(encoding="utf-8"))
+    shipped = _shipped_registry()
 
     for plugin in shipped.values():
         # The logo path is relative to webui/, which is the web root.
@@ -402,7 +427,15 @@ def test_testing_ludo_sends_the_key_to_ludo(registry, monkeypatch):
     assert outcome["ok"] is True
     assert len(calls) == 1
     assert calls[0]["url"].startswith(plugin_settings.LUDO_API_BASE)
-    assert calls[0]["headers"]["Authorization"] == "Bearer sk-a-real-looking-key"
+    # Authorization: ApiKey, not Authentication and not Bearer.
+    #
+    # Both halves were wrong in the first version of this integration,
+    # and neither was caught by a test, because the test asserted
+    # whatever the code happened to send. Measured against the live
+    # endpoint: with the header named "Authentication" the server
+    # answers "API Key is required" -- it never sees the key at all.
+    assert calls[0]["headers"] == {"Authorization": "ApiKey sk-a-real-looking-key"}
+    assert "Authentication" not in calls[0]["headers"]
     # It runs while somebody watches the page, so it must give up quickly.
     assert calls[0]["timeout"] == plugin_settings.LUDO_TIMEOUT_SECONDS
 
@@ -427,7 +460,7 @@ def test_a_rejected_key_is_reported_as_a_rejected_key(registry, monkeypatch):
 
 
 def test_an_unknown_route_does_not_blame_the_key(registry, monkeypatch):
-    """The route is a guess. The key is the user's.
+    """A moved API is not a bad key.
 
     If ARIA reports a 404 as a bad key, a user deletes a working key on
     ARIA's advice -- which is worse than saying nothing at all.
@@ -441,6 +474,49 @@ def test_an_unknown_route_does_not_blame_the_key(registry, monkeypatch):
     assert "not checked" in outcome["message"]
     assert "rejected" not in outcome["message"].lower()
     assert plugin_settings.ENV_LUDO_PATH in outcome["message"]
+
+
+def test_the_probe_is_the_endpoint_that_exists_for_it(registry, monkeypatch):
+    """/auth/validate-api-key, verified against Ludo.ai's OpenAPI spec.
+
+    It is also the only endpoint that answers this question without
+    spending credits -- Ludo.ai meters API calls, so a test that
+    generated an image to prove the key worked would bill the user for
+    pressing a button.
+    """
+    plugin_settings.update_plugin("ludo", {"api_key": "sk-a-real-looking-key"})
+    calls = _answer(monkeypatch, {"status": "ok", "code": 200})
+
+    plugin_settings.test_plugin_connection("ludo")
+
+    assert calls[0]["url"] == "https://api.ludo.ai/api/auth/validate-api-key"
+
+
+def test_a_missing_key_is_not_reported_as_a_rejected_key(registry, monkeypatch):
+    """The two 403s mean different things and point at different people.
+
+    "Unauthorized" is the user's key. "API Key is required" means the
+    request arrived without one, which can only be ARIA's fault, and
+    blaming the key there sends somebody to regenerate a good one.
+    """
+    plugin_settings.update_plugin("ludo", {"api_key": "sk-a-real-looking-key"})
+    _answer(monkeypatch, {"status": "error", "code": 403,
+                          "error": "HTTP 403: {\"message\":\"API Key is required\"}"})
+
+    outcome = plugin_settings.test_plugin_connection("ludo")
+
+    assert outcome["ok"] is False
+    assert "ARIA's fault" in outcome["message"]
+    assert "rejected" not in outcome["message"].lower()
+
+
+def test_the_offered_models_are_real_ones(registry):
+    """These were three invented names before Ludo.ai's spec was read.
+    Every one of them would have been refused by every endpoint."""
+    offered = set(plugin_settings.FIELD_CHOICES["ludo"]["model"])
+
+    assert {"blitz", "standard", "eagle", "forge", "tango"} <= offered
+    assert not any(name.startswith("ludo-") for name in offered)
 
 
 def test_no_network_is_reported_as_no_network(registry, monkeypatch):
