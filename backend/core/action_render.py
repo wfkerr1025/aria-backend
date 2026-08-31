@@ -377,9 +377,13 @@ def _without_any_action_block(text: str) -> str:
     and the failure path was doing precisely that: the whole block,
     followed by a note saying it had not worked.
     """
-    from backend.core.action_plan import strip_action_json
+    from backend.core.action_plan import strip_action_json, without_collapse
 
-    without = _UNCLOSED_ACTION_FENCE.sub("", str(text or ""))
+    # A model that fell into a loop wrote the loop to the screen.
+    # Measured on nemo-12b: "assistant.assistant.assistant." for the rest
+    # of the turn, under an answer that had otherwise worked.
+    without = without_collapse(str(text or ""))
+    without = _UNCLOSED_ACTION_FENCE.sub("", without)
     return _drop_dangling_action_fences(
         strip_action_json(_JSON_FENCE.sub("", without))).strip()
 

@@ -265,3 +265,95 @@ def test_a_broken_builtin_does_not_take_the_others_down(monkeypatch):
         assert action_tool_brief("nemo-12b-q5", UNITY_PROMPT)
     finally:
         brief_plugins.clear_plugins()
+
+
+# ======================================================
+# The gaps the measurement found, asked for by name
+# ======================================================
+#
+# Across six runs of an inventory prompt: doc comments 0, a query method
+# 0, events 2, capacity 1. "Document it" and "expose hooks" were in the
+# brief the whole time. An abstract property the model already ignores
+# does not become persuasive by being repeated, so each of these is now
+# a named mechanism.
+
+def test_documentation_is_asked_for_by_name(unity_only):
+    brief = flat(action_tool_brief("nemo-12b-q5", UNITY_PROMPT))
+
+    assert "every public member gets a /// <summary> comment" in brief
+
+
+def test_events_are_required_on_both_add_and_remove(unity_only):
+    brief = flat(action_tool_brief("nemo-12b-q5", UNITY_PROMPT))
+
+    assert "unityevent" in brief
+    assert "raise an event on add and on remove" in brief
+
+
+def test_serialization_is_required_on_every_data_class(unity_only):
+    brief = flat(action_tool_brief("nemo-12b-q5", UNITY_PROMPT))
+
+    assert "[serializable] on every data class" in brief
+    assert "jsonutility" in brief
+
+
+def test_capacity_and_its_warnings_are_required(unity_only):
+    brief = flat(action_tool_brief("nemo-12b-q5", UNITY_PROMPT))
+
+    assert "capacity" in brief
+    assert "debug.logwarning when it is full" in brief
+
+
+def test_a_query_method_is_required(unity_only):
+    """A container you cannot ask about is not finished. The model wrote
+    Add and Remove in every run and a query in none."""
+    brief = flat(action_tool_brief("nemo-12b-q5", UNITY_PROMPT))
+
+    assert "hasitem" in brief or "contains" in brief
+
+
+# ======================================================
+# Topics: what this request needs, not everything Unity knows
+# ======================================================
+
+def test_an_inventory_prompt_gets_the_container_rules(unity_only):
+    brief = flat(action_tool_brief("nemo-12b-q5", UNITY_PROMPT))
+
+    assert "stackable" in brief
+    assert "dialogue" not in brief
+    assert "recipe" not in brief
+
+
+def test_a_dialogue_prompt_gets_the_dialogue_rules(unity_only):
+    brief = flat(action_tool_brief("nemo-12b-q5", "write a unity dialogue manager"))
+
+    assert "branching by id" in brief
+    assert "stackable" not in brief
+
+
+@pytest.mark.parametrize("said,expected", [
+    ("a unity crafting system with recipes", "cancraft"),
+    ("a unity enemy ai patrol state machine", "ondrawgizmosselected"),
+    ("a unity save system for the player", "persistentdatapath"),
+    ("a unity hud controller for the canvas", "never polls it in update"),
+    ("a unity event bus for messaging", "event channel"),
+    ("a unity custom inspector with gizmos", "unity_editor"),
+])
+def test_each_kind_of_system_gets_its_own_guidance(said, expected, unity_only):
+    assert expected in flat(action_tool_brief("nemo-12b-q5", said))
+
+
+def test_a_plain_unity_script_pays_for_no_topic_at_all(unity_only):
+    """Attention is finite. A camera script should not carry the
+    inventory, dialogue and crafting rules."""
+    brief = flat(action_tool_brief(
+        "nemo-12b-q5", "a unity MonoBehaviour that moves the camera"))
+
+    for word in ("stackable", "cancraft", "branching by id", "event channel"):
+        assert word not in brief
+
+
+def test_the_brief_stays_affordable_even_with_a_topic(unity_only):
+    tokens = len(action_tool_brief("nemo-12b-q5", UNITY_PROMPT)) / 3.5
+
+    assert tokens < 16384 * 0.13, f"{tokens:.0f} tokens of nemo's 16384"

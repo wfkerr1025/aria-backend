@@ -41,6 +41,7 @@ logger = get_logger(__name__)
 
 __all__ = [
     "BriefPlugin",
+    "BriefTopic",
     "active_plugin_sections",
     "clear_plugins",
     "load_builtins",
@@ -70,9 +71,37 @@ def _token_in(haystack: str, token: str) -> bool:
     return token in haystack
 
 
-# A plugin's whole contribution, per turn. Generous for a paragraph of
-# real conventions and far too small for a pasted document.
-MAX_PLUGIN_CHARS = 1200
+# A plugin's whole contribution, per turn.
+#
+# Raised from 1200 when topics arrived: the Unity plugin's always-true
+# conventions alone are about 1150 characters, so a topic's rules were
+# being silently truncated off the end -- the guidance most specific to
+# the request was the guidance being cut.
+#
+# Still bounded, and the bound still matters. This is about 700 tokens
+# on top of the global brief; a plugin that fills it is spending the
+# window the model needs for the file, and the failure looks like a
+# worse model rather than a longer prompt.
+MAX_PLUGIN_CHARS = 2400
+
+
+@dataclass(frozen=True)
+class BriefTopic:
+    """Guidance for one kind of system, carried by a plugin.
+
+    A domain knows more than fits in a turn. Topics are how it says the
+    part that matters for THIS request and stays quiet about the rest:
+    an inventory prompt should not pay for the dialogue rules.
+    """
+
+    name: str
+    triggers: tuple = field(default_factory=tuple)
+    rules: tuple = field(default_factory=tuple)
+
+    def wants(self, hint: str) -> bool:
+        lowered = str(hint or "").lower()
+        return any(_token_in(lowered, str(trigger).lower())
+                   for trigger in self.triggers)
 
 
 @dataclass(frozen=True)
@@ -96,9 +125,24 @@ class BriefPlugin:
     rules: tuple = field(default_factory=tuple)
     # Which files this applies to, by extension. Empty means every file.
     applies_to: tuple = field(default_factory=tuple)
+    # Guidance for one KIND of system, included only when the request is
+    # about that kind. See section().
+    topics: tuple = field(default_factory=tuple)
 
-    def section(self) -> str:
-        """This plugin's lines, or "" when it has nothing to say."""
+    def section(self, hint: str = "") -> str:
+        """This plugin's lines, or "" when it has nothing to say.
+
+        `hint` selects TOPICS. A domain knows far more than fits in one
+        turn's window -- Unity alone has inventories, dialogue, crafting,
+        AI, UI, saving, event buses -- and pasting all of it costs the
+        model the attention it needs for the file. Measured: adding
+        conventions moved output toward idiom and away from
+        completeness, and that was one page, not five.
+
+        So the always-true conventions are the plugin's own fields, and
+        anything that only applies to one KIND of system is a topic that
+        arrives when the request is about it.
+        """
         lines = []
         if self.idioms:
             lines.append(f"- Architecture: {self.idioms}")
@@ -109,6 +153,10 @@ class BriefPlugin:
         if self.tests:
             lines.append(f"- Tests: {self.tests}")
         lines.extend(f"- {rule}" for rule in self.rules if str(rule).strip())
+
+        for topic in self.topics:
+            if topic.wants(hint):
+                lines.extend(f"- {rule}" for rule in topic.rules if str(rule).strip())
 
         if not lines:
             return ""
@@ -217,7 +265,7 @@ def active_plugin_sections(hint: str = "") -> list:
         try:
             if not plugin.wants(hint):
                 continue
-            section = plugin.section()
+            section = plugin.section(hint)
             if section:
                 sections.append(section)
         except Exception:  # pragma: no cover - a plugin is not worth a turn

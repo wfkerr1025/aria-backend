@@ -55,6 +55,8 @@ from logger import get_logger
 logger = get_logger(__name__)
 
 __all__ = [
+    "collapse_point",
+    "without_collapse",
     "truncated_action",
     "ACTION_TOOLS",
     "BARE_AFFIRMATIVES",
@@ -343,6 +345,81 @@ def _invocation(payload, index: int, only_code_block: str | None = None) -> Tool
     return ToolInvocation(tool_name=name, args=args, step_id=f"action-{index}")
 
 
+# Where a model stopped writing and started looping.
+#
+# Measured live on nemo-12b, asked for a Unity inventory. It produced
+# three usable action blocks and then this, for the rest of the turn:
+#
+#     assistant.
+#     user interface. user.assistant.
+#     assistant.assistant.assistant.
+#     assistant.assistant.assistant.assistant.assistant.
+#
+# A collapse is not a terminator and cannot be one: AnswerStream's whole
+# table is prefixes ending in a colon, and "assistant." is neither a
+# prefix nor punctuated like one. It is a shape -- a short unit repeated
+# until the budget runs out -- and shapes are what this finds.
+#
+# It is a SALVAGE, not a filter. It never runs on a healthy answer: it
+# is asked only when something has already gone wrong, and all it does
+# is say where the good part ended so the good part can still be used.
+#
+# WHY THE THRESHOLDS ARE WHERE THEY ARE
+# -------------------------------------
+# Six repetitions, and the unit must contain a letter. Real code repeats
+# short lines -- five closing braces down the right margin is ordinary --
+# and a rule that cut those would corrupt files to tidy up a symptom.
+# A letter-bearing unit repeated six times in a row is not something a
+# person writes.
+_MIN_COLLAPSE_REPEATS = 6
+_MAX_COLLAPSE_UNIT = 48
+_HAS_A_LETTER = re.compile(r"[A-Za-z]")
+
+
+def collapse_point(text: str):
+    """Where a repeating tail begins, or None if the text is healthy.
+
+    Returns an index into `text`: everything before it is what the model
+    actually wrote, and everything from it is the loop.
+    """
+    source = str(text or "")
+    if len(source) < _MIN_COLLAPSE_REPEATS * 2:
+        return None
+
+    tail = source.rstrip()
+    if not tail:
+        return None
+
+    for unit_length in range(1, _MAX_COLLAPSE_UNIT + 1):
+        if unit_length * _MIN_COLLAPSE_REPEATS > len(tail):
+            break
+
+        unit = tail[-unit_length:]
+        if not _HAS_A_LETTER.search(unit):
+            continue
+
+        # How many times this unit repeats back from the end.
+        repeats = 0
+        position = len(tail)
+        while position >= unit_length and tail[position - unit_length:position] == unit:
+            repeats += 1
+            position -= unit_length
+
+        if repeats >= _MIN_COLLAPSE_REPEATS:
+            logger.info("collapse: %r repeated %d times; the answer ends at %d",
+                        unit, repeats, position)
+            return position
+
+    return None
+
+
+def without_collapse(text: str) -> str:
+    """`text` up to the point it started looping."""
+    source = str(text or "")
+    point = collapse_point(source)
+    return source if point is None else source[:point].rstrip()
+
+
 def _fenced_payload_blocks(source: str) -> list:
     """Every fenced block that looks like an action payload, in order.
 
@@ -556,6 +633,10 @@ def _salvage_one_action(payload: str):
         # mid-line still fails content_check and stages with the reason
         # attached, which is the existing net and the right one.
         content = tail[opens.end():]
+        # And not a word of a loop, if the model fell into one inside the
+        # string. Writing "assistant.assistant.assistant." into a C# file
+        # is not a salvage.
+        content = without_collapse(content)
         # A half-written escape at the very end would otherwise leave a
         # stray backslash in the file.
         if content.endswith(BACKSLASH):
