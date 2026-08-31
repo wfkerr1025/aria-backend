@@ -412,3 +412,32 @@ def test_the_brief_is_never_silently_empty():
     brief_plugins.register_plugin(brief_plugins.BriefPlugin(
         name="Any", idioms="Something."))
     assert action_tool_brief("nemo-12b-q5"), "empty once a plugin is registered"
+
+
+# ======================================================
+# "Go to the Unity Editor and click Create"
+# ======================================================
+#
+# Asked for a Unity inventory script, nemo-12b answered with
+# instructions for making the file by hand -- open the editor,
+# right-click the folder, choose Create, paste this in -- and then a
+# json block holding sample inventory DATA. Nothing was staged, nothing
+# was created, and the reply read like help.
+#
+# The rule it walked around said "never tell the user to run terminal
+# commands". Clicking through an editor is not a terminal command.
+
+def test_the_brief_forbids_handing_the_work_back_to_the_user():
+    brief = flat(action_tool_brief())
+
+    assert "never tell the user to do the work themselves" in brief
+    assert "editor or ide" in brief
+    assert "right-click" in brief
+
+
+def test_the_brief_says_a_json_block_is_an_action_not_a_data_sample():
+    """It emitted a block of inventory data. The filter read it as an
+    action, suppressed it, and nothing parsed."""
+    brief = flat(action_tool_brief())
+
+    assert "an action, never a data sample" in brief

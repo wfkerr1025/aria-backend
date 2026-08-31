@@ -341,3 +341,38 @@ def test_the_users_own_code_block_is_never_touched():
     assert "```csharp" in shown
     assert "var x = 1;" in shown
     assert "```json" not in shown
+
+
+# ======================================================
+# An answer that hands the work back
+# ======================================================
+
+MANUAL_INSTRUCTIONS = (
+    'First, let\'s create a new Unity project. Go to the Unity Editor and '
+    'click on "Create". You can do this by right-clicking on the project '
+    'folder. Then in the new file, add the following code:\n\n'
+    '```json\n{ "PlayerInventory": { "Items": [{"Name": "Item1"}] } }'
+)
+
+
+def test_an_answer_that_tells_the_user_to_do_it_says_nothing_was_staged():
+    """It reads like help and it did nothing. Measured on nemo-12b."""
+    shown = render_actions_for_reading(MANUAL_INSTRUCTIONS, expected_action=True)
+
+    assert "did not produce a usable action" in shown
+
+
+def test_a_dangling_fence_is_stripped_even_from_an_answer_with_no_action():
+    """This used to be inside the proposal check, so an answer that
+    produced no action AND did not sound like a proposal kept its raw
+    block."""
+    shown = render_actions_for_reading(MANUAL_INSTRUCTIONS, expected_action=True)
+
+    assert "```json" not in shown
+    # And the model's own words survive.
+    assert "Unity Editor" in shown
+
+
+def test_an_ordinary_answer_with_no_action_is_still_left_alone():
+    plain = "The inventory keeps items in a dictionary keyed by name."
+    assert render_actions_for_reading(plain, expected_action=True) == plain

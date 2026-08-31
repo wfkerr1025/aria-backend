@@ -343,6 +343,30 @@ def _invocation(payload, index: int, only_code_block: str | None = None) -> Tool
     return ToolInvocation(tool_name=name, args=args, step_id=f"action-{index}")
 
 
+def _fenced_payload_blocks(source: str) -> list:
+    """Every fenced block that looks like an action payload, in order.
+
+    Both the well-formed ones and the ones the model never closed.
+    _FENCED requires the payload to end with a brace, so a block whose
+    JSON stopped mid-string was not merely unparseable -- it was never
+    extracted, and neither the salvage nor the unsupported-tool report
+    ever saw it. Measured on nemo-12b: three blocks in one answer, the
+    middle one a complete C# class whose JSON wrapper was two characters
+    short, discarded without a word.
+
+    Document order, so a later write still wins over an earlier one
+    exactly as before.
+    """
+    blocks = []
+    for language, body in _ANY_FENCE.findall(str(source or "")):
+        if language.lower() not in ("", "json"):
+            continue
+        payload = body.strip()
+        if payload.startswith(("{", "[")):
+            blocks.append(payload)
+    return blocks
+
+
 def unsupported_actions(text: str) -> list[str]:
     """Tools an answer asked for that ARIA does not have.
 
@@ -362,9 +386,16 @@ def unsupported_actions(text: str) -> list[str]:
     """
     names: list[str] = []
 
-    for block in _FENCED.findall(str(text or "")):
+    # The same blocks parse_actions reads, including the ones the model
+    # never closed. Measured: an answer inventing
+    # "create_serializable_class" wrote it into a block whose JSON
+    # stopped mid-string, _FENCED did not extract it, and the invented
+    # tool went unreported -- silence, which is the worst answer here.
+    for block in _fenced_payload_blocks(str(text or "")):
         try:
-            payload = json.loads(block)
+            payload = loads_lenient(block)
+            if payload is None:
+                raise ValueError("not json")
         except (ValueError, TypeError):
             continue
 
@@ -502,13 +533,34 @@ def _salvage_one_action(payload: str):
     # first, because the payload may carry trailing whitespace from the
     # fence.
     tail = text.rstrip()
-    if not tail.endswith("}"):
-        return None
-    closing = tail.rfind('"', 0, len(tail) - 1)
-    if closing <= opens.end():
-        return None
 
-    content = tail[opens.end():closing]
+    if tail.endswith("}"):
+        # Everything to the last quote before the object closes.
+        closing = tail.rfind('"', 0, len(tail) - 1)
+        if closing <= opens.end():
+            return None
+        content = tail[opens.end():closing]
+    else:
+        # The object was never closed -- no final quote, no final brace.
+        #
+        # Measured on nemo-12b, asked for a Unity inventory: it wrote a
+        # complete C# class into "content" and then stopped, still inside
+        # the string, while inside a properly closed ```json fence. json
+        # could not read it, this salvage refused it for not ending in a
+        # brace, and a finished file was thrown away over two missing
+        # characters.
+        #
+        # The FENCE is what makes this safe. It is a real boundary the
+        # model wrote deliberately, so the content ends there rather than
+        # wherever a guess would put it. A file genuinely cut off
+        # mid-line still fails content_check and stages with the reason
+        # attached, which is the existing net and the right one.
+        content = tail[opens.end():]
+        # A half-written escape at the very end would otherwise leave a
+        # stray backslash in the file.
+        if content.endswith(BACKSLASH):
+            content = content[:-1]
+        logger.info("salvaging an action whose json was never closed")
 
     # The escapes the model DID write are still escapes. Undoing them is
     # what turns \" into " and \n into a newline, and leaving them would
@@ -827,7 +879,18 @@ def parse_actions(text: str) -> list[ToolInvocation]:
     ]
     only_code = code_blocks[0] if len(code_blocks) == 1 else None
 
-    blocks = _FENCED.findall(source)
+    # Both the well-formed blocks and the ones the model never closed.
+    #
+    # _FENCED requires the payload to end with a brace, so a block whose
+    # JSON stopped mid-string was not merely unparseable -- it was never
+    # extracted at all, and loads_lenient's salvage never saw it.
+    # Measured on nemo-12b: three fenced blocks in one answer, the middle
+    # one a complete C# class whose JSON wrapper was two characters
+    # short, and the file was discarded without a word.
+    #
+    # Read in document order, so a later write still wins over an
+    # earlier one exactly as before.
+    blocks = _fenced_payload_blocks(source)
 
     # A model that wrote the action without a fence still wrote the
     # action. Only consulted when there is no fenced one, so a properly

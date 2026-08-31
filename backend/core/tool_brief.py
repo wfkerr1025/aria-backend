@@ -96,8 +96,13 @@ Rules:
 - Nothing happens until the user agrees. The block is a proposal:
   say what it will do and ask them to confirm. Do not say you have
   created, deleted or moved anything -- you have proposed it.
-- Never tell the user to run terminal commands to do something you can
-  propose here.
+- Never tell the user to do the work themselves. Not a terminal command,
+  and not steps in an editor or IDE either -- no "open the editor",
+  "right-click the folder", "create a new file and paste this in". You
+  have edit_file. Write the block and let them confirm it.
+- The json block is an ACTION, never a data sample. If you want to show
+  the user what some data looks like, that is not a json block; it is
+  prose, or a code block in the file's own language.
 """
 
 

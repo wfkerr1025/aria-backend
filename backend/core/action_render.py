@@ -313,6 +313,15 @@ _SOUNDS_LIKE_A_PROPOSAL = (
     "i propose", "i will create", "i will delete", "i will move",
     "i will rename", "i will write", "shall i", "please confirm",
     "would you like me to",
+    # Telling the user to do it themselves is the same failure wearing
+    # different clothes. Measured on nemo-12b, asked for a Unity script:
+    # "Go to the Unity Editor and click on Create... right-click on the
+    # project folder and select Create... Then in the new file, add the
+    # following code." Nothing was staged, nothing was created, and the
+    # answer read like help.
+    "go to the unity", "open the editor", "right-click", "right click",
+    "create a new file", "add the following code", "paste this",
+    "in the new file", "you can do this by",
 )
 
 
@@ -403,17 +412,23 @@ def _note_a_missing_action(text: str, expected_action: bool) -> str:
         )
         return "\n\n".join(parts)
 
+    # Machine syntax never reaches the screen, whatever else is true of
+    # the answer. This used to live inside the proposal check below, so
+    # an answer that produced no action AND did not sound like a
+    # proposal kept its raw block -- which is how a dangling ```json and
+    # a page of inventory data were shown to a user as the reply.
+    cleaned = _without_any_action_block(text)
+
     if not expected_action:
-        return text
+        return cleaned or text
 
     lowered = str(text or "").lower()
     if not any(marker in lowered for marker in _SOUNDS_LIKE_A_PROPOSAL):
-        return text
+        return cleaned or text
 
-    # The block goes, whatever became of it. A note explaining that
-    # nothing was staged, printed underneath the raw JSON that was
-    # supposed to do the staging, is the worst of both.
-    return f"{_without_any_action_block(text)}\n\n{_NO_ACTION}".strip()
+    # A note explaining that nothing was staged, printed underneath the
+    # raw JSON that was supposed to do the staging, is the worst of both.
+    return f"{cleaned}\n\n{_NO_ACTION}".strip()
 
 
 def strip_scaffolding(text: str) -> str:
