@@ -565,6 +565,156 @@ namespace ARIA
 
         #endregion
 
+        #region Command line
+
+        /// <summary>Opens the line ARIA reads its result from.</summary>
+        public const string ResultOpen = "<<<ARIA_RESULT>>>";
+
+        /// <summary>Closes it.</summary>
+        public const string ResultClose = "<<<ARIA_END>>>";
+
+        /// <summary>What ARIA passes in -ariaArgs.</summary>
+        [Serializable]
+        private class Request
+        {
+            public string method;
+            public ArgumentBag args;
+        }
+
+        /// <summary>
+        /// Every argument any bridge method takes, in one flat object.
+        ///
+        /// JsonUtility has no Dictionary support and no polymorphism, so
+        /// a bag of named fields is the shape that actually crosses the
+        /// boundary. Unset fields arrive as null and each method's own
+        /// guards reject them, which is where that check belongs anyway.
+        /// </summary>
+        [Serializable]
+        private class ArgumentBag
+        {
+            public string name;
+            public string gameObjectName;
+            public string componentType;
+            public string fieldName;
+            public string value;
+            public string prefabPath;
+            public string typeName;
+            public string assetPath;
+            public string scenePath;
+            public string buildPath;
+        }
+
+        /// <summary>
+        /// The one method ARIA executes. Reads -ariaArgs, dispatches, and
+        /// prints the result between sentinels.
+        /// </summary>
+        /// <remarks>
+        /// Unity's -executeMethod takes a parameterless static method and
+        /// has no way to return a value, so the ten operations cannot be
+        /// invoked directly from a command line. This is the door they
+        /// are reached through.
+        ///
+        /// The sentinels are what make the answer findable. Batchmode
+        /// stdout is licence checks, asset imports and shader warnings;
+        /// something looking for "the JSON" would find the first brace in
+        /// a log line.
+        ///
+        /// Exits 0 on success and 1 on failure, so a caller that cannot
+        /// read stdout still learns something.
+        /// </remarks>
+        public static void RunFromCommandLine()
+        {
+            string result;
+            try
+            {
+                result = Dispatch(ReadArgument());
+            }
+            catch (Exception error)
+            {
+                result = Fail("RunFromCommandLine failed: " + error.Message);
+            }
+
+            // Console.WriteLine rather than Debug.Log: Unity decorates a
+            // log line with a stack trace, which would land inside the
+            // sentinels and stop the result being JSON.
+            Console.WriteLine(ResultOpen + result + ResultClose);
+            Console.Out.Flush();
+
+            if (Application.isBatchMode)
+            {
+                EditorApplication.Exit(result.Contains("\"ok\":true") ? 0 : 1);
+            }
+        }
+
+        /// <summary>Pulls the -ariaArgs payload out of the command line.</summary>
+        private static string ReadArgument()
+        {
+            foreach (string argument in Environment.GetCommandLineArgs())
+            {
+                if (argument != null && argument.StartsWith("-ariaArgs=", StringComparison.Ordinal))
+                {
+                    return argument.Substring("-ariaArgs=".Length);
+                }
+            }
+            return "";
+        }
+
+        /// <summary>Routes one request to the method it names.</summary>
+        private static string Dispatch(string payload)
+        {
+            if (Missing(payload)) return Fail("No -ariaArgs was supplied.");
+
+            Request request;
+            try
+            {
+                request = JsonUtility.FromJson<Request>(payload);
+            }
+            catch (Exception error)
+            {
+                return Fail("-ariaArgs was not valid JSON: " + error.Message);
+            }
+
+            if (request == null || Missing(request.method))
+            {
+                return Fail("-ariaArgs must name a method.");
+            }
+
+            ArgumentBag args = request.args ?? new ArgumentBag();
+
+            // Named explicitly rather than dispatched by reflection. A
+            // reflective call on a name from outside the editor is a way
+            // to run any static method in the project, and this bridge
+            // does exactly ten things on purpose.
+            switch (request.method)
+            {
+                case "CreateGameObject":
+                    return CreateGameObject(args.name);
+                case "AddComponent":
+                    return AddComponent(args.gameObjectName, args.componentType);
+                case "CreatePrefab":
+                    return CreatePrefab(args.prefabPath, args.gameObjectName);
+                case "CreateScriptableObject":
+                    return CreateScriptableObject(args.typeName, args.assetPath);
+                case "LoadScene":
+                    return LoadScene(args.scenePath);
+                case "SaveScene":
+                    return SaveScene();
+                case "RunBuild":
+                    return RunBuild(args.buildPath);
+                case "ImportAsset":
+                    return ImportAsset(args.assetPath);
+                case "SetSerializedField":
+                    return SetSerializedField(args.gameObjectName, args.componentType,
+                                              args.fieldName, args.value);
+                case "GetSceneSummary":
+                    return GetSceneSummary();
+                default:
+                    return Fail("'" + request.method + "' is not a bridge method.");
+            }
+        }
+
+        #endregion
+
         #region Build
 
         /// <summary>
