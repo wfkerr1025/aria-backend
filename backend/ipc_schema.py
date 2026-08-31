@@ -147,6 +147,15 @@ PROVIDER_KEY_SET_REQUEST = "provider_key_set_request"
 PROVIDER_KEY_SET_RESULT = "provider_key_set_result"
 PROVIDER_KEY_DELETE_REQUEST = "provider_key_delete_request"
 PROVIDER_KEY_DELETE_RESULT = "provider_key_delete_result"
+# Plugins -- the integrations a user installs, configures and turns on.
+# Not to be confused with backend/plugins/unity_csharp.py, which is brief
+# text and has no settings, no switch and no page.
+PLUGIN_REGISTRY_LIST_REQUEST = "plugin_registry_list_request"
+PLUGIN_GET_REQUEST = "plugin_get_request"
+PLUGIN_UPDATE_REQUEST = "plugin_update_request"
+PLUGIN_REMOVE_REQUEST = "plugin_remove_request"
+PLUGIN_TEST_REQUEST = "plugin_test_request"
+
 MODULES_LIST_REQUEST = "modules_list_request"
 
 # The working directory panel: which project ARIA is in, where it stages,
@@ -170,6 +179,12 @@ WORKSPACE_PRIMARY_REQUEST = "workspace_primary_request"
 WORKSPACE_COMMIT_REQUEST = "workspace_commit_request"
 WORKSPACE_DISCARD_REQUEST = "workspace_discard_request"
 WORKSPACE_ROLLBACK_REQUEST = "workspace_rollback_request"
+PLUGIN_REGISTRY_LIST_RESULT = "plugin_registry_list_result"
+PLUGIN_GET_RESULT = "plugin_get_result"
+PLUGIN_UPDATE_RESULT = "plugin_update_result"
+PLUGIN_REMOVE_RESULT = "plugin_remove_result"
+PLUGIN_TEST_RESULT = "plugin_test_result"
+
 MODULES_LIST_RESULT = "modules_list_result"
 MODULE_KEY_SET_REQUEST = "module_key_set_request"
 MODULE_KEY_SET_RESULT = "module_key_set_result"

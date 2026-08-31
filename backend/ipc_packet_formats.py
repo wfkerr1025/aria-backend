@@ -135,6 +135,26 @@ def provider_key_delete_result(result: Dict[str, Any]) -> Dict[str, Any]:
 #   backend.core.module_manager's weather/custom-module keys.
 # ---------------------------------------------------------------------------
 
+def plugin_registry_list_result(plugins: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return _packet(schema.PLUGIN_REGISTRY_LIST_RESULT, {"plugins": plugins})
+
+
+def plugin_get_result(plugin: Dict[str, Any]) -> Dict[str, Any]:
+    return _packet(schema.PLUGIN_GET_RESULT, {"plugin": plugin})
+
+
+def plugin_update_result(plugin: Dict[str, Any]) -> Dict[str, Any]:
+    return _packet(schema.PLUGIN_UPDATE_RESULT, {"plugin": plugin, "saved": True})
+
+
+def plugin_remove_result(plugin_id: str, removed: bool) -> Dict[str, Any]:
+    return _packet(schema.PLUGIN_REMOVE_RESULT, {"id": plugin_id, "removed": removed})
+
+
+def plugin_test_result(plugin_id: str, outcome: Dict[str, Any]) -> Dict[str, Any]:
+    return _packet(schema.PLUGIN_TEST_RESULT, {"id": plugin_id, **outcome})
+
+
 def modules_list_result(modules: List[Dict[str, Any]]) -> Dict[str, Any]:
     return _packet(schema.MODULES_LIST_RESULT, {"modules": modules})
 

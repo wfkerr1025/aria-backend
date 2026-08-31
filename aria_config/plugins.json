@@ -1,0 +1,31 @@
+{
+  "unity": {
+    "id": "unity",
+    "name": "Unity Integration",
+    "version": "1.0.0",
+    "enabled": true,
+    "logo": "assets/plugin_logos/unity.png",
+    "configPage": "unity-config",
+    "unity_path": "",
+    "project_path": ""
+  },
+  "blender": {
+    "id": "blender",
+    "name": "Blender Integration",
+    "version": "1.0.0",
+    "enabled": true,
+    "logo": "assets/plugin_logos/blender.png",
+    "configPage": "blender-config",
+    "blender_path": ""
+  },
+  "ludo": {
+    "id": "ludo",
+    "name": "Ludo.ai Integration",
+    "version": "1.0.0",
+    "enabled": true,
+    "logo": "assets/plugin_logos/ludo.png",
+    "configPage": "ludo-config",
+    "api_key": "",
+    "model": ""
+  }
+}

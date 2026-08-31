@@ -795,6 +795,98 @@ def _handle_workspace_set(payload: Dict[str, Any]) -> Dict[str, Any]:
     return fmt.workspace_status_result(workspace_manager.describe_workspace())
 
 
+# ======================================================
+# Plugins
+# ======================================================
+#
+# The integrations a user installs and configures. Every one of these
+# reads aria_config/plugins.json through plugin_manager, so the page and
+# the backend cannot hold different opinions about what is installed.
+#
+# Nothing here is reachable by a model. These are UI packets, and a
+# plugin's settings are the user's to change.
+def _handle_plugin_registry_list(payload: Dict[str, Any]) -> Dict[str, Any]:
+    logger.debug("ipc_router: plugin_registry_list_request")
+    from backend.plugins import plugin_settings
+
+    return fmt.plugin_registry_list_result(plugin_settings.list_plugins())
+
+
+def _handle_plugin_get(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from backend.plugins import plugin_settings
+
+    plugin_id = str(payload.get("id") or "")
+    logger.debug("ipc_router: plugin_get_request -> %r", plugin_id)
+
+    try:
+        plugin = plugin_settings.get_plugin(plugin_id)
+    except plugin_settings.PluginError as error:
+        return fmt.error_response(str(error), schema.PLUGIN_GET_REQUEST)
+
+    # Redacted, because this answer goes to a page. The config page shows
+    # whether a key is set, never the key.
+    return fmt.plugin_get_result(plugin_settings.redact_secrets(plugin))
+
+
+def _handle_plugin_update(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from backend.plugins import plugin_settings
+
+    plugin_id = str(payload.get("id") or "")
+    fields = payload.get("fields")
+    logger.debug("ipc_router: plugin_update_request -> %r", plugin_id)
+
+    if not plugin_id:
+        return fmt.error_response("Missing plugin id", schema.PLUGIN_UPDATE_REQUEST)
+    if not isinstance(fields, dict):
+        return fmt.error_response("fields must be an object",
+                                  schema.PLUGIN_UPDATE_REQUEST)
+
+    try:
+        updated = plugin_settings.update_plugin(plugin_id, fields)
+    except plugin_settings.PluginError as error:
+        # A validation failure is an answer for the form to show, not an
+        # error the page should treat as a broken connection.
+        return fmt.error_response(str(error), schema.PLUGIN_UPDATE_REQUEST)
+    except Exception as error:  # pragma: no cover - a write fault
+        logger.exception("could not update plugin %s", plugin_id)
+        return fmt.error_response(f"Could not save: {error}",
+                                  schema.PLUGIN_UPDATE_REQUEST)
+
+    return fmt.plugin_update_result(updated)
+
+
+def _handle_plugin_remove(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from backend.plugins import plugin_settings
+
+    plugin_id = str(payload.get("id") or "")
+    logger.info("ipc_router: plugin_remove_request -> %r", plugin_id)
+
+    if not plugin_id:
+        return fmt.error_response("Missing plugin id", schema.PLUGIN_REMOVE_REQUEST)
+
+    try:
+        removed = plugin_settings.remove_plugin(plugin_id)
+    except Exception as error:  # pragma: no cover - a write fault
+        logger.exception("could not remove plugin %s", plugin_id)
+        return fmt.error_response(f"Could not remove: {error}",
+                                  schema.PLUGIN_REMOVE_REQUEST)
+
+    return fmt.plugin_remove_result(plugin_id, removed)
+
+
+def _handle_plugin_test(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from backend.plugins import plugin_settings
+
+    plugin_id = str(payload.get("id") or "")
+    logger.debug("ipc_router: plugin_test_request -> %r", plugin_id)
+
+    if not plugin_id:
+        return fmt.error_response("Missing plugin id", schema.PLUGIN_TEST_REQUEST)
+
+    return fmt.plugin_test_result(plugin_id,
+                                  plugin_settings.test_plugin_connection(plugin_id))
+
+
 def _handle_modules_list(payload: Dict[str, Any]) -> Dict[str, Any]:
     logger.debug("ipc_router: modules_list_request")
     return fmt.modules_list_result(module_manager.list_modules())
@@ -910,6 +1002,11 @@ _HANDLERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     schema.PROVIDERS_LIST_REQUEST: _handle_providers_list,
     schema.PROVIDER_KEY_SET_REQUEST: _handle_provider_key_set,
     schema.PROVIDER_KEY_DELETE_REQUEST: _handle_provider_key_delete,
+    schema.PLUGIN_REGISTRY_LIST_REQUEST: _handle_plugin_registry_list,
+    schema.PLUGIN_GET_REQUEST: _handle_plugin_get,
+    schema.PLUGIN_UPDATE_REQUEST: _handle_plugin_update,
+    schema.PLUGIN_REMOVE_REQUEST: _handle_plugin_remove,
+    schema.PLUGIN_TEST_REQUEST: _handle_plugin_test,
     schema.MODULES_LIST_REQUEST: _handle_modules_list,
     schema.WORKSPACE_STATUS_REQUEST: _handle_workspace_status,
     schema.WORKSPACE_SET_REQUEST: _handle_workspace_set,

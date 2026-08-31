@@ -1,0 +1,27 @@
+<div class="plugin-config" id="plugin-config">
+  <div class="plugin-config-header">
+    <button class="plugin-config-back" type="button" id="plugin-config-back">← Plugins</button>
+    <h1 id="plugin-config-title">Plugin</h1>
+    <p class="plugin-config-subtitle" id="plugin-config-version"></p>
+  </div>
+
+  <div class="plugin-config-message" id="plugin-config-message" hidden></div>
+
+  <!-- Fields are built by plugin_config.js from the plugin's own record,
+       so the form and aria_config/plugins.json cannot disagree about
+       which fields a plugin has. -->
+  <div class="plugin-config-fields" id="plugin-config-fields"></div>
+
+  <div class="plugin-config-row">
+    <label class="plugin-config-toggle">
+      <input type="checkbox" id="plugin-config-enabled" />
+      <span id="plugin-config-enabled-label">Enabled</span>
+    </label>
+  </div>
+
+  <div class="plugin-config-actions">
+    <button class="plugin-config-btn is-primary" type="button" id="plugin-config-save">Save</button>
+    <button class="plugin-config-btn" type="button" id="plugin-config-test">Test connection</button>
+    <button class="plugin-config-btn is-danger" type="button" id="plugin-config-remove">Remove plugin</button>
+  </div>
+</div>

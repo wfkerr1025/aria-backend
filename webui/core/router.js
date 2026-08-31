@@ -26,7 +26,7 @@ const Router = {
     chat: "components/chat/chat.html",
     diagnostics: "components/diagnostics/diagnostics.html",
     tools: "components/tools/tools.html",
-    plugins: "components/plugins/plugins.html",
+    plugins: "pages/plugins/plugins.html",
     fileops: "components/fileops/fileops.html",
     models: "pages/models/models.html",
     debug: "pages/debug/debug.html",
@@ -39,6 +39,13 @@ const Router = {
     "settings/modules": "pages/modules/modules.html",
     "settings/local-models": "pages/local_models/local_models.html",
     "settings/workspaces": "pages/workspaces/workspaces.html",
+
+    // Plugin configuration. Three routes, one page: they do the same
+    // four things and differ only in which fields exist, so the id is
+    // read from the route name rather than the page being copied twice.
+    "plugins/unity-config": "pages/plugin_config/plugin_config.html",
+    "plugins/blender-config": "pages/plugin_config/plugin_config.html",
+    "plugins/ludo-config": "pages/plugin_config/plugin_config.html",
   },
 
   init() {
@@ -116,7 +123,9 @@ const Router = {
     // its subpages is open, the same way a real app keeps a parent nav
     // item lit up while a child page is active.
     const exactMatch = document.querySelector(`.sidebar-btn[data-panel="${panelName}"]`);
-    const fallbackPanel = panelName.startsWith("settings/") ? "settings" : null;
+    const fallbackPanel = panelName.startsWith("settings/") ? "settings"
+      : panelName.startsWith("plugins/") ? "plugins"
+      : null;
     const activeBtn = exactMatch || (fallbackPanel && document.querySelector(`.sidebar-btn[data-panel="${fallbackPanel}"]`));
 
     if (activeBtn) {

@@ -134,6 +134,22 @@ class UnityUnavailable(RuntimeError):
 # Where things are
 # ======================================================
 
+def _plugin_setting(plugin_id: str, field: str) -> str:
+    """A value from the plugins registry, or "" when there is not one.
+
+    Imported here rather than at module scope so unity_ops stays usable
+    on an install with no registry at all, and so a fault in the plugin
+    system costs a fallback rather than the module.
+    """
+    try:
+        from backend.plugins import plugin_settings
+
+        return plugin_settings.configured_path(plugin_id, field)
+    except Exception:  # pragma: no cover - configuration is not worth a crash
+        logger.exception("could not read the %s plugin's %s", plugin_id, field)
+        return ""
+
+
 def _hub_candidates() -> list:
     """Editors a Unity Hub install would have put on this machine."""
     roots = [
@@ -178,6 +194,19 @@ def editor_path() -> Path:
             )
         return path
 
+    # Then the Unity plugin's own setting. This is what makes the Unity
+    # config page a page rather than a form that saves a string nobody
+    # reads: the path a user types there is the executable ARIA runs.
+    from_plugin = _plugin_setting("unity", "unity_path")
+    if from_plugin:
+        path = Path(from_plugin)
+        if not path.is_file():
+            raise UnityUnavailable(
+                f"The Unity plugin is configured with {from_plugin!r}, "
+                f"which is not a file."
+            )
+        return path
+
     for candidate in _hub_candidates():
         return candidate
 
@@ -199,6 +228,10 @@ def project_path() -> Path:
     configured = os.environ.get(ENV_PROJECT)
     if configured:
         return Path(configured).resolve()
+
+    from_plugin = _plugin_setting("unity", "project_path")
+    if from_plugin:
+        return Path(from_plugin).resolve()
 
     try:
         from backend.core import file_tools

@@ -1,0 +1,113 @@
+/* ==========================================================
+   PLUGINS — the same hub the Settings page uses.
+
+   The page frame and the grid are copied from settings_home.css on
+   purpose rather than imported: the two pages are asked to look
+   identical, and a shared stylesheet between them would mean a change
+   made for one silently restyling the other. The tiles themselves reuse
+   .settings-tile, so spacing, corners, hover and typography cannot
+   drift apart at all -- there is only one definition of them.
+   ========================================================== */
+
+.plugins-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+  padding: var(--space-xl);
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.plugins-page-header h1 {
+  margin: 0 0 var(--space-xs) 0;
+  font-size: var(--font-size-xl);
+  color: var(--text-primary);
+}
+
+.plugins-page-subtitle {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  opacity: 0.75;
+}
+
+/* ----------------------------------------------------------
+   What a plugin tile adds to a settings tile: a logo instead of
+   an emoji, and a status line. Everything else -- the grid, the
+   padding, the radius, the hover glow -- is .settings-tile.
+   ---------------------------------------------------------- */
+
+.plugin-tile-logo {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border-radius: var(--radius-sm, 6px);
+}
+
+/* A logo that failed to load leaves a labelled square rather than a
+   broken-image icon and a shifted layout. */
+.plugin-tile-logo-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border-hairline, var(--input-border));
+
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.plugin-tile-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.plugin-tile-status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  opacity: 0.4;
+}
+
+.plugin-tile-status.is-enabled {
+  color: var(--accent-primary);
+}
+
+.plugin-tile-status.is-enabled::before {
+  background: var(--accent-primary);
+  opacity: 1;
+}
+
+/* A disabled plugin is still visible and still configurable -- it is
+   dimmed, not hidden, because a plugin nobody can find is a plugin
+   nobody can turn back on. */
+.settings-tile.plugin-tile.is-disabled .plugin-tile-logo,
+.settings-tile.plugin-tile.is-disabled .settings-tile-title {
+  opacity: 0.55;
+}
+
+.plugins-empty {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.plugins-error {
+  padding: var(--space-md);
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--danger, #c0392b);
+  color: var(--danger, #c0392b);
+  font-size: var(--font-size-sm);
+}

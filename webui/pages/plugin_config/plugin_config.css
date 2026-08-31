@@ -1,0 +1,172 @@
+/* ==========================================================
+   PLUGIN CONFIG — one plugin's settings.
+
+   Same frame as the Settings subpages: the same padding, the same
+   header sizes, the same field rhythm, so moving from Modules to a
+   plugin's page does not feel like leaving the app.
+   ========================================================== */
+
+.plugin-config {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: var(--space-xl);
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.plugin-config-back {
+  align-self: flex-start;
+  margin-bottom: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+
+  background: transparent;
+  border: 1px solid var(--border-hairline, var(--input-border));
+  border-radius: var(--radius-md, 8px);
+
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.plugin-config-back:hover,
+.plugin-config-back:focus-visible {
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.plugin-config-header h1 {
+  margin: 0 0 var(--space-xs) 0;
+  font-size: var(--font-size-xl);
+  color: var(--text-primary);
+}
+
+.plugin-config-subtitle {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  opacity: 0.75;
+}
+
+/* ---------------------------------------------------------- */
+
+.plugin-config-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  max-width: 640px;
+}
+
+.plugin-config-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.plugin-config-label {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+}
+
+.plugin-config-input {
+  padding: var(--space-sm);
+
+  background: var(--input-bg, transparent);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-md, 8px);
+
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+}
+
+.plugin-config-input:focus {
+  border-color: var(--accent-primary);
+  outline: none;
+}
+
+.plugin-config-hint {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  opacity: 0.75;
+}
+
+/* ---------------------------------------------------------- */
+
+.plugin-config-row {
+  max-width: 640px;
+}
+
+.plugin-config-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.plugin-config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  max-width: 640px;
+}
+
+.plugin-config-btn {
+  padding: var(--space-sm) var(--space-lg);
+
+  background: transparent;
+  border: 1px solid var(--border-hairline, var(--input-border));
+  border-radius: var(--radius-md, 8px);
+
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.plugin-config-btn:hover,
+.plugin-config-btn:focus-visible {
+  border-color: var(--accent-primary);
+  outline: none;
+}
+
+.plugin-config-btn.is-primary {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+/* Destructive, and it looks it. Remove sits beside Save, so it has to
+   read differently before it is clicked rather than after. */
+.plugin-config-btn.is-danger {
+  color: var(--danger, #c0392b);
+  border-color: color-mix(in srgb, var(--danger, #c0392b) 50%, transparent);
+}
+
+.plugin-config-btn.is-danger:hover,
+.plugin-config-btn.is-danger:focus-visible {
+  border-color: var(--danger, #c0392b);
+}
+
+/* ---------------------------------------------------------- */
+
+.plugin-config-message {
+  max-width: 640px;
+  padding: var(--space-md);
+
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--border-hairline, var(--input-border));
+
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.plugin-config-message.is-error {
+  border-color: var(--danger, #c0392b);
+  color: var(--danger, #c0392b);
+}
