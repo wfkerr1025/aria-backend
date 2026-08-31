@@ -526,6 +526,37 @@ test("unity and unity_cli are separate plugins with separate paths", () => {
   assert.ok(js.includes("  unity_cli_path: {"));
 });
 
+test("the config page does not guess a plugin id from its route", () => {
+  // It used to: "plugins/<id>-config" minus "-config". That holds only
+  // while every id is spelled the way its route is, and unity_cli's
+  // page is "unity-cli-config" -- so the page asked for a plugin called
+  // "unity-cli" and got "'unity-cli' is not an installed plugin" where
+  // its settings should have been.
+  const js = read("pages", "plugin_config", "plugin_config.js");
+
+  assert.ok(!js.includes("idFromRoute"), "the id must not come from the URL");
+  assert.ok(js.includes("pageFromRoute"));
+  assert.ok(js.includes("bridge.send(IPC.PLUGIN_GET_REQUEST, { configPage:"),
+            "the page asks by the one name it knows for certain");
+  assert.ok(js.includes("this.pluginId = payload.plugin.id"),
+            "and takes the id from the answer");
+});
+
+test("the get result is matched by page, not by an id not yet known", () => {
+  const js = read("pages", "plugin_config", "plugin_config.js");
+
+  assert.ok(js.includes("payload.plugin?.configPage !== this.configPage"));
+});
+
+test("nothing is sent before the plugin has loaded", () => {
+  const js = read("pages", "plugin_config", "plugin_config.js");
+  const anchor = 'getElementById("plugin-config-test")';
+  assert.ok(js.includes(anchor), "the test button handler moved");
+
+  const block = js.slice(js.indexOf(anchor), js.indexOf(anchor) + 400);
+  assert.ok(block.includes("if (!this.pluginId) return;"));
+});
+
 // --- Unity CLI command tiles ---------------------------------------
 
 test("commands render as tiles with name, label and state", () => {

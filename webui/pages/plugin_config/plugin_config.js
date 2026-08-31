@@ -73,32 +73,43 @@ const TEST_LABELS = {
 const PluginConfig = {
   bound: false,
   pluginId: null,
+  configPage: null,
   plugin: null,
   choices: {},
 
   init() {
-    this.pluginId = this.idFromRoute();
+    // The route is the one thing this page knows for certain about
+    // itself. The plugin's id comes back with the plugin.
+    this.configPage = this.pageFromRoute();
+    this.pluginId = null;
+    this.plugin = null;
     this.bind();
 
-    if (!this.pluginId) {
+    if (!this.configPage) {
       this.say("This page was opened without a plugin.", true);
       return;
     }
-    bridge.send(IPC.PLUGIN_GET_REQUEST, { id: this.pluginId });
+    bridge.send(IPC.PLUGIN_GET_REQUEST, { configPage: this.configPage });
   },
 
   /**
-   * Which plugin this route is for.
+   * Which config page this is -- not which plugin.
    *
-   * The router keeps the active panel name, and the three routes are
-   * "plugins/unity-config" and friends -- so the id is the part before
-   * "-config". Read from the route rather than stored, because the
-   * module is cached across navigations and a stored id would be the
-   * previous page's.
+   * This used to return the plugin's id, by taking "-config" off the
+   * end of the route. That works only while every id is spelled the
+   * way its route is, and it broke on the first one that is not:
+   * unity_cli's page is "unity-cli-config", so the page asked for a
+   * plugin called "unity-cli" and was told, correctly, that no such
+   * plugin was installed.
+   *
+   * The route is now treated as what it is -- a page name -- and the
+   * backend says which plugin owns it. Read from the router rather
+   * than stored, because this module is cached across navigations and
+   * a stored value would be the previous page's.
    */
-  idFromRoute() {
+  pageFromRoute() {
     const panel = String(Router?.currentPanel || "");
-    const match = panel.match(/^plugins\/(.+)-config$/);
+    const match = panel.match(/^plugins\/(.+)$/);
     return match ? match[1] : null;
   },
 
@@ -118,6 +129,9 @@ const PluginConfig = {
 
     document.getElementById("plugin-config-test")
       ?.addEventListener("click", () => {
+        // Until the plugin has loaded there is no id to test, and
+        // sending an empty one would ask the backend about nothing.
+        if (!this.pluginId) return;
         this.say("Testing…");
         bridge.send(IPC.PLUGIN_TEST_REQUEST, { id: this.pluginId });
       });
@@ -134,10 +148,16 @@ const PluginConfig = {
     const payload = packet.payload || packet;
 
     if (packet.type === IPC.PLUGIN_GET_RESULT) {
-      // Several config pages may have been visited this session; only
-      // the packet for THIS plugin is ours.
-      if (payload.plugin?.id !== this.pluginId) return;
+      // Several config pages may have been visited this session, and
+      // this module is shared between them, so only the packet for
+      // THIS page is ours. Matched on the config page rather than the
+      // id, because until this arrives the id is what we are asking.
+      if (payload.plugin?.configPage !== this.configPage) return;
+
       this.plugin = payload.plugin;
+      // The backend's answer is where the id comes from. Everything
+      // after this -- save, test, remove -- addresses the plugin by it.
+      this.pluginId = payload.plugin.id;
       this.choices = payload.choices || {};
       this.render();
       return;

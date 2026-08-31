@@ -790,3 +790,78 @@ def test_a_command_gets_no_path_field_either(registry):
     plugin_settings.refresh_unity_cli_commands()
 
     assert plugin_settings.DISCOVERED_FIELD not in plugin_settings.get_plugin("unity_cmd_build")
+
+
+# ======================================================
+# Addressing a config page whose name is not its id
+# ======================================================
+
+def test_the_config_page_can_be_looked_up_by_its_route(registry):
+    """unity_cli's page is "unity-cli-config", and an underscore is not
+    a hyphen.
+
+    The config page used to work out which plugin it was for by taking
+    "-config" off its own route, which made it ask for a plugin called
+    "unity-cli". The registry answered, correctly, that no such plugin
+    was installed, and the page showed that as an error where its
+    settings should have been.
+    """
+    plugin = plugin_settings.get_plugin_by_config_page("unity-cli-config")
+
+    assert plugin["id"] == "unity_cli"
+
+
+def test_an_unknown_page_says_so(registry):
+    with pytest.raises(plugin_settings.PluginError):
+        plugin_settings.get_plugin_by_config_page("nothing-config")
+
+
+def test_the_page_opens_over_ipc_without_knowing_the_id(registry):
+    packet = ipc_router.dispatch({
+        "type": schema.PLUGIN_GET_REQUEST,
+        "payload": {"configPage": "unity-cli-config"},
+    })
+
+    assert packet["type"] == schema.PLUGIN_GET_RESULT
+    plugin = packet["payload"]["plugin"]
+    assert plugin["id"] == "unity_cli"
+    # The page reads its own id back out of this, so it has to be here.
+    assert plugin["configPage"] == "unity-cli-config"
+
+
+def test_asking_by_id_still_works(registry):
+    """Every other page addresses itself this way, and must keep doing so."""
+    packet = ipc_router.dispatch({
+        "type": schema.PLUGIN_GET_REQUEST,
+        "payload": {"id": "unity"},
+    })
+
+    assert packet["type"] == schema.PLUGIN_GET_RESULT
+    assert packet["payload"]["plugin"]["id"] == "unity"
+
+
+def test_the_route_the_task_asked_for_is_the_one_stored(registry):
+    assert plugin_settings.get_plugin("unity_cli")["configPage"] == "unity-cli-config"
+
+
+def test_two_plugins_cannot_claim_one_config_page():
+    """A page addresses a plugin, so a shared page is a route with two
+    possible answers and no way to choose."""
+    problems = plugin_settings.validate_registry({
+        "one": {"id": "one", "name": "One", "configPage": "shared-config"},
+        "two": {"id": "two", "name": "Two", "configPage": "shared-config"},
+    })
+
+    assert any("shared-config" in problem for problem in problems)
+
+
+def test_every_installed_plugin_can_be_reached_from_its_route(registry):
+    """The invariant the bug broke: whatever a plugin's page is called,
+    opening it finds that plugin."""
+    plugin_settings.refresh_unity_cli_commands()
+
+    for plugin in plugin_settings.list_plugins():
+        page = plugin.get("configPage")
+        if not page:
+            continue
+        assert plugin_settings.get_plugin_by_config_page(page)["id"] == plugin["id"]

@@ -326,6 +326,32 @@ def get_plugin(plugin_id: str) -> dict:
     return plugin
 
 
+def get_plugin_by_config_page(page: str) -> dict:
+    """The plugin whose config page this is. Raises when there is none.
+
+    The config page used to work out which plugin it was for by taking
+    its own route apart -- "plugins/ludo-config" minus "-config" is
+    "ludo". That holds only while every id is spellable in a route, and
+    it stopped holding at the first id with an underscore in it:
+    unity_cli's page is "unity-cli-config", so the page asked for a
+    plugin called "unity-cli" and was told, correctly, that no such
+    thing was installed.
+
+    Asking the registry removes the guess. A page name is data the
+    registry already holds, and looking it up cannot disagree with
+    itself the way string surgery can.
+    """
+    wanted = str(page or "").strip()
+    if not wanted:
+        raise PluginError("no configuration page was named")
+
+    for plugin in load_plugins().values():
+        if str(plugin.get("configPage") or "") == wanted:
+            return plugin
+
+    raise PluginError(f"no plugin has a configuration page called {wanted!r}")
+
+
 def redact_secrets(plugin: dict) -> dict:
     """A copy safe to log, with secrets replaced by whether they are set.
 
@@ -651,6 +677,20 @@ def validate_registry(plugins: dict) -> list:
                 f"{key} and {names[name]} are both called {plugin.get('name')!r}")
         else:
             names[name] = key
+
+    # A config page addresses a plugin, so two plugins claiming one page
+    # is two plugins one route can reach and no way to say which.
+    pages = {}
+    for key, plugin in (plugins or {}).items():
+        if not isinstance(plugin, dict) or plugin.get("dismissed", False):
+            continue
+        page = str(plugin.get("configPage") or "").strip()
+        if not page:
+            continue
+        if page in pages:
+            problems.append(f"{key} and {pages[page]} both use the page {page!r}")
+        else:
+            pages[page] = key
 
     return problems
 

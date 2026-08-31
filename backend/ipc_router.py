@@ -816,10 +816,18 @@ def _handle_plugin_get(payload: Dict[str, Any]) -> Dict[str, Any]:
     from backend.plugins import plugin_settings
 
     plugin_id = str(payload.get("id") or "")
-    logger.debug("ipc_router: plugin_get_request -> %r", plugin_id)
+    config_page = str(payload.get("configPage") or "")
+    logger.debug("ipc_router: plugin_get_request -> id=%r page=%r",
+                 plugin_id, config_page)
 
+    # A page may address itself either way. It knows its own route for
+    # certain; it can only guess at an id, and a route is not always an
+    # id with the punctuation changed.
     try:
-        plugin = plugin_settings.get_plugin(plugin_id)
+        if plugin_id:
+            plugin = plugin_settings.get_plugin(plugin_id)
+        else:
+            plugin = plugin_settings.get_plugin_by_config_page(config_page)
     except plugin_settings.PluginError as error:
         return fmt.error_response(str(error), schema.PLUGIN_GET_REQUEST)
 
