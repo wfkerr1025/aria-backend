@@ -32,6 +32,7 @@ rather than a longer prompt.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from logger import get_logger
@@ -42,9 +43,32 @@ __all__ = [
     "BriefPlugin",
     "active_plugin_sections",
     "clear_plugins",
+    "load_builtins",
     "register_plugin",
     "registered_plugins",
 ]
+
+# A word is a word; an extension is not.
+#
+# Plain substring matching was wrong in both directions and one of them
+# was embarrassing: a plugin scoped to "unity" fired on "I see an
+# opportunity to refactor" and on "the community wants this". A user
+# discussing an opportunity would have had Unity idioms pushed at them.
+#
+# So a token made only of word characters is matched as a WORD, and a
+# token with punctuation in it -- ".cs", "c#" -- is matched as a
+# substring, because those never sit on a word boundary the regex would
+# recognise and they are specific enough not to need one.
+_WORDLIKE = re.compile(r"^\w+$")
+
+
+def _token_in(haystack: str, token: str) -> bool:
+    if not token:
+        return False
+    if _WORDLIKE.match(token):
+        return re.search(rf"\b{re.escape(token)}\b", haystack) is not None
+    return token in haystack
+
 
 # A plugin's whole contribution, per turn. Generous for a paragraph of
 # real conventions and far too small for a pasted document.
@@ -117,8 +141,10 @@ class BriefPlugin:
         """
         if not self.applies_to:
             return True
+
         lowered = str(hint or "").lower()
-        return any(str(suffix).lower() in lowered for suffix in self.applies_to)
+        return any(_token_in(lowered, str(token).lower())
+                   for token in self.applies_to)
 
 
 _PLUGINS: dict = {}
@@ -132,9 +158,45 @@ def register_plugin(plugin: BriefPlugin) -> None:
     logger.info("registered brief plugin %r", plugin.name)
 
 
+# Whether the built-in plugins have been dealt with this process.
+#
+# Set by loading them AND by clearing them, and the second half matters:
+# without it a test that cleared the registry would get Unity's section
+# back on the next brief, and every test of the GLOBAL brief would
+# quietly be testing something else.
+_BUILTINS_HANDLED = False
+
+
+def _ensure_builtins() -> None:
+    """Register the plugins that ship with ARIA, once."""
+    global _BUILTINS_HANDLED
+    if _BUILTINS_HANDLED:
+        return
+    _BUILTINS_HANDLED = True
+    try:
+        from backend import plugins
+
+        plugins.load_builtins()
+    except Exception:  # pragma: no cover - a plugin is not worth a turn
+        logger.exception("could not load the built-in brief plugins")
+
+
+def load_builtins(force: bool = False) -> None:
+    """Load the shipped plugins. `force` re-loads after a clear."""
+    global _BUILTINS_HANDLED
+    if force:
+        _BUILTINS_HANDLED = False
+    _ensure_builtins()
+
+
 def clear_plugins() -> None:
-    """Forget every plugin. For tests, and for a workspace change."""
+    """Forget every plugin, and do not quietly reload the built-in ones.
+
+    For tests, and for a workspace change.
+    """
+    global _BUILTINS_HANDLED
     _PLUGINS.clear()
+    _BUILTINS_HANDLED = True
 
 
 def registered_plugins() -> list:
@@ -148,6 +210,8 @@ def active_plugin_sections(hint: str = "") -> list:
     own section and not the turn -- the global brief is the part that
     must always arrive.
     """
+    _ensure_builtins()
+
     sections = []
     for plugin in registered_plugins():
         try:
