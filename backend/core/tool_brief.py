@@ -37,7 +37,7 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 
-__all__ = ["action_tool_brief"]
+__all__ = ["action_tool_brief", "craft_rules"]
 
 # Kept short deliberately. It is prepended to every tool-bearing turn, so
 # every line costs context on a 4k-window model -- and a long brief is
@@ -101,6 +101,91 @@ Rules:
 """
 
 
+# What "write the file" means.
+#
+# Asked for "a player_inventory.cs file with a full inventory script",
+# nemo-12b produced nine lines: a class holding a dictionary with Gold,
+# Wood and Iron in it. Everything worked -- routed, parsed, checked,
+# created, tested -- and the file was a sketch. Asked for "a complete
+# standard inventory system" it wrote add and remove and stopped.
+#
+# Nothing downstream can fix that. A stub parses, balances its braces,
+# and passes every check ARIA has, because it is well-formed; it is just
+# not what was asked for. The only place this can be addressed is in
+# what the model is told to produce.
+#
+# UNIVERSAL ON PURPOSE
+# --------------------
+# Not one word here is about inventories, or C#, or games. It says
+# COMPLETE, VALIDATED, PERSISTABLE, OBSERVABLE, DOCUMENTED, TESTED --
+# properties any working system in any language has -- and leaves every
+# mechanism to backend/core/brief_plugins.py. The moment this file names
+# JsonUtility it is wrong in Django, and the moment it names UnityEvent
+# it is wrong everywhere but one engine.
+#
+# So a plugin says how a property is satisfied here; this says the
+# property is required at all. With no plugins loaded a model still gets
+# all eight rules and satisfies them in the plain idiom of whatever
+# language it is writing, which is the correct default.
+#
+# WHAT IT COSTS, AND WHY THERE ARE TWO OF THEM
+# --------------------------------------------
+# The original brief's own comment: "Kept short deliberately. It is
+# prepended to every tool-bearing turn, so every line costs context on a
+# 4k-window model." That is still true and it is now in tension with
+# being asked for more rules.
+#
+# Measured: mistral-7b and phi-3-mini hold 4096 tokens; nemo-12b holds
+# 16384. The full rules are about 300 tokens. On the 12B that is two
+# percent of the window and worth every token. On a 4k model it competes
+# with the file being written, and a model that runs out of room
+# mid-file produces nothing at all -- which this project has already
+# watched happen.
+#
+# So there are two, and the window chooses. The short one keeps the
+# rules that change the OUTPUT most and drops the ones a small model was
+# never going to follow anyway.
+_CRAFT = """
+What to write when you write a file:
+- Write the whole thing. A file you propose must work as it stands: no
+  stubs, no placeholder bodies, no "TODO", no toy example standing in
+  for the real one.
+- Work out what the request implies and include all of it. If the user
+  names a system, a working version of that system has a set of
+  operations they did not list; write those too, not just the two they
+  happened to mention.
+- Validate what comes in. Guard clauses, explicit errors on bad input,
+  safe defaults, and a log line where the language and project have one.
+- Let its state be saved and loaded back, in whatever format is normal
+  for this language and project.
+- Expose hooks so other code can respond to it -- events, callbacks,
+  signals, observers, whichever this language uses.
+- Document it: a short summary on each public item, a clear separation
+  between public API and private helpers, and names that say what they
+  are.
+- For anything beyond a trivial script, write its tests as well, in this
+  project's existing style.
+- Follow the conventions of the language and framework you are writing
+  in, rather than translating another language's habits into it.
+"""
+
+# The same instruction, for a model whose window cannot afford the rest.
+# Completeness first, because it is the one that changes the output most,
+# and validation second, because a small model omits it by default.
+_CRAFT_SHORT = """
+What to write when you write a file:
+- Write the whole thing: no stubs, no placeholders, no TODO. Include
+  every operation the request implies, not only the ones named.
+- Validate inputs, handle errors, and document each public item.
+- Follow the conventions of the language you are writing in.
+"""
+
+# Below this many tokens of context, the short form is used. A 4096
+# window has to hold the brief, the conversation and the file being
+# written; above 8k there is room to spend on being precise.
+_SMALL_WINDOW_TOKENS = 8192
+
+
 def _describe(schema) -> str | None:
     """One line for one tool: its name, its arguments, what it is for."""
     if schema is None:
@@ -128,8 +213,70 @@ def _describe(schema) -> str | None:
     return f"- {schema.name}({args}) - {description or schema.name}"
 
 
-def action_tool_brief() -> str:
+# The last thing the model reads, and only when a plugin has spoken.
+#
+# Measured, one run each, same prompt and same model. With the global
+# rules alone: 63 lines, four methods, validated, typed exceptions. With
+# a Unity plugin added: 29 lines, two methods, events and
+# [Serializable] -- and the validation gone.
+#
+# The plugin overruled nothing. It competed for attention, which is what
+# more instructions do to a 12B, and the rule furthest from the end
+# lost. So the one that matters most is repeated where recency is on its
+# side.
+#
+# Only when there are plugin sections to come after it. On a turn with
+# no plugins the craft rules are already last, and saying it twice is
+# noise.
+#
+# Stated as a mitigation, not a fix. Two runs are not a study, variance
+# on this is wide, and no wording makes a 12B follow eight rules
+# reliably. This is cheap and points the right way.
+_CLOSING = """
+Above all: write the complete system, not a sketch of one.
+"""
+
+
+def _context_window(model_id) -> int:
+    """How much room this model has, or 0 when nothing says.
+
+    Unknown means generous. A model whose window is not recorded is far
+    likelier to be a large one nobody catalogued than a tiny one, and
+    being wrong towards the full rules costs some context, while being
+    wrong the other way costs the completeness they exist for.
+    """
+    if not model_id:
+        return 0
+    try:
+        from backend.core.model_registry import get_model
+
+        return int((get_model(model_id) or {}).get("maxContext") or 0)
+    except Exception:  # pragma: no cover - a brief must not fail a turn
+        logger.exception("could not read the context window for %s", model_id)
+        return 0
+
+
+def craft_rules(model_id=None) -> str:
+    """The completeness rules, sized to what this model can hold."""
+    window = _context_window(model_id)
+    if 0 < window < _SMALL_WINDOW_TOKENS:
+        logger.info("brief: %s holds %d tokens; using the short craft rules",
+                    model_id, window)
+        return _CRAFT_SHORT
+    return _CRAFT
+
+
+def action_tool_brief(model_id=None, hint: str = "") -> str:
     """The system message for a turn that may propose an action.
+
+    Four parts, in this order: how to write a block, what tools exist,
+    the rules for using them, and what a finished file looks like. The
+    first three are mechanics -- get them wrong and nothing runs at all.
+    The fourth is craft, and is the difference between a file that parses
+    and the file the user asked for.
+
+    Plugins come last, so a domain's conventions read as refinements of
+    rules already stated rather than as the only thing the model heard.
 
     Empty string when the registry cannot be read, which makes the caller
     fall back to an ordinary chat turn rather than failing it.
@@ -148,7 +295,23 @@ def action_tool_brief() -> str:
             logger.warning("no action tools are registered; the brief would be empty")
             return ""
 
-        return _PREAMBLE + "\n".join(lines) + "\n" + _RULES
+        brief = _PREAMBLE + "\n".join(lines) + "\n" + _RULES + craft_rules(model_id)
+
+        # Last, and never instead. A plugin refines a rule that has
+        # already been stated; it does not get to be the only thing the
+        # model was told, and it cannot remove a rule it disagrees with.
+        try:
+            from backend.core import brief_plugins
+
+            sections = brief_plugins.active_plugin_sections(hint)
+        except Exception:  # pragma: no cover - plugins are not worth a turn
+            logger.exception("could not read the brief plugins")
+            sections = []
+
+        if sections:
+            brief = brief + "\n" + "\n\n".join(sections) + "\n" + _CLOSING
+
+        return brief
     except Exception:  # pragma: no cover - a brief is not worth a turn
         logger.exception("could not build the action tool brief")
         return ""

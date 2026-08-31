@@ -545,7 +545,16 @@ def _classifier_generator(request, default_local_model, supplied):
 # turn that is explicitly about writing a file is not extravagant, and
 # it is bounded below by whatever the caller asked for -- this raises a
 # ceiling, it never lowers one.
-_TOKENS_FOR_WRITING = 4096
+# Raised from 4096 when the brief started asking for complete systems.
+# The two have to move together: a brief that demands validation,
+# persistence, hooks, documentation and tests, paid for out of a budget
+# sized for a sketch, produces a file that stops in the middle -- which
+# is the failure this project has already watched happen and fixed once.
+#
+# nemo-12b holds 16384 and a prompt costs about 1500 of them, so this is
+# affordable there. On a 4096-token model the window bound below is what
+# actually applies, and the short craft rules go with it.
+_TOKENS_FOR_WRITING = 8192
 
 # What is left for the answer has to fit beside the prompt. Estimated
 # from characters because there is no tokenizer at this layer; 3.5 is
@@ -1035,7 +1044,14 @@ def orchestrate_turn(
     # likely to propose a file operation, which is the wrong trade in
     # both directions.
     if routing.turn_kind in (model_router.TURN_TOOLS, model_router.TURN_HEAVY):
-        brief = tool_brief.action_tool_brief()
+        # The model is passed so the brief can be sized to its window.
+        # The completeness rules are worth their tokens on a 16k model
+        # and compete with the file itself on a 4k one, where running
+        # out of room part-way through produces nothing at all.
+        # The user's words go too: a plugin scoped to a language has
+        # nothing else to recognise this turn by, because the model has
+        # not proposed a path yet.
+        brief = tool_brief.action_tool_brief(model_id, text)
         if brief:
             final_messages = (final_messages[:1]
                               + [{"role": "system", "content": brief}]

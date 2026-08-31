@@ -51,7 +51,12 @@ COMPLETE = BLOCK_HEAD + "}\n" + QUOTE + "}\n```\n"
 # --- the budget -------------------------------------------------------
 
 def test_a_file_writing_turn_gets_more_room_than_a_chat_turn():
-    assert _room_to_finish_the_file("tools", "nemo-12b-q5", 3000, 2048) == 4096
+    """8192, raised from 4096 when the brief began asking for complete
+    systems. The two have to move together: a brief demanding
+    validation, persistence, hooks, documentation and tests, paid for
+    out of a budget sized for a sketch, produces a file that stops in
+    the middle."""
+    assert _room_to_finish_the_file("tools", "nemo-12b-q5", 3000, 2048) == 8192
     assert _room_to_finish_the_file("chat", "nemo-12b-q5", 3000, 2048) == 2048
 
 
@@ -71,7 +76,7 @@ def test_the_budget_is_a_floor_and_never_lowers_a_request():
 
 def test_an_unknown_model_is_not_punished_for_being_unknown():
     """No window information is not evidence the window is small."""
-    assert _room_to_finish_the_file("tools", "no-such-model", 3000, 2048) == 4096
+    assert _room_to_finish_the_file("tools", "no-such-model", 3000, 2048) == 8192
 
 
 # --- noticing it happened ---------------------------------------------
