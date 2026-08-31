@@ -1,5 +1,7 @@
 # backend/tools/http_fetch.py
+import json
 import time
+
 import requests
 
 from logger import get_logger
@@ -94,9 +96,24 @@ def http_fetch(url, *, headers=None, json_body=None, timeout=DEFAULT_TIMEOUT_SEC
                 "data": None,
             }
 
-        # Parse JSON if possible
+        # Parse JSON if possible.
+        #
+        # AN EMPTY BODY IS AN ANSWER, NOT A PARSE FAILURE
+        # A 200 with no content and a JSON content-type is legal and
+        # common -- it is how an endpoint says "yes" when there is
+        # nothing to say. response.json() raises on it, and because
+        # that raise happened inside the try below, a SUCCESSFUL
+        # request came back as {"status": "error"}.
+        #
+        # Found the hard way: Ludo.ai's /auth/validate-api-key answers
+        # a valid key with exactly this, so ARIA told a user with a
+        # working key that its server could not be reached.
+        #
+        # A body that is present but malformed is still an error. That
+        # is a server saying something broken, which is worth knowing.
         if "application/json" in content_type:
-            data = response.json()
+            body = response.text or ""
+            data = json.loads(body) if body.strip() else None
         else:
             data = response.text
 

@@ -1037,5 +1037,12 @@ def _test_ludo(plugin: dict) -> dict:
     if code:
         return {"ok": False, "message": f"Ludo.ai answered HTTP {code}."}
 
-    # No code at all means it never got that far -- no network, DNS, TLS.
+    # No code at all means the request never completed -- DNS, TCP, TLS,
+    # a proxy. http_fetch caught the exception and put the reason in
+    # "error", and an earlier version of this threw that away and said
+    # only "Could not reach", which is how a TLS failure and an unplugged
+    # cable came to look identical. The reason is the whole diagnosis, so
+    # it is shown.
+    if body:
+        return {"ok": False, "message": f"Could not reach {base}: {body}"}
     return {"ok": False, "message": f"Could not reach {base}."}

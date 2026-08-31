@@ -529,6 +529,28 @@ def test_no_network_is_reported_as_no_network(registry, monkeypatch):
     assert "Could not reach" in outcome["message"]
 
 
+def test_a_failed_request_says_why_it_failed(registry, monkeypatch):
+    """The reason is the whole diagnosis.
+
+    http_fetch returns no status code when the request never completed
+    -- DNS, TLS, a proxy -- and puts the reason in "error". An earlier
+    version of this reported only "Could not reach", which made a
+    certificate failure and an unplugged cable look identical and cost
+    an afternoon of guessing at which one it was.
+    """
+    plugin_settings.update_plugin("ludo", {"api_key": "sk-a-real-looking-key"})
+    _answer(monkeypatch, {
+        "status": "error",
+        "error": "HTTPSConnectionPool(host='api.ludo.ai', port=443): "
+                 "certificate verify failed: self signed certificate in chain",
+    })
+
+    outcome = plugin_settings.test_plugin_connection("ludo")
+
+    assert outcome["ok"] is False
+    assert "certificate verify failed" in outcome["message"]
+
+
 def test_the_key_never_appears_in_a_test_result(registry, monkeypatch):
     key = "sk-this-must-not-be-echoed"
     plugin_settings.update_plugin("ludo", {"api_key": key})
