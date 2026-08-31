@@ -91,12 +91,54 @@ _FIELD_RULES = {
     },
     "ludo": {
         "api_key": "secret",
-        "model": "text",
+        "model": "choice",
     },
 }
 
 # Fields that must never reach a log line or a packet meant for one.
 _SECRET_FIELDS = frozenset({"api_key"})
+
+# What a plugin's dropdown fields may be set to.
+#
+# Held here rather than in the page, so the list the user picks from and
+# the list the backend accepts are the same list. A dropdown whose
+# options the validator has never heard of is a form that can only be
+# saved by not using it.
+#
+# Ludo.ai's real model names are not something ARIA can look up offline,
+# so these are placeholders and are marked as such in the UI. An empty
+# value is always allowed and means "their default".
+FIELD_CHOICES = {
+    "ludo": {
+        "model": ("", "ludo-default", "ludo-fast", "ludo-quality"),
+    },
+}
+
+# Where the Ludo.ai connection test goes.
+#
+# THE HOST IS VERIFIED, THE PATH IS NOT.
+# api.ludo.ai resolves and answers -- that much was checked from this
+# machine. What is not verified is the route, because Ludo.ai's API
+# documentation is not something ARIA has, and probing a third party's
+# server until something answers is not a reasonable way to find out.
+#
+# So the path below is a conventional guess, and both halves are
+# environment-configurable: when the real endpoint is known it is one
+# variable, not a code change.
+#
+# The root path "/" was measured returning 200 with an empty body for
+# any request, which is why it is NOT used here. A probe that answers
+# "connected" to a key of "xxxxxxxx" is not a test of anything, and the
+# failure it hides is the one the user most needs to see.
+ENV_LUDO_BASE = "ARIA_LUDO_API_BASE"
+ENV_LUDO_PATH = "ARIA_LUDO_API_PATH"
+LUDO_API_BASE = "https://api.ludo.ai"
+LUDO_PROBE_PATH = "/v1/models"
+
+# Short on purpose. This runs when somebody presses a button and watches
+# the page, so an unreachable host must say so quickly rather than
+# holding the UI for the length of a TCP timeout.
+LUDO_TIMEOUT_SECONDS = 6
 
 
 def plugins_file() -> Path:
@@ -262,6 +304,12 @@ def validate_plugin(plugin_id: str, fields: dict) -> list:
         elif kind == "secret":
             if len(stripped) < 8:
                 problems.append(f"{name} looks too short to be a real key")
+        elif kind == "choice":
+            allowed = FIELD_CHOICES.get(str(plugin_id or ""), {}).get(name, ())
+            if allowed and stripped not in allowed:
+                problems.append(
+                    f"{name} must be one of: "
+                    + ", ".join(choice or "(default)" for choice in allowed))
 
     return problems
 
@@ -365,31 +413,111 @@ def test_plugin_connection(plugin_id: str) -> dict:
     except PluginError as error:
         return {"ok": False, "message": str(error)}
 
-    if plugin_id in ("unity", "blender"):
-        field = "unity_path" if plugin_id == "unity" else "blender_path"
-        path = str(plugin.get(field) or "").strip()
-        if not path:
-            return {"ok": False, "message": f"No {field.replace('_', ' ')} is set."}
-
-        candidate = Path(path)
-        if not candidate.is_file():
-            return {"ok": False, "message": f"Nothing runnable at {path}."}
-        if not os.access(path, os.X_OK):
-            # On Windows this is almost always True; on POSIX it is the
-            # difference between a file and a program.
-            return {"ok": False, "message": f"{path} is not executable."}
-
-        return {"ok": True, "message": f"Found {candidate.name}."}
-
+    if plugin_id == "unity":
+        return _test_unity()
+    if plugin_id == "blender":
+        return _test_executable(plugin, "blender_path", "Blender")
     if plugin_id == "ludo":
-        key = str(plugin.get("api_key") or "").strip()
-        if not key:
-            return {"ok": False, "message": "No API key is set."}
-        if len(key) < 8:
-            return {"ok": False, "message": "That key looks too short."}
-        # Deliberately not a network call. A "test" that spends the
-        # user's quota every time they open the page is a test that gets
-        # switched off.
-        return {"ok": True, "message": "An API key is set. ARIA has not called Ludo.ai."}
+        return _test_ludo(plugin)
 
     return {"ok": False, "message": f"{plugin_id} has no connection test."}
+
+
+def _test_unity() -> dict:
+    """Whether ARIA can actually find Unity.
+
+    Asks unity_ops rather than reading the field, because unity_ops is
+    what will run it: it checks the environment variable, then this
+    plugin's path, then a Unity Hub install, then PATH. A test that only
+    looked at the field would say "not configured" on a machine where
+    Unity is found perfectly well, and would say "found" for a path the
+    thing that runs Unity would never consult.
+    """
+    try:
+        from backend.core import unity_ops
+
+        editor = unity_ops.editor_path()
+    except Exception as error:
+        # UnityUnavailable carries the sentence to show, and anything
+        # else is reported rather than swallowed.
+        return {"ok": False, "message": str(error)}
+
+    return {"ok": True, "message": f"Found {editor.name} at {editor}."}
+
+
+def _test_executable(plugin: dict, field: str, label: str) -> dict:
+    """Whether a configured program is there and runnable."""
+    path = str(plugin.get(field) or "").strip()
+    if not path:
+        return {"ok": False, "message": f"No {label} path is set."}
+
+    candidate = Path(path)
+    if not candidate.is_file():
+        return {"ok": False, "message": f"Nothing runnable at {path}."}
+    if not os.access(path, os.X_OK):
+        return {"ok": False, "message": f"{path} is not executable."}
+
+    return {"ok": True, "message": f"Found {candidate.name}."}
+
+
+def _test_ludo(plugin: dict) -> dict:
+    """Ask Ludo.ai whether this key works.
+
+    This one leaves the machine, which nothing else in this module does,
+    so it is worth being explicit about what that means: it runs only
+    when somebody presses the button, it sends the key to the configured
+    host and nothing else, it has a six-second budget, and it never logs
+    the key or the response body.
+
+    THE PATH IS A GUESS, AND A 404 SAYS SO
+    --------------------------------------
+    The host answers; the route is unverified (see LUDO_PROBE_PATH). So
+    a 404 means "a server took this request and does not have this
+    path", which is emphatically not "your key is wrong" -- and the
+    message says the former rather than blaming the key, because a user
+    who deletes a working key on ARIA's bad advice has been actively
+    harmed by a test that was supposed to help.
+    """
+    key = str(plugin.get("api_key") or "").strip()
+    if not key:
+        return {"ok": False, "message": "No API key is set."}
+    if len(key) < 8:
+        return {"ok": False, "message": "That key looks too short."}
+
+    base = str(os.environ.get(ENV_LUDO_BASE) or LUDO_API_BASE).rstrip("/")
+    path = str(os.environ.get(ENV_LUDO_PATH) or LUDO_PROBE_PATH)
+    if not path.startswith("/"):
+        path = "/" + path
+    url = base + path
+
+    try:
+        from tools.http_fetch import http_fetch
+
+        # Reusing the project's client rather than reaching for requests:
+        # its own docstring says a caller that does that duplicates the
+        # error handling and misses the next fix to it.
+        answer = http_fetch(url, headers={"Authorization": f"Bearer {key}"},
+                            timeout=LUDO_TIMEOUT_SECONDS)
+    except Exception as error:
+        logger.exception("the Ludo.ai connection test could not run")
+        return {"ok": False, "message": f"The test could not run: {error}"}
+
+    if answer.get("status") == "ok":
+        return {"ok": True, "message": f"Ludo.ai answered at {url}."}
+
+    code = answer.get("code")
+    if code in (401, 403):
+        return {"ok": False, "message": "Ludo.ai rejected that key."}
+    if code == 404:
+        return {"ok": False,
+                "message": (f"Reached Ludo.ai, but it has no {path}. Your key was "
+                            f"not checked and may be perfectly good -- ARIA does "
+                            f"not know Ludo.ai's API route. Set {ENV_LUDO_PATH} "
+                            f"(and {ENV_LUDO_BASE} if needed) to the real one.")}
+    if code == 429:
+        return {"ok": False, "message": "Ludo.ai rate-limited the test. Try again shortly."}
+    if code:
+        return {"ok": False, "message": f"Ludo.ai answered HTTP {code}."}
+
+    # No code at all means it never got that far -- no network, DNS, TLS.
+    return {"ok": False, "message": f"Could not reach {base}."}

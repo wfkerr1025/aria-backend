@@ -139,12 +139,29 @@ def plugin_registry_list_result(plugins: List[Dict[str, Any]]) -> Dict[str, Any]
     return _packet(schema.PLUGIN_REGISTRY_LIST_RESULT, {"plugins": plugins})
 
 
+def _plugin_choices(plugin: Dict[str, Any]) -> Dict[str, Any]:
+    """The values this plugin's dropdown fields accept.
+
+    Sent with the plugin so the page's options and the validator's
+    accepted set are the same set. A list kept in the page instead would
+    drift, and the way it would show is a dropdown whose selection the
+    backend then refuses to save.
+    """
+    from backend.plugins.plugin_settings import FIELD_CHOICES
+
+    table = FIELD_CHOICES.get(str(plugin.get("id") or ""), {})
+    return {field: list(values) for field, values in table.items()}
+
+
 def plugin_get_result(plugin: Dict[str, Any]) -> Dict[str, Any]:
-    return _packet(schema.PLUGIN_GET_RESULT, {"plugin": plugin})
+    return _packet(schema.PLUGIN_GET_RESULT,
+                   {"plugin": plugin, "choices": _plugin_choices(plugin)})
 
 
 def plugin_update_result(plugin: Dict[str, Any]) -> Dict[str, Any]:
-    return _packet(schema.PLUGIN_UPDATE_RESULT, {"plugin": plugin, "saved": True})
+    return _packet(schema.PLUGIN_UPDATE_RESULT,
+                   {"plugin": plugin, "saved": True,
+                    "choices": _plugin_choices(plugin)})
 
 
 def plugin_remove_result(plugin_id: str, removed: bool) -> Dict[str, Any]:

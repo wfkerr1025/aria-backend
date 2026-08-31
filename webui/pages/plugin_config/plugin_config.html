@@ -1,8 +1,20 @@
 <div class="plugin-config" id="plugin-config">
+  <button class="plugin-config-back" type="button" id="plugin-config-back">← Plugins</button>
+
+  <!-- The same four things the card showed -- logo, name, version, whether
+       it is on -- so arriving here confirms which tile was clicked rather
+       than making the user take it on trust. -->
   <div class="plugin-config-header">
-    <button class="plugin-config-back" type="button" id="plugin-config-back">← Plugins</button>
-    <h1 id="plugin-config-title">Plugin</h1>
-    <p class="plugin-config-subtitle" id="plugin-config-version"></p>
+    <img class="plugin-config-logo" id="plugin-config-logo" alt="" hidden />
+    <div class="plugin-config-logo-fallback" id="plugin-config-logo-fallback" hidden></div>
+
+    <div class="plugin-config-heading">
+      <h1 id="plugin-config-title">Plugin</h1>
+      <p class="plugin-config-subtitle">
+        <span id="plugin-config-version"></span>
+        <span class="plugin-config-status" id="plugin-config-status">Disabled</span>
+      </p>
+    </div>
   </div>
 
   <div class="plugin-config-message" id="plugin-config-message" hidden></div>

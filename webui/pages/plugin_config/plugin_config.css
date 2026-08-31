@@ -37,17 +37,95 @@
   outline: none;
 }
 
+/* The header carries the same four things the card did, at the same
+   sizes the Settings pages use for their headings. The logo is 48px
+   here as it is on the tile, so the mark does not change size between
+   clicking it and arriving. */
+.plugin-config-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.plugin-config-logo {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border-radius: var(--radius-sm, 6px);
+  flex-shrink: 0;
+}
+
+/* Any author `display` beats the browser's own `[hidden] { display: none }`,
+   so a flex element with the hidden attribute stays on screen. That is
+   how the fallback initial and the real logo both appeared at once. */
+.plugin-config [hidden] {
+  display: none !important;
+}
+
+.plugin-config-logo-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border-hairline, var(--input-border));
+
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.plugin-config-heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
 .plugin-config-header h1 {
-  margin: 0 0 var(--space-xs) 0;
+  margin: 0;
   font-size: var(--font-size-xl);
   color: var(--text-primary);
 }
 
 .plugin-config-subtitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
   margin: 0;
   color: var(--text-secondary);
   font-size: var(--font-size-sm);
-  opacity: 0.75;
+}
+
+/* The same dot the tile uses, for the same reason: whether a plugin is
+   on should be readable without reading. */
+.plugin-config-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--text-secondary);
+}
+
+.plugin-config-status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  opacity: 0.4;
+}
+
+.plugin-config-status.is-enabled {
+  color: var(--accent-primary);
+}
+
+.plugin-config-status.is-enabled::before {
+  background: var(--accent-primary);
+  opacity: 1;
 }
 
 /* ---------------------------------------------------------- */
@@ -81,6 +159,14 @@
   color: var(--text-primary);
   font-size: var(--font-size-sm);
   font-family: inherit;
+}
+
+/* A <select> carries the same class as the text boxes so the form has
+   one field style. These two lines are what stop the native control
+   from ignoring it. */
+select.plugin-config-input {
+  appearance: none;
+  cursor: pointer;
 }
 
 .plugin-config-input:focus {

@@ -167,6 +167,159 @@ test("a logo that fails to load leaves a labelled square", () => {
   assert.ok(js.includes("logoFallback"));
 });
 
+// --- the config page header ----------------------------------------
+
+test("the config header shows the same four things the card did", () => {
+  const html = read("pages", "plugin_config", "plugin_config.html");
+
+  for (const id of ["plugin-config-logo", "plugin-config-title",
+                    "plugin-config-version", "plugin-config-status"]) {
+    assert.ok(html.includes(`id="${id}"`), `the header is missing ${id}`);
+  }
+});
+
+test("the header's type comes from the same variables the Settings pages use", () => {
+  // "Match the Settings page typography exactly" only stays true if it
+  // is the same token, not the same number typed twice.
+  const css = read("pages", "plugin_config", "plugin_config.css");
+  const header = css.slice(css.indexOf(".plugin-config-header h1"));
+
+  assert.ok(header.includes("var(--font-size-xl)"));
+  assert.ok(css.includes(".plugin-config-subtitle") && css.includes("var(--font-size-sm)"));
+  assert.ok(!/font-size:\s*\d/.test(css), "no literal font sizes on this page");
+});
+
+test("the enabled dot is the same dot the tiles use", () => {
+  const css = read("pages", "plugin_config", "plugin_config.css");
+
+  assert.ok(css.includes(".plugin-config-status.is-enabled"));
+  assert.ok(css.includes("var(--accent-primary)"));
+  assert.ok(css.includes("border-radius: 50%"), "it is a dot, as on the tile");
+});
+
+test("the header logo has the same fallback the tiles have", () => {
+  const js = read("pages", "plugin_config", "plugin_config.js");
+
+  assert.ok(js.includes("renderLogo"));
+  assert.ok(js.includes("image.onerror"));
+  assert.ok(read("pages", "plugin_config", "plugin_config.html")
+              .includes("plugin-config-logo-fallback"));
+});
+
+test("hidden means hidden, even for the flex fallback", () => {
+  // The fallback sets display:flex, and any author display beats the
+  // browser's own [hidden] { display: none } -- so without this rule
+  // the logo and the fallback initial both showed at once.
+  const css = read("pages", "plugin_config", "plugin_config.css");
+
+  assert.ok(/\.plugin-config \[hidden\]\s*{[^}]*display:\s*none/.test(css));
+});
+
+test("the logo is the same size on the page as on the tile", () => {
+  const tile = read("pages", "plugins", "plugins.css");
+  const page = read("pages", "plugin_config", "plugin_config.css");
+  const size = (css, selector) => {
+    const block = css.slice(css.indexOf(selector));
+    return block.slice(0, block.indexOf("}")).match(/width:\s*([^;]+);/)[1];
+  };
+
+  assert.equal(size(page, ".plugin-config-logo"), size(tile, ".plugin-tile-logo"),
+               "a mark that resizes on click looks like a different mark");
+});
+
+// --- the fields ----------------------------------------------------
+
+test("the model field is a dropdown, not a free-text box", () => {
+  const js = read("pages", "plugin_config", "plugin_config.js");
+  const shape = js.slice(js.indexOf("  model: {"));
+
+  assert.ok(shape.slice(0, 200).includes('type: "select"'));
+  assert.ok(js.includes('createElement(isSelect ? "select" : "input")'));
+});
+
+test("the dropdown's options come from the backend, not from this file", () => {
+  // A list held here would eventually offer a value the validator
+  // refuses, and the form could then only be saved by not using it.
+  const js = read("pages", "plugin_config", "plugin_config.js");
+
+  assert.ok(js.includes("choicesFor"));
+  assert.ok(js.includes("payload.choices"));
+  assert.ok(!/ludo-fast/.test(js), "model names must not be hard-coded in the page");
+});
+
+test("a saved value the backend no longer offers is still shown", () => {
+  const js = read("pages", "plugin_config", "plugin_config.js");
+
+  assert.ok(js.includes("(not offered)"),
+            "opening the page must not silently change a saved setting");
+});
+
+test("every plugin's fields have a label and a hint", () => {
+  const js = read("pages", "plugin_config", "plugin_config.js");
+  const registry = JSON.parse(
+    fs.readFileSync(path.join(webui, "..", "aria_config", "plugins.json"), "utf8"));
+  const known = new Set(["id", "name", "version", "logo", "configPage", "enabled"]);
+
+  for (const plugin of Object.values(registry)) {
+    for (const field of Object.keys(plugin)) {
+      if (known.has(field)) continue;
+      assert.ok(js.includes(`  ${field}: {`),
+                `${field} has no entry in FIELD_LABELS, so it renders unlabelled`);
+    }
+  }
+});
+
+test("the API key field is a password field", () => {
+  const js = read("pages", "plugin_config", "plugin_config.js");
+  const shape = js.slice(js.indexOf("  api_key: {"));
+
+  assert.ok(shape.slice(0, 200).includes('type: "password"'));
+});
+
+// --- the imports actually resolve ----------------------------------
+
+test("every import in the plugin pages names an export that exists", () => {
+  // This is here because the config page shipped with
+  //     import Router from "../../core/router.js"
+  // against a module that only exports { Router }. The page threw on
+  // load, and every other test in this file still passed -- because
+  // they all read the source as text, and text does not have to run.
+  //
+  // So this one resolves each import against the target's exports.
+  const pages = [["pages", "plugin_config", "plugin_config.js"],
+                 ["pages", "plugins", "plugins.js"]];
+
+  for (const page of pages) {
+    const source = read(...page);
+    const dir = path.join(webui, ...page.slice(0, -1));
+
+    for (const line of source.split("\n")) {
+      const match = line.match(/^import\s+(.+?)\s+from\s+"(\.[^"]+)"/);
+      if (!match) continue;
+
+      const [, clause, relative] = match;
+      const target = path.join(dir, relative);
+      assert.ok(fs.existsSync(target), `${page.join("/")} imports missing ${relative}`);
+
+      const exported = fs.readFileSync(target, "utf8");
+      const names = clause.trim().startsWith("{")
+        ? clause.replace(/[{}]/g, "").split(",").map((n) => n.split(" as ")[0].trim())
+        : ["default"];
+
+      for (const name of names) {
+        const found = name === "default"
+          ? /export\s+default\b/.test(exported)
+          : new RegExp(`export\\s+(const|function|class|let)\\s+${name}\\b`).test(exported)
+            || new RegExp(`export\\s*{[^}]*\\b${name}\\b`).test(exported);
+
+        assert.ok(found,
+                  `${page.join("/")} imports ${name} from ${relative}, `
+                  + `which does not export it`);
+      }
+    }
+  }
+});
+
 // --- injection -----------------------------------------------------
 
 test("plugin names are set as text, never as markup", () => {

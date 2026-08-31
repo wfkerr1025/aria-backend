@@ -19,6 +19,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -34,6 +36,9 @@ def registry(tmp_path, monkeypatch):
         "unity": {"id": "unity", "name": "Unity Integration", "version": "1.0.0",
                   "enabled": True, "logo": "assets/plugin_logos/unity.png",
                   "configPage": "unity-config", "unity_path": "", "project_path": ""},
+        "blender": {"id": "blender", "name": "Blender Integration", "version": "1.0.0",
+                    "enabled": False, "logo": "assets/plugin_logos/blender.png",
+                    "configPage": "blender-config", "blender_path": ""},
         "ludo": {"id": "ludo", "name": "Ludo.ai Integration", "version": "1.0.0",
                  "enabled": True, "logo": "assets/plugin_logos/ludo.png",
                  "configPage": "ludo-config", "api_key": "", "model": ""},
@@ -300,22 +305,194 @@ def test_testing_unity_finds_a_real_executable(registry, tmp_path):
     assert "Unity.exe" in outcome["message"]
 
 
-def test_testing_unity_with_nothing_set_says_so(registry):
+def test_testing_unity_asks_unity_ops_rather_than_the_field(registry, monkeypatch):
+    """The test has to agree with the thing that runs Unity.
+
+    unity_ops looks in four places -- the environment, this plugin's
+    setting, Unity Hub, PATH -- so a test that read the field alone
+    would report "not configured" on a machine where Unity runs fine.
+    """
+    from backend.core import unity_ops
+
+    seen = []
+
+    def found():
+        seen.append(True)
+        return Path("C:/Unity/Editor/Unity.exe")
+
+    monkeypatch.setattr(unity_ops, "editor_path", found)
+
+    outcome = plugin_settings.test_plugin_connection("unity")
+
+    assert seen, "the test must ask unity_ops, not read the field"
+    assert outcome["ok"] is True
+    assert "Unity.exe" in outcome["message"]
+
+
+def test_testing_unity_reports_what_unity_ops_could_not_find(registry, monkeypatch):
+    from backend.core import unity_ops
+
+    def missing():
+        raise unity_ops.UnityUnavailable("No Unity editor was found.")
+
+    monkeypatch.setattr(unity_ops, "editor_path", missing)
+
     outcome = plugin_settings.test_plugin_connection("unity")
 
     assert outcome["ok"] is False
-    assert "unity path" in outcome["message"].lower()
+    assert "No Unity editor was found." in outcome["message"]
 
 
-def test_testing_ludo_does_not_call_ludo(registry):
-    """A test that spends the user's quota every time they open the page
-    is a test that gets switched off."""
+def test_testing_blender_wants_a_real_file(registry, tmp_path):
+    outcome = plugin_settings.test_plugin_connection("blender")
+    assert outcome["ok"] is False
+    assert "No Blender path" in outcome["message"]
+
+    # Saving a path that is not there is refused before it can be saved.
+    with pytest.raises(plugin_settings.PluginError):
+        plugin_settings.update_plugin(
+            "blender", {"blender_path": str(tmp_path / "not-here.exe")})
+
+    real = tmp_path / "blender.exe"
+    real.write_text("binary")
+    real.chmod(0o755)
+    plugin_settings.update_plugin("blender", {"blender_path": str(real)})
+
+    outcome = plugin_settings.test_plugin_connection("blender")
+    assert outcome["ok"] is True
+    assert "blender.exe" in outcome["message"]
+
+    # Which leaves one way for the path to go bad: the file moves after
+    # it was saved. That is exactly what this test button is for, and it
+    # is the case validation cannot catch.
+    real.unlink()
+
+    outcome = plugin_settings.test_plugin_connection("blender")
+    assert outcome["ok"] is False
+    assert "Nothing runnable" in outcome["message"]
+
+
+# ------------------------------------------------------
+# The Ludo.ai test is the only thing in this module that
+# leaves the machine. These tests do not: they replace the
+# HTTP client, because a unit test that needs the internet
+# fails on a train and tells you nothing when it does.
+# The live one is opt-in, at the bottom.
+# ------------------------------------------------------
+
+def _answer(monkeypatch, reply):
+    """Stand in for tools.http_fetch, recording what it was asked."""
+    calls = []
+
+    def fake(url, *, headers=None, json_body=None, timeout=None):
+        calls.append({"url": url, "headers": headers or {}, "timeout": timeout})
+        return reply
+
+    import tools.http_fetch as client
+    monkeypatch.setattr(client, "http_fetch", fake)
+    return calls
+
+
+def test_testing_ludo_sends_the_key_to_ludo(registry, monkeypatch):
     plugin_settings.update_plugin("ludo", {"api_key": "sk-a-real-looking-key"})
+    calls = _answer(monkeypatch, {"status": "ok", "code": 200, "data": {}})
 
     outcome = plugin_settings.test_plugin_connection("ludo")
 
     assert outcome["ok"] is True
-    assert "has not called" in outcome["message"]
+    assert len(calls) == 1
+    assert calls[0]["url"].startswith(plugin_settings.LUDO_API_BASE)
+    assert calls[0]["headers"]["Authorization"] == "Bearer sk-a-real-looking-key"
+    # It runs while somebody watches the page, so it must give up quickly.
+    assert calls[0]["timeout"] == plugin_settings.LUDO_TIMEOUT_SECONDS
+
+
+def test_testing_ludo_without_a_key_never_leaves_the_machine(registry, monkeypatch):
+    calls = _answer(monkeypatch, {"status": "ok", "code": 200})
+
+    outcome = plugin_settings.test_plugin_connection("ludo")
+
+    assert outcome["ok"] is False
+    assert not calls, "there was nothing to authenticate with"
+
+
+def test_a_rejected_key_is_reported_as_a_rejected_key(registry, monkeypatch):
+    plugin_settings.update_plugin("ludo", {"api_key": "sk-a-real-looking-key"})
+    _answer(monkeypatch, {"status": "error", "code": 401, "error": "no"})
+
+    outcome = plugin_settings.test_plugin_connection("ludo")
+
+    assert outcome["ok"] is False
+    assert "rejected that key" in outcome["message"]
+
+
+def test_an_unknown_route_does_not_blame_the_key(registry, monkeypatch):
+    """The route is a guess. The key is the user's.
+
+    If ARIA reports a 404 as a bad key, a user deletes a working key on
+    ARIA's advice -- which is worse than saying nothing at all.
+    """
+    plugin_settings.update_plugin("ludo", {"api_key": "sk-a-real-looking-key"})
+    _answer(monkeypatch, {"status": "error", "code": 404, "error": "Cannot GET"})
+
+    outcome = plugin_settings.test_plugin_connection("ludo")
+
+    assert outcome["ok"] is False
+    assert "not checked" in outcome["message"]
+    assert "rejected" not in outcome["message"].lower()
+    assert plugin_settings.ENV_LUDO_PATH in outcome["message"]
+
+
+def test_no_network_is_reported_as_no_network(registry, monkeypatch):
+    plugin_settings.update_plugin("ludo", {"api_key": "sk-a-real-looking-key"})
+    _answer(monkeypatch, {"status": "error", "code": None, "error": "dns"})
+
+    outcome = plugin_settings.test_plugin_connection("ludo")
+
+    assert outcome["ok"] is False
+    assert "Could not reach" in outcome["message"]
+
+
+def test_the_key_never_appears_in_a_test_result(registry, monkeypatch):
+    key = "sk-this-must-not-be-echoed"
+    plugin_settings.update_plugin("ludo", {"api_key": key})
+
+    for reply in ({"status": "ok", "code": 200},
+                  {"status": "error", "code": 401, "error": key},
+                  {"status": "error", "code": None, "error": "boom"}):
+        _answer(monkeypatch, reply)
+        outcome = plugin_settings.test_plugin_connection("ludo")
+        assert key not in str(outcome)
+
+
+def test_the_endpoint_can_be_pointed_somewhere_else(registry, monkeypatch):
+    """Because the route is unverified, it has to be changeable without
+    editing code."""
+    plugin_settings.update_plugin("ludo", {"api_key": "sk-a-real-looking-key"})
+    monkeypatch.setenv(plugin_settings.ENV_LUDO_BASE, "https://example.test/api")
+    monkeypatch.setenv(plugin_settings.ENV_LUDO_PATH, "ping")
+    calls = _answer(monkeypatch, {"status": "ok", "code": 200})
+
+    plugin_settings.test_plugin_connection("ludo")
+
+    assert calls[0]["url"] == "https://example.test/api/ping"
+
+
+@pytest.mark.skipif(not os.environ.get("ARIA_LIVE_LUDO_KEY"),
+                    reason="set ARIA_LIVE_LUDO_KEY to test against the real API")
+def test_the_real_ludo_api_live(registry):
+    """Opt-in. Never part of an ordinary run.
+
+    This is how the guessed route gets confirmed or corrected: give it a
+    real key and read what comes back.
+    """
+    plugin_settings.update_plugin(
+        "ludo", {"api_key": os.environ["ARIA_LIVE_LUDO_KEY"]})
+
+    outcome = plugin_settings.test_plugin_connection("ludo")
+
+    print("live Ludo.ai result:", outcome["message"])
+    assert isinstance(outcome["ok"], bool)
 
 
 # ======================================================
@@ -328,7 +505,7 @@ def test_the_page_can_list_configure_test_and_remove(registry, tmp_path):
 
     listed = ipc_router.dispatch(
         {"type": schema.PLUGIN_REGISTRY_LIST_REQUEST, "payload": {}})
-    assert [p["id"] for p in listed["payload"]["plugins"]] == ["ludo", "unity"]
+    assert [p["id"] for p in listed["payload"]["plugins"]] == ["blender", "ludo", "unity"]
 
     fetched = ipc_router.dispatch(
         {"type": schema.PLUGIN_GET_REQUEST, "payload": {"id": "unity"}})

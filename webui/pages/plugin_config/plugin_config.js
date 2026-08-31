@@ -19,7 +19,7 @@
 
 import { bridge } from "../../core/bridge.js";
 import { IPC } from "../../core/ipc_schema.js";
-import Router from "../../core/router.js";
+import { Router } from "../../core/router.js";
 
 function configLog(message) {
   try {
@@ -43,7 +43,7 @@ const FIELD_LABELS = {
                   hint: "The full path to blender.exe or the Blender binary." },
   api_key: { label: "API key", type: "password",
              hint: "Stored in aria_config/plugins.json." },
-  model: { label: "Model", type: "text", optional: true,
+  model: { label: "Model", type: "select", optional: true,
            hint: "Which Ludo.ai model to use. Leave empty for their default." },
 };
 
@@ -56,6 +56,7 @@ const PluginConfig = {
   bound: false,
   pluginId: null,
   plugin: null,
+  choices: {},
 
   init() {
     this.pluginId = this.idFromRoute();
@@ -116,6 +117,7 @@ const PluginConfig = {
       // the packet for THIS plugin is ours.
       if (payload.plugin?.id !== this.pluginId) return;
       this.plugin = payload.plugin;
+      this.choices = payload.choices || {};
       this.render();
       return;
     }
@@ -123,6 +125,7 @@ const PluginConfig = {
     if (packet.type === IPC.PLUGIN_UPDATE_RESULT) {
       if (payload.plugin?.id !== this.pluginId) return;
       this.plugin = payload.plugin;
+      if (payload.choices) this.choices = payload.choices;
       this.render();
       this.say("Saved.");
       return;
@@ -151,11 +154,25 @@ const PluginConfig = {
   render() {
     const plugin = this.plugin || {};
 
+    const name = plugin.name || plugin.id || "Plugin";
+    const enabled = plugin.enabled === true;
+
     const title = document.getElementById("plugin-config-title");
-    if (title) title.textContent = plugin.name || plugin.id || "Plugin";
+    if (title) title.textContent = name;
 
     const version = document.getElementById("plugin-config-version");
     if (version) version.textContent = `v${plugin.version || "0.0.0"}`;
+
+    // The header's status repeats what the checkbox below says, on
+    // purpose: the checkbox is a control and reads as "what would I
+    // like", the dot is a readout and reads as "what is it now".
+    const status = document.getElementById("plugin-config-status");
+    if (status) {
+      status.textContent = enabled ? "Enabled" : "Disabled";
+      status.classList.toggle("is-enabled", enabled);
+    }
+
+    this.renderLogo(plugin, name);
 
     const toggle = document.getElementById("plugin-config-enabled");
     if (toggle) toggle.checked = plugin.enabled === true;
@@ -172,6 +189,36 @@ const PluginConfig = {
       .forEach((name) => fields.appendChild(this.field(name, plugin[name])));
   },
 
+  /**
+   * The plugin's mark, or its initial if the file is missing.
+   *
+   * Same fallback as the tiles: a labelled square rather than a broken
+   * image, so a missing logo costs a logo and not the layout.
+   */
+  renderLogo(plugin, name) {
+    const image = document.getElementById("plugin-config-logo");
+    const fallback = document.getElementById("plugin-config-logo-fallback");
+    if (!image || !fallback) return;
+
+    const show = (useImage) => {
+      image.hidden = !useImage;
+      fallback.hidden = useImage;
+    };
+
+    fallback.textContent = String(name).charAt(0) || "?";
+    image.alt = `${name} logo`;
+
+    if (!plugin.logo) {
+      show(false);
+      return;
+    }
+
+    image.onerror = () => show(false);
+    image.onload = () => show(true);
+    image.src = plugin.logo;
+    show(true);
+  },
+
   field(name, value) {
     const shape = FIELD_LABELS[name] || { label: name, type: "text" };
 
@@ -183,11 +230,48 @@ const PluginConfig = {
     caption.textContent = shape.label + (shape.optional ? " (optional)" : "");
     wrapper.appendChild(caption);
 
-    const input = document.createElement("input");
-    input.type = shape.type;
+    // A dropdown is an <select>, not an <input>, but everything after
+    // this point -- the class, the dataset, save() -- treats them the
+    // same, so the form has one collection routine rather than two.
+    const isSelect = shape.type === "select";
+    const input = document.createElement(isSelect ? "select" : "input");
+    if (!isSelect) input.type = shape.type;
     input.className = "plugin-config-input";
     input.dataset.field = name;
-    input.autocomplete = shape.type === "password" ? "off" : "on";
+    if (!isSelect) input.autocomplete = shape.type === "password" ? "off" : "on";
+
+    if (isSelect) {
+      // The options come from the backend, which is also what validates
+      // the saved value. A list held here instead would eventually let
+      // the page offer a choice the validator refuses.
+      const choices = this.choicesFor(name);
+      choices.forEach((choice) => {
+        const option = document.createElement("option");
+        option.value = choice;
+        option.textContent = choice === "" ? "Their default" : choice;
+        input.appendChild(option);
+      });
+
+      const current = value == null ? "" : String(value);
+      if (current !== "" && !choices.includes(current)) {
+        // A value saved before this list existed still has to be
+        // selectable, or opening the page would silently change it.
+        const option = document.createElement("option");
+        option.value = current;
+        option.textContent = `${current} (not offered)`;
+        input.appendChild(option);
+      }
+      input.value = current;
+
+      wrapper.appendChild(input);
+      if (shape.hint) {
+        const hint = document.createElement("span");
+        hint.className = "plugin-config-hint";
+        hint.textContent = shape.hint;
+        wrapper.appendChild(hint);
+      }
+      return wrapper;
+    }
 
     // A secret arrives as "configured" or "", never as the key itself.
     // The box is left empty and its placeholder says which, so a user
@@ -211,6 +295,13 @@ const PluginConfig = {
     }
 
     return wrapper;
+  },
+
+  /** What this field may be set to, as the backend reported it. */
+  choicesFor(name) {
+    const table = this.choices || {};
+    const list = table[name];
+    return Array.isArray(list) ? list : [];
   },
 
   save() {
