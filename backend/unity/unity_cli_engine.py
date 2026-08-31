@@ -592,6 +592,89 @@ def discover_commands() -> dict:
 # Running one
 # ======================================================
 
+def split_arguments(text: str) -> List[str]:
+    """Split a typed command line into arguments.
+
+    NOT shlex. shlex.split(posix=True) treats a backslash as an escape,
+    so "D:\\Users\\William" comes back as DUsersWilliam -- and every path
+    on this machine is a Windows path. posix=False keeps the quotes in
+    the tokens instead of removing them.
+
+    So: split on whitespace, respect double quotes, and never touch a
+    backslash. That is the whole grammar a command line needs here, and
+    it is the one that does not corrupt paths.
+    """
+    tokens: List[str] = []
+    current: List[str] = []
+    quoted = False
+
+    for character in str(text or ""):
+        if character == '"':
+            quoted = not quoted
+            continue
+        if character.isspace() and not quoted:
+            if current:
+                tokens.append("".join(current))
+                current = []
+            continue
+        current.append(character)
+
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def parse_invocation(text: str) -> Optional[dict]:
+    """Read a typed line as a Unity CLI invocation, or decide it is not one.
+
+    Deliberately narrow, because a false positive turns a sentence into
+    a command. "unity is a game engine" begins with the same word as
+    "unity build --target Android" and must not be treated the same way,
+    so a line counts only when the word after `unity` looks like a
+    subcommand AND either a flag follows or the subcommand is one the
+    CLI actually reported.
+
+    Returns {"command": ..., "args": [...]} or None.
+    """
+    tokens = split_arguments(text)
+    if len(tokens) < 2 or tokens[0].strip().lower() != "unity":
+        return None
+
+    command = tokens[1].strip()
+
+    # A bare flag is still an invocation -- `unity --version` is a thing
+    # a person types and expects to run. It is included so that it
+    # reaches an answer with an authority behind it rather than the
+    # model, which would simply make one up.
+    if command.startswith("-"):
+        if not re.fullmatch(r"--?[A-Za-z][\w.-]*", command):
+            return None
+        return {"command": command, "args": tokens[2:]}
+
+    if not re.fullmatch(r"[A-Za-z][\w.-]*", command):
+        return None
+
+    rest = tokens[2:]
+    looks_like_a_command_line = any(part.startswith("-") for part in rest)
+
+    if not looks_like_a_command_line:
+        try:
+            from backend.plugins import plugin_settings
+
+            # Matched on the NAME, which is what a person types and
+            # what the tile shows. The template is what gets run, and
+            # Edit can change it -- a command renamed to `boom` behind
+            # the scenes is still typed as `build`.
+            known = {str(record.get("name") or record.get("command") or "")
+                     for record in plugin_settings.list_commands(PLUGIN_ID)}
+        except Exception:  # pragma: no cover - a lookup is not a parse
+            known = set()
+        if command not in known:
+            return None
+
+    return {"command": command, "args": rest}
+
+
 def build_invocation(record: dict, args: Optional[Sequence[str]] = None) -> List[str]:
     """The arguments for one command, in order.
 
@@ -662,6 +745,79 @@ def run_command(command_id: str, args: Optional[Sequence[str]] = None,
         "code": result.get("code"),
         "invocation": arguments,
     }
+
+
+def answer_invocation(invocation: dict) -> dict:
+    """Do what a typed Unity CLI line asked for, and report what happened.
+
+    Returns {"ran": bool, "text": str} -- text being what to say to the
+    user. Every branch that did not run something says so in its first
+    sentence, because the failure this exists to prevent is a report of
+    work that never happened.
+
+    WHY THIS IS NOT A MODEL'S JOB
+    A 12B asked to "run" a command it has no way to run does not say it
+    cannot. It writes the sentence that usually follows such a request:
+    "Unity project created at D:\\...\\ARIA_TestProject". Confident,
+    well-formed, and false -- and the user then goes looking for a
+    folder that was never made. The same reasoning already keeps
+    workspace queries away from the model; a command invocation has an
+    authority behind it too, and this is it.
+    """
+    from backend.plugins import plugin_settings
+
+    command = str(invocation.get("command") or "")
+    args = list(invocation.get("args") or [])
+    spoken = " ".join(["unity", command, *args])
+
+    plugin = plugin_settings.load_plugins().get(PLUGIN_ID)
+    if plugin is None or plugin.get("dismissed", False):
+        return {"ran": False, "text": (
+            f"I did not run `{spoken}`, and nothing was created.\n\n"
+            "The Unity CLI plugin is not installed. Open Plugins and "
+            "press Rescan for Plugins to look for it.")}
+
+    if not plugin.get("enabled", False):
+        return {"ran": False, "text": (
+            f"I did not run `{spoken}`, and nothing was created.\n\n"
+            "The Unity CLI plugin is installed but switched off. Enable "
+            "it on its page under Plugins first.")}
+
+    registered = plugin_settings.list_commands(PLUGIN_ID)
+    # By name, for the same reason parse_invocation matches by name:
+    # the name is the command's identity, the template is its behaviour,
+    # and editing the second must not change what the first is called.
+    match = next((record for record in registered
+                  if str(record.get("name") or record.get("command")) == command), None)
+
+    if match is None:
+        known = ", ".join(sorted(str(r.get("name") or "") for r in registered))
+        detail = (f"The commands I know about are: {known}."
+                  if known else
+                  "I have not asked the Unity CLI what commands it has yet -- "
+                  "press Refresh Commands on the Plugins page.")
+        return {"ran": False, "text": (
+            f"I did not run `{spoken}`, and nothing was created.\n\n"
+            f"`{command}` is not a Unity CLI command I have registered. {detail}")}
+
+    if not match.get("enabled", False):
+        return {"ran": False, "text": (
+            f"I did not run `{spoken}`, and nothing was created.\n\n"
+            f"`{command}` is registered but not enabled. Enable it on the "
+            "Plugins page, then run it again.")}
+
+    outcome = run_command(match["id"], args)
+
+    if outcome["success"]:
+        body = (outcome["output"] or "").strip()
+        return {"ran": True, "text": (
+            f"Ran `{spoken}`.\n\n" + (body if body else "It finished and printed nothing."))}
+
+    reason = outcome.get("error") or "it failed"
+    body = (outcome["output"] or "").strip()
+    return {"ran": True, "text": (
+        f"Ran `{spoken}` and it failed: {reason}\n\n"
+        + (body if body else "It printed nothing."))}
 
 
 def test_cli() -> dict:

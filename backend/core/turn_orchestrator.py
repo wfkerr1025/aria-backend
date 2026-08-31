@@ -104,6 +104,11 @@ SEARCH_MODEL = "search"
 # never attributes a read fact to whichever model happens to be loaded.
 WORKSPACE_MODEL = "workspace"
 
+# A turn answered by the Unity CLI itself. Not a model id: no model
+# took this turn, and labelling it with one would put a model's name
+# on a sentence no model wrote.
+UNITY_CLI_MODEL = "unity_cli"
+
 # Cloud Mode with no key configured anywhere. Shaped like every other
 # safety warning so both transports' existing warning branch renders it
 # without a special case.
@@ -330,6 +335,70 @@ def _workspace_reply(request: TurnRequest, telemetry: list) -> TurnResult:
             "workspace_query_answered_directly", staged_count=staged,
             workspace_count=len(workspaces),
         )],
+    )
+
+
+def _unity_cli_reply(request: TurnRequest, telemetry: list):
+    """A typed `unity ...` line, answered by the CLI or not at all.
+
+    Returns None when the message is not a command line, which is
+    almost always, and this costs a string comparison to find out.
+
+    WHY THIS IS A SHORT-CIRCUIT
+    Measured, on this machine: asked to run
+        unity new-project --path "D:\\...\\ARIA_TestProject" --type 3D
+    nemo-12b replied "Unity project created at D:\\...\\ARIA_TestProject"
+    having run nothing at all -- tool_runs was empty, no
+    unity_cli_command_request was ever sent, and the directory did not
+    exist. The user was told a project had been made and went looking
+    for it.
+
+    That is the same failure _workspace_reply exists for, and the same
+    rule applies: a fact with an authority behind it should never be
+    routed through a model. The authority here is the CLI. Either it
+    ran and this reports what it printed, or it did not and this says
+    so in the first sentence.
+
+    The command is read from the user's own text and from nothing else.
+    A model cannot reach this path, and history cannot either -- the
+    same rule the commit consent already follows.
+    """
+    text = (request.latest_user_text or "").strip()
+    if not text.lower().startswith("unity"):
+        return None
+
+    try:
+        from backend.unity import unity_cli_engine as engine
+
+        invocation = engine.parse_invocation(text)
+        if invocation is None:
+            return None
+
+        answer = engine.answer_invocation(invocation)
+    except Exception:
+        logger.exception("could not answer a Unity CLI invocation")
+        # Even the failure says nothing was created. Silence here would
+        # hand the turn back to the model, which is the one outcome this
+        # whole function exists to prevent.
+        return TurnResult(
+            kind=KIND_TEXT,
+            text=("I could not run that Unity CLI command, and nothing "
+                  "was created. Something went wrong on my side."),
+            model_id=UNITY_CLI_MODEL,
+            conversation_id=request.conversation_id,
+            session_updates={"last_turn_was_weather": False},
+            telemetry=telemetry + [_event("unity_cli_invocation_failed")],
+        )
+
+    return TurnResult(
+        kind=KIND_TEXT,
+        text=answer["text"],
+        model_id=UNITY_CLI_MODEL,
+        conversation_id=request.conversation_id,
+        session_updates={"last_turn_was_weather": False},
+        telemetry=telemetry + [_event("unity_cli_invocation",
+                                      command=invocation.get("command"),
+                                      ran=answer.get("ran", False))],
     )
 
 
@@ -724,6 +793,13 @@ def orchestrate_turn(
     telemetry.append(_event("intent_detected", intent=intent))
 
     # --- 3. Short-circuits. Any other message ends the weather window.
+    #
+    # A typed command line goes first, ahead of intent detection: it is
+    # not a question about anything, and the model must not see it.
+    cli_reply = _unity_cli_reply(request, telemetry)
+    if cli_reply is not None:
+        return cli_reply
+
     if intent == INTENT_WORKSPACE_QUERY:
         return _workspace_reply(request, telemetry)
 
