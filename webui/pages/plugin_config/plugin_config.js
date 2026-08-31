@@ -41,6 +41,8 @@ const FIELD_LABELS = {
                   hint: "Optional. Defaults to ARIA's current working directory." },
   blender_path: { label: "Blender executable", type: "text",
                   hint: "The full path to blender.exe or the Blender binary." },
+  executable_path: { label: "Program", type: "text",
+                     hint: "The full path to the program ARIA should run." },
   api_key: { label: "API key", type: "password",
              hint: "Stored in aria_config/plugins.json." },
   model: { label: "Model", type: "select", optional: true,
@@ -50,7 +52,8 @@ const FIELD_LABELS = {
 // Never editable on this page. id and configPage are identity -- a form
 // that could rewrite them could rename a plugin into another's slot --
 // and the rest is metadata rather than settings.
-const NOT_EDITABLE = new Set(["id", "name", "version", "logo", "configPage", "enabled"]);
+const NOT_EDITABLE = new Set(["id", "name", "version", "logo", "configPage", "enabled",
+                              "discovered", "dismissed"]);
 
 const PluginConfig = {
   bound: false,
@@ -103,6 +106,9 @@ const PluginConfig = {
         this.say("Testing…");
         bridge.send(IPC.PLUGIN_TEST_REQUEST, { id: this.pluginId });
       });
+
+    document.getElementById("plugin-config-enable")
+      ?.addEventListener("click", () => this.save({ enable: true }));
 
     document.getElementById("plugin-config-remove")
       ?.addEventListener("click", () => this.remove());
@@ -171,6 +177,17 @@ const PluginConfig = {
       status.textContent = enabled ? "Enabled" : "Disabled";
       status.classList.toggle("is-enabled", enabled);
     }
+
+    // Discovered and still off: ARIA found this and the user has not
+    // adopted it. Once it is on, the banner and the Enable button have
+    // nothing left to say and go away.
+    const awaiting = plugin.discovered === true && !enabled;
+
+    const banner = document.getElementById("plugin-config-banner");
+    if (banner) banner.hidden = !awaiting;
+
+    const enable = document.getElementById("plugin-config-enable");
+    if (enable) enable.hidden = !awaiting;
 
     this.renderLogo(plugin, name);
 
@@ -304,7 +321,15 @@ const PluginConfig = {
     return Array.isArray(list) ? list : [];
   },
 
-  save() {
+  /**
+   * Send the form.
+   *
+   * enable=true is the "Enable Plugin" button, and it is the same
+   * save: a discovered plugin is switched on by saving the path that
+   * was found for it, not by a separate action that could turn on an
+   * integration pointing at nothing.
+   */
+  save({ enable = false } = {}) {
     if (!this.pluginId) return;
 
     const fields = {};
@@ -322,6 +347,15 @@ const PluginConfig = {
 
     const toggle = document.getElementById("plugin-config-enabled");
     if (toggle) fields.enabled = toggle.checked;
+
+    // Saving a discovered plugin adopts it. Somebody who opened the
+    // page ARIA offered them, checked the path and pressed Save has
+    // said yes; making them also find the checkbox would be asking the
+    // same question twice.
+    if (enable || (this.plugin?.discovered === true && !this.plugin?.enabled)) {
+      fields.enabled = true;
+      if (toggle) toggle.checked = true;
+    }
 
     configLog(`saving ${this.pluginId}: ${Object.keys(fields).join(", ")}`);
     this.say("Saving…");

@@ -98,16 +98,116 @@
   opacity: 0.55;
 }
 
+/* ----------------------------------------------------------
+   Discovered plugins.
+
+   ARIA found these on the machine; the user has not adopted them.
+   That is a third state, and it has to read as neither of the other
+   two: an enabled plugin is live, a disabled one was turned off on
+   purpose, and a discovered one is an offer nobody has answered yet.
+
+   So it is dimmer than disabled, and carries a badge in a colour used
+   nowhere else on the page. The badge is the signal; the dimming only
+   stops an offer competing with the plugins that are actually running.
+   ---------------------------------------------------------- */
+
+.settings-tile.plugin-tile.is-discovered {
+  position: relative;
+  border-style: dashed;
+}
+
+.settings-tile.plugin-tile.is-discovered .plugin-tile-logo,
+.settings-tile.plugin-tile.is-discovered .plugin-tile-logo-fallback,
+.settings-tile.plugin-tile.is-discovered .settings-tile-title {
+  opacity: 0.45;
+}
+
+.plugin-tile-badge {
+  position: absolute;
+  top: var(--space-sm);
+  right: var(--space-sm);
+
+  padding: 2px var(--space-sm);
+  border-radius: 999px;
+
+  /* Amber, and deliberately not the accent: the accent means "on",
+     and this means "not yet". Written as a literal because the theme
+     has no token for a third state -- the accent varies by theme and
+     borrowing it here would make a discovered plugin look enabled in
+     whichever theme happens to be amber. */
+  background: color-mix(in srgb, #e0a415 22%, transparent);
+  border: 1px solid color-mix(in srgb, #e0a415 65%, transparent);
+  color: #e0a415;
+
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.02em;
+}
+
+.plugin-tile-enable {
+  display: inline-block;
+  margin-top: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+
+  background: transparent;
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-md, 8px);
+
+  color: var(--accent-primary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.plugin-tile-enable:hover,
+.plugin-tile-enable:focus-visible {
+  background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+  outline: none;
+}
+
+/* ---------------------------------------------------------- */
+
+.plugins-page-actions {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.plugins-rescan {
+  padding: var(--space-sm) var(--space-lg);
+
+  background: transparent;
+  border: 1px solid var(--border-hairline, var(--input-border));
+  border-radius: var(--radius-md, 8px);
+
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.plugins-rescan:hover,
+.plugins-rescan:focus-visible {
+  border-color: var(--accent-primary);
+  outline: none;
+}
+
 .plugins-empty {
   margin: 0;
   color: var(--text-secondary);
   font-size: var(--font-size-sm);
 }
 
+/* One banner, two jobs. A scan that found something is news, not a
+   fault, and colouring it like a fault would teach the user to
+   ignore the red box that also reports real failures. */
 .plugins-error {
   padding: var(--space-md);
   border-radius: var(--radius-md, 8px);
-  border: 1px solid var(--danger, #c0392b);
-  color: var(--danger, #c0392b);
+  border: 1px solid var(--border-hairline, var(--input-border));
+  color: var(--text-secondary);
   font-size: var(--font-size-sm);
+}
+
+.plugins-error.is-error {
+  border-color: var(--danger, #c0392b);
+  color: var(--danger, #c0392b);
 }

@@ -887,6 +887,26 @@ def _handle_plugin_test(payload: Dict[str, Any]) -> Dict[str, Any]:
                                   plugin_settings.test_plugin_connection(plugin_id))
 
 
+def _handle_plugin_discovery(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Scan the machine for integrations ARIA could use.
+
+    Runs when the Plugins page opens, and again when the user presses
+    Rescan. force=True is the button: it reconsiders plugins the user
+    previously removed, which the automatic pass deliberately does not.
+
+    This touches the filesystem outside the project -- it is the one
+    thing in this file that does -- and it is read-only: it globs a few
+    known install directories and stats what it finds. It never runs a
+    program it discovers.
+    """
+    from backend.plugins import plugin_settings
+
+    force = bool(payload.get("force", False))
+    logger.info("ipc_router: plugin_discovery_request (force=%s)", force)
+
+    return fmt.plugin_discovery_result(plugin_settings.discover_plugins(force=force))
+
+
 def _handle_modules_list(payload: Dict[str, Any]) -> Dict[str, Any]:
     logger.debug("ipc_router: modules_list_request")
     return fmt.modules_list_result(module_manager.list_modules())
@@ -1007,6 +1027,7 @@ _HANDLERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     schema.PLUGIN_UPDATE_REQUEST: _handle_plugin_update,
     schema.PLUGIN_REMOVE_REQUEST: _handle_plugin_remove,
     schema.PLUGIN_TEST_REQUEST: _handle_plugin_test,
+    schema.PLUGIN_DISCOVERY_REQUEST: _handle_plugin_discovery,
     schema.MODULES_LIST_REQUEST: _handle_modules_list,
     schema.WORKSPACE_STATUS_REQUEST: _handle_workspace_status,
     schema.WORKSPACE_SET_REQUEST: _handle_workspace_set,

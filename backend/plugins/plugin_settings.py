@@ -48,6 +48,9 @@ __all__ = [
     "PluginError",
     "configured_path",
     "disable_plugin",
+    "discover_plugins",
+    "merge_discovered",
+    "validate_registry",
     "enable_plugin",
     "get_plugin",
     "list_plugins",
@@ -74,7 +77,21 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGINS_FILE = _REPO_ROOT / "aria_config" / "plugins.json"
 
 # Fields every plugin has, whatever it integrates with.
-_COMMON_FIELDS = ("id", "name", "version", "enabled", "logo", "configPage")
+#
+# "discovered" marks a plugin ARIA found on the machine rather than one
+# the user added: found, not yet adopted. "dismissed" is the tombstone
+# left when a discovered plugin is removed -- see remove_plugin.
+_COMMON_FIELDS = ("id", "name", "version", "enabled", "logo", "configPage",
+                  "discovered", "dismissed")
+
+# Fields that are true or false and nothing else.
+_FLAG_FIELDS = ("enabled", "discovered", "dismissed")
+
+# What a discovered plugin is configured with, whatever it turned out to
+# be. Every family discovery knows about is a program with a path, so
+# one field covers all of them and validation has one rule to apply
+# rather than one per family nobody has written yet.
+DISCOVERED_FIELD = "executable_path"
 
 # What each plugin additionally needs, and how to check it.
 #
@@ -245,8 +262,9 @@ def list_plugins() -> list:
     This is what the UI receives. The Plugins page shows a logo, a name,
     a version and a switch, and needs no API key to do it.
     """
-    plugins = load_plugins()
-    ordered = sorted(plugins.values(),
+    plugins = [plugin for plugin in load_plugins().values()
+               if not plugin.get("dismissed", False)]
+    ordered = sorted(plugins,
                      key=lambda plugin: str(plugin.get("name") or plugin.get("id") or ""))
     return [redact_secrets(plugin) for plugin in ordered]
 
@@ -254,6 +272,29 @@ def list_plugins() -> list:
 # ======================================================
 # Validation
 # ======================================================
+
+def _rules_for(plugin_id: str) -> dict:
+    """Which fields this plugin has, and how each is checked.
+
+    The three built-in integrations have their rules written above. A
+    discovered plugin's id is not knowable in advance -- it is whatever
+    was found on the machine -- so it gets the one field discovery
+    produces, and only when the stored record actually has it. Handing
+    every plugin an executable_path it does not own would let a form
+    save a field that nothing reads.
+    """
+    rules = dict(_FIELD_RULES.get(str(plugin_id or ""), {}))
+
+    try:
+        stored = load_plugins().get(str(plugin_id or "")) or {}
+    except Exception:  # pragma: no cover - a read fault is not a rule
+        stored = {}
+
+    if DISCOVERED_FIELD in stored:
+        rules.setdefault(DISCOVERED_FIELD, "executable")
+
+    return rules
+
 
 def validate_plugin(plugin_id: str, fields: dict) -> list:
     """Everything wrong with these field values, as sentences.
@@ -263,12 +304,12 @@ def validate_plugin(plugin_id: str, fields: dict) -> list:
     is valid.
     """
     problems = []
-    rules = _FIELD_RULES.get(str(plugin_id or ""), {})
+    rules = _rules_for(plugin_id)
 
     for name, value in (fields or {}).items():
         if name in _COMMON_FIELDS:
-            if name == "enabled" and not isinstance(value, bool):
-                problems.append("enabled must be true or false")
+            if name in _FLAG_FIELDS and not isinstance(value, bool):
+                problems.append(f"{name} must be true or false")
             continue
 
         kind = rules.get(name)
@@ -295,6 +336,13 @@ def validate_plugin(plugin_id: str, fields: dict) -> list:
                 problems.append(f"{name}: nothing exists at {stripped}")
             elif candidate.is_dir():
                 problems.append(f"{name} must be the program itself, not a folder")
+            elif not os.access(stripped, os.X_OK):
+                # On Windows this passes for any readable file, which is
+                # the correct answer there -- Windows decides by
+                # extension, not by a permission bit. On POSIX it is the
+                # difference between a program and a text file somebody
+                # pasted the path of.
+                problems.append(f"{name}: {stripped} is not executable")
         elif kind == "folder":
             candidate = Path(stripped)
             if not candidate.is_absolute():
@@ -332,7 +380,12 @@ def update_plugin(plugin_id: str, fields: dict) -> dict:
     changes = dict(fields or {})
     # Identity is not editable. A page that could rewrite an id could
     # rename a plugin into another one's slot.
-    for locked in ("id", "configPage"):
+    #
+    # Nor are the discovery flags. "discovered" records how a plugin got
+    # here, which only a scan knows, and "dismissed" is a tombstone only
+    # remove_plugin writes -- a form that could set it would hide a
+    # plugin from the page with no way back to it.
+    for locked in ("id", "configPage", "discovered", "dismissed"):
         changes.pop(locked, None)
 
     problems = validate_plugin(plugin_id, changes)
@@ -349,7 +402,19 @@ def update_plugin(plugin_id: str, fields: dict) -> dict:
 
 
 def enable_plugin(plugin_id: str) -> dict:
-    """Turn a plugin on."""
+    """Turn a plugin on.
+
+    "discovered" is left alone, deliberately. It records HOW this
+    plugin got here -- ARIA found it by scanning -- and that does not
+    stop being true when the user switches it on. An earlier draft
+    cleared the flag here, to stop a card showing a "Discovered" badge
+    and an enabled dot at once; the cost was that removing an adopted
+    plugin no longer left a tombstone, so the next scan re-offered
+    something the user had just thrown away.
+
+    The badge is a question for the page, which shows it only while a
+    discovered plugin is still off. Provenance belongs in the record.
+    """
     return update_plugin(plugin_id, {"enabled": True})
 
 
@@ -364,15 +429,206 @@ def remove_plugin(plugin_id: str) -> bool:
     Returns whether anything was removed. Removing something that is
     already gone is not an error -- two clicks on the same button should
     not produce a failure the second time.
+
+    A DISCOVERED PLUGIN LEAVES A TOMBSTONE
+    --------------------------------------
+    Deleting the record of a plugin that was found by scanning the disk
+    does not remove it from the disk, so the next scan finds it again
+    and it reappears -- which is precisely the "keeps coming back after
+    you removed it" behaviour the Plugins page was rewritten to stop.
+
+    So removing a discovered plugin leaves an entry marked dismissed:
+    hidden from the page, and known to the merge so it is not offered
+    again. An explicit rescan clears these -- pressing a button that
+    says "look again" is a different instruction from opening a page.
     """
     plugins = load_plugins()
-    if str(plugin_id or "") not in plugins:
+    plugin = plugins.get(str(plugin_id or ""))
+    if plugin is None:
         return False
+
+    if plugin.get("discovered", False):
+        plugins[plugin_id] = {
+            "id": plugin_id,
+            "name": plugin.get("name", plugin_id),
+            "enabled": False,
+            "discovered": True,
+            "dismissed": True,
+        }
+        save_plugins(plugins)
+        logger.info("dismissed discovered plugin %s", plugin_id)
+        return True
 
     plugins.pop(plugin_id)
     save_plugins(plugins)
     logger.info("removed plugin %s", plugin_id)
     return True
+
+
+# ======================================================
+# Discovery
+#
+# plugin_discovery finds things; this decides what happens to them.
+# The split matters: the scanner reads the disk and returns facts, and
+# every judgement about the registry -- what is new, what is a name
+# collision, what the user already threw away -- is made here, where
+# the registry is.
+# ======================================================
+
+def validate_registry(plugins: dict) -> list:
+    """Everything structurally wrong with a whole registry.
+
+    Ids are unique for free, being dictionary keys, so this checks that
+    the keys agree with the records and that no two plugins share a
+    name. Two plugins called "Unity Integration" is a page with two
+    identical cards and a user who cannot tell which one they are
+    configuring.
+    """
+    problems = []
+    names = {}
+
+    for key, plugin in (plugins or {}).items():
+        if not isinstance(plugin, dict):
+            problems.append(f"{key} is not a plugin record")
+            continue
+
+        stored_id = str(plugin.get("id") or "")
+        if stored_id and stored_id != key:
+            problems.append(f"{key} holds a plugin whose id is {stored_id!r}")
+
+        if plugin.get("dismissed", False):
+            # A tombstone is not a plugin and does not compete for a name.
+            continue
+
+        name = str(plugin.get("name") or "").strip().casefold()
+        if not name:
+            continue
+        if name in names:
+            problems.append(
+                f"{key} and {names[name]} are both called {plugin.get('name')!r}")
+        else:
+            names[name] = key
+
+    return problems
+
+
+def merge_discovered(findings: list, *, respect_dismissed: bool = True) -> dict:
+    """Add what discovery found, without disturbing what is already there.
+
+    Returns what happened, as {"added": [...], "skipped": [{id, reason}]},
+    so the caller can say "found 2, added 1, you already have Unity"
+    rather than a number that hides the interesting half.
+
+    THREE REASONS TO SKIP, AND NONE OF THEM IS AN ERROR
+    ---------------------------------------------------
+    Already installed: the record stands, untouched -- settings, on/off
+    state and all. This is the rule that stops a rescan wiping the path
+    a user typed.
+
+    Dismissed: they removed it. An automatic scan does not argue.
+
+    Name taken: some other id already calls itself that.
+
+    Nothing is written when nothing was added, so opening the Plugins
+    page on a settled machine does not rewrite the registry every time.
+    """
+    plugins = load_plugins()
+    added, skipped = [], []
+
+    for finding in findings or []:
+        if not isinstance(finding, dict):
+            continue
+
+        plugin_id = str(finding.get("id") or "").strip()
+        if not plugin_id:
+            skipped.append({"id": "", "reason": "it has no id"})
+            continue
+
+        existing = plugins.get(plugin_id)
+        if existing is not None:
+            if existing.get("dismissed", False):
+                if respect_dismissed:
+                    skipped.append({"id": plugin_id, "reason": "you removed this"})
+                    continue
+                # An explicit rescan: the tombstone goes and the finding
+                # is treated as new.
+                plugins.pop(plugin_id)
+            else:
+                skipped.append({"id": plugin_id, "reason": "already installed"})
+                continue
+
+        name = str(finding.get("name") or plugin_id)
+        taken = {str(other.get("name") or "").strip().casefold()
+                 for key, other in plugins.items()
+                 if key != plugin_id and not other.get("dismissed", False)}
+        if name.strip().casefold() in taken:
+            skipped.append({"id": plugin_id,
+                            "reason": f"another plugin is already called {name!r}"})
+            continue
+
+        record = {
+            "id": plugin_id,
+            "name": name,
+            "version": str(finding.get("version") or "0.0.0"),
+            "logo": str(finding.get("logo") or ""),
+            "configPage": str(finding.get("configPage") or f"{plugin_id}-config"),
+            # Found, never adopted. Discovery does not switch things on:
+            # a scan is not consent, and an integration that started
+            # itself because a folder existed would be a surprise.
+            "enabled": False,
+            "discovered": True,
+        }
+
+        # Discovery reports its settings as a dict; the registry stores
+        # them flat, the way every hand-written entry already is.
+        for name_, value in (finding.get("settings") or {}).items():
+            record[str(name_)] = value
+        record.setdefault(DISCOVERED_FIELD, str(finding.get(DISCOVERED_FIELD) or ""))
+
+        plugins[plugin_id] = record
+        added.append(redact_secrets(record))
+
+    if added:
+        save_plugins(plugins)
+        logger.info("discovery added %d plugin(s): %s",
+                    len(added), ", ".join(plugin["id"] for plugin in added))
+    else:
+        logger.debug("discovery added nothing (%d skipped)", len(skipped))
+
+    return {"added": added, "skipped": skipped}
+
+
+def discover_plugins(*, force: bool = False) -> dict:
+    """Scan, merge, and report what is now on the Plugins page.
+
+    force=True is the "Rescan for Plugins" button: it clears the
+    tombstones left by removing a discovered plugin, because pressing a
+    button that says look again is an instruction to look again. The
+    automatic pass that runs when the page opens does not.
+
+    Never raises. Discovery is a convenience -- a scan that fails
+    because one directory could not be read should leave the page
+    showing the plugins the user already has, not an error.
+    """
+    try:
+        from . import plugin_discovery
+
+        findings = plugin_discovery.discover()
+    except Exception as error:  # pragma: no cover - a scan fault
+        logger.exception("plugin discovery could not run")
+        return {"discovered": list_plugins(), "found": [], "added": [],
+                "skipped": [], "error": str(error)}
+
+    outcome = merge_discovered(findings, respect_dismissed=not force)
+
+    return {
+        # Everything the page should now show, so it does not need a
+        # second round trip to find out.
+        "discovered": list_plugins(),
+        "found": findings,
+        "added": outcome["added"],
+        "skipped": outcome["skipped"],
+    }
 
 
 # ======================================================
@@ -419,6 +675,14 @@ def test_plugin_connection(plugin_id: str) -> dict:
         return _test_executable(plugin, "blender_path", "Blender")
     if plugin_id == "ludo":
         return _test_ludo(plugin)
+
+    # Anything discovery found is a program with a path, so the same
+    # check the Blender button runs works for all of them. Without this
+    # every discovered plugin would offer a Test button that answered
+    # "no test available" -- a control that exists only to decline.
+    if DISCOVERED_FIELD in plugin:
+        return _test_executable(plugin, DISCOVERED_FIELD,
+                                str(plugin.get("name") or plugin_id))
 
     return {"ok": False, "message": f"{plugin_id} has no connection test."}
 

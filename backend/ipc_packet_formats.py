@@ -172,6 +172,24 @@ def plugin_test_result(plugin_id: str, outcome: Dict[str, Any]) -> Dict[str, Any
     return _packet(schema.PLUGIN_TEST_RESULT, {"id": plugin_id, **outcome})
 
 
+def plugin_discovery_result(outcome: Dict[str, Any]) -> Dict[str, Any]:
+    """What a scan found, and what it did about it.
+
+    "discovered" is the whole list the page should now show -- the task
+    names that field, and it saves the page a second round trip. What
+    was newly added, and what was passed over and why, ride along so
+    the page can say "found Godot" or "you already have Unity" rather
+    than silently redrawing.
+    """
+    return _packet(schema.PLUGIN_DISCOVERY_RESULT, {
+        "discovered": outcome.get("discovered") or [],
+        "found": outcome.get("found") or [],
+        "added": outcome.get("added") or [],
+        "skipped": outcome.get("skipped") or [],
+        "error": outcome.get("error"),
+    })
+
+
 def modules_list_result(modules: List[Dict[str, Any]]) -> Dict[str, Any]:
     return _packet(schema.MODULES_LIST_RESULT, {"modules": modules})
 

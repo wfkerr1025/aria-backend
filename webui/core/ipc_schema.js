@@ -110,6 +110,8 @@ export const IPC = Object.freeze({
   PLUGIN_REMOVE_RESULT: "plugin_remove_result",
   PLUGIN_TEST_REQUEST: "plugin_test_request",
   PLUGIN_TEST_RESULT: "plugin_test_result",
+  PLUGIN_DISCOVERY_REQUEST: "plugin_discovery_request",
+  PLUGIN_DISCOVERY_RESULT: "plugin_discovery_result",
 
   MODULES_LIST_RESULT: "modules_list_result",
   MODULE_KEY_SET_REQUEST: "module_key_set_request",

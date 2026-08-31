@@ -60,11 +60,37 @@ const Router = {
     });
   },
 
+  /**
+   * The HTML for a panel name, or null when there is no such panel.
+   *
+   * Every "plugins/<id>-config" route resolves to the one config page,
+   * whether or not it is listed above. It has to: a discovered plugin's
+   * id is whatever ARIA found on the machine -- godot, unreal, anything
+   * added later -- and a hard-coded table cannot list a route for a
+   * plugin nobody had heard of when the table was written. The three
+   * listed entries stay for readability; this is what makes the fourth
+   * one work.
+   *
+   * The pattern is deliberately narrow. Only "plugins/" + an id made of
+   * word characters + "-config" matches, so this cannot be talked into
+   * fetching an arbitrary path.
+   */
+  resolve(panelName) {
+    const name = String(panelName || "");
+    if (this.routes[name]) return this.routes[name];
+
+    if (/^plugins\/[\w.-]+-config$/.test(name)) {
+      return "pages/plugin_config/plugin_config.html";
+    }
+    return null;
+  },
+
   async navigate(panelName) {
     console.log("[Router] Navigating to:", panelName);
     routerLog("Navigating to panel: " + panelName);
 
-    if (!this.routes[panelName]) {
+    const route = this.resolve(panelName);
+    if (!route) {
       console.error(`[Router] Unknown panel: ${panelName}`);
       routerLog("ERROR: Unknown panel: " + panelName);
       return;
@@ -81,7 +107,7 @@ const Router = {
     }
 
     try {
-      const htmlPath = this.routes[panelName];
+      const htmlPath = route;
       routerLog("Fetching HTML for panel: " + htmlPath);
       const html = await fetch(htmlPath).then(r => r.text());
       container.innerHTML = html;

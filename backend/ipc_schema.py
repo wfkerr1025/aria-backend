@@ -155,6 +155,7 @@ PLUGIN_GET_REQUEST = "plugin_get_request"
 PLUGIN_UPDATE_REQUEST = "plugin_update_request"
 PLUGIN_REMOVE_REQUEST = "plugin_remove_request"
 PLUGIN_TEST_REQUEST = "plugin_test_request"
+PLUGIN_DISCOVERY_REQUEST = "plugin_discovery_request"
 
 MODULES_LIST_REQUEST = "modules_list_request"
 
@@ -184,6 +185,7 @@ PLUGIN_GET_RESULT = "plugin_get_result"
 PLUGIN_UPDATE_RESULT = "plugin_update_result"
 PLUGIN_REMOVE_RESULT = "plugin_remove_result"
 PLUGIN_TEST_RESULT = "plugin_test_result"
+PLUGIN_DISCOVERY_RESULT = "plugin_discovery_result"
 
 MODULES_LIST_RESULT = "modules_list_result"
 MODULE_KEY_SET_REQUEST = "module_key_set_request"

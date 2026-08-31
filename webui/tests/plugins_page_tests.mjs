@@ -141,9 +141,17 @@ test("removing asks first, and says what it takes with it", () => {
 });
 
 test("identity fields are not editable", () => {
+  // Membership, not the exact literal: the set legitimately grows
+  // (discovered, dismissed), and a test that pins the whole line fails
+  // for the correct change as loudly as for the wrong one.
   const js = read("pages", "plugin_config", "plugin_config.js");
+  const declaration = js.slice(js.indexOf("NOT_EDITABLE = new Set("));
+  const listed = declaration.slice(0, declaration.indexOf("]"));
 
-  assert.ok(js.includes('NOT_EDITABLE = new Set(["id", "name", "version", "logo", "configPage", "enabled"])'));
+  for (const field of ["id", "name", "version", "logo", "configPage", "enabled",
+                       "discovered", "dismissed"]) {
+    assert.ok(listed.includes(`"${field}"`), `${field} must not be editable`);
+  }
 });
 
 // --- the logos -----------------------------------------------------
@@ -274,6 +282,168 @@ test("the API key field is a password field", () => {
   const shape = js.slice(js.indexOf("  api_key: {"));
 
   assert.ok(shape.slice(0, 200).includes('type: "password"'));
+});
+
+// --- discovered plugins --------------------------------------------
+
+test("a discovered plugin gets a badge, and only while it is off", () => {
+  const js = read("pages", "plugins", "plugins.js");
+
+  assert.ok(js.includes('plugin.discovered === true && !enabled'),
+            "an adopted plugin is an ordinary plugin, whatever found it");
+  assert.ok(js.includes('badge.textContent = "Discovered"'));
+  assert.ok(js.includes("plugin-tile-badge"));
+});
+
+test("the three card states are three different colours", () => {
+  const css = read("pages", "plugins", "plugins.css");
+
+  // Enabled is the accent, disabled is the muted text colour, and
+  // discovered is amber -- a third state has to read as neither of the
+  // other two.
+  assert.ok(css.includes(".plugin-tile-status.is-enabled"));
+  assert.ok(/\.plugin-tile-status::before\s*{[^}]*var\(--text-secondary\)/.test(css));
+  assert.ok(css.includes(".plugin-tile-badge"));
+  assert.ok(/\.plugin-tile-badge\s*{[^}]*#e0a415/.test(css),
+            "the discovered badge must not borrow the accent, which means on");
+});
+
+test("a discovered tile carries an Enable button that does not navigate", () => {
+  const js = read("pages", "plugins", "plugins.js");
+
+  assert.ok(js.includes("enableButton"));
+  assert.ok(js.includes('control.textContent = "Enable Plugin"'));
+  assert.ok(js.includes("event.stopPropagation()"),
+            "pressing Enable must not also open the config page");
+});
+
+test("the Enable control is not a button inside a button", () => {
+  // The tile is a <button>. A nested <button> is invalid HTML that
+  // browsers repair by hoisting it out of the tile.
+  const js = read("pages", "plugins", "plugins.js");
+  // Anchored on the method DEFINITION, brace and all. Slicing from the
+  // first mention of the name would start at the call site above it and
+  // read the doc comment, which is a test that checks its own prose.
+  const block = js.slice(js.indexOf("  enableButton(plugin) {"));
+  const body = block.slice(0, block.indexOf("\n  },"));
+
+  assert.ok(body.includes('createElement("span")'));
+  assert.ok(body.includes('setAttribute("role", "button")'));
+  assert.ok(body.includes('setAttribute("tabindex", "0")'), "it must be reachable by keyboard");
+});
+
+test("the page scans when it opens and when Rescan is pressed", () => {
+  const js = read("pages", "plugins", "plugins.js");
+  const html = read("pages", "plugins", "plugins.html");
+
+  assert.ok(js.includes("this.discover(false)"), "an automatic scan on open");
+  assert.ok(js.includes("this.discover(true)"), "and a forced one on Rescan");
+  assert.ok(html.includes('id="plugins-rescan"'));
+});
+
+test("only the Rescan button reconsiders removed plugins", () => {
+  // A removal that undoes itself every time you open a page is not a
+  // removal.
+  const js = read("pages", "plugins", "plugins.js");
+
+  assert.ok(js.includes("force: Boolean(force)"));
+  // Anchored on the method definitions: "bind()" on its own also
+  // matches the this.bind() call inside init, which would slice to
+  // almost nothing and pass vacuously.
+  const opening = js.slice(js.indexOf("  init() {"), js.indexOf("  bind() {"));
+  assert.ok(opening.includes("discover(false)"));
+  assert.ok(!opening.includes("discover(true)"));
+});
+
+test("a quiet scan says nothing, a fruitful one says what it found", () => {
+  const js = read("pages", "plugins", "plugins.js");
+  const block = js.slice(js.indexOf("reportScan(payload)"));
+
+  assert.ok(block.includes("payload.error"), "a failed scan is admitted");
+  assert.ok(block.includes("Found ${names}"));
+  assert.ok(block.includes('this.say("")'),
+            "an uneventful scan must not announce itself every page load");
+});
+
+test("scan news is not styled as an error", () => {
+  const css = read("pages", "plugins", "plugins.css");
+  const js = read("pages", "plugins", "plugins.js");
+
+  assert.ok(css.includes(".plugins-error.is-error"));
+  assert.ok(js.includes('banner.classList.add("is-error")'));
+  assert.ok(js.includes('banner.classList.remove("is-error")'));
+});
+
+// --- the config page for a discovered plugin -----------------------
+
+test("a discovered plugin says where it came from", () => {
+  const html = read("pages", "plugin_config", "plugin_config.html");
+  const js = read("pages", "plugin_config", "plugin_config.js");
+
+  assert.ok(html.includes("This plugin was discovered on your system."));
+  assert.ok(js.includes("plugin-config-banner"));
+  assert.ok(js.includes("banner.hidden = !awaiting"));
+});
+
+test("the banner and the Enable button go away once it is on", () => {
+  const js = read("pages", "plugin_config", "plugin_config.js");
+
+  assert.ok(js.includes("const awaiting = plugin.discovered === true && !enabled"));
+  assert.ok(js.includes("enable.hidden = !awaiting"));
+});
+
+test("the executable path is a labelled, prefilled field", () => {
+  const js = read("pages", "plugin_config", "plugin_config.js");
+
+  assert.ok(js.includes("  executable_path: {"),
+            "without a FIELD_LABELS entry it renders unlabelled");
+  // Non-secret fields are populated from the record, which is what
+  // "pre-populated" means here.
+  assert.ok(js.includes("input.value = value == null ? \"\" : String(value)"));
+});
+
+test("saving a discovered plugin adopts it", () => {
+  const js = read("pages", "plugin_config", "plugin_config.js");
+
+  assert.ok(js.includes("this.plugin?.discovered === true && !this.plugin?.enabled"));
+  assert.ok(js.includes("fields.enabled = true"));
+});
+
+test("the discovered flags cannot be edited from the form", () => {
+  const js = read("pages", "plugin_config", "plugin_config.js");
+  const declaration = js.slice(js.indexOf("NOT_EDITABLE = new Set("));
+
+  assert.ok(declaration.slice(0, declaration.indexOf("]")).includes('"discovered"'));
+});
+
+// --- routing for plugins nobody had heard of ------------------------
+
+test("any plugin config route resolves, not just the three listed", () => {
+  // A discovered plugin's id is whatever was on the machine. A
+  // hard-coded table cannot list a route for godot before godot was
+  // found.
+  const js = read("core", "router.js");
+
+  assert.ok(js.includes("resolve(panelName)"));
+  assert.ok(/plugins\\\/\[\\w\.-\]\+-config/.test(js)
+            || js.includes("^plugins\\/[\\w.-]+-config$"),
+            "the fallback must match plugins/<id>-config");
+  assert.ok(js.includes('return "pages/plugin_config/plugin_config.html"'));
+});
+
+test("the route fallback cannot be talked into fetching anything else", () => {
+  const js = read("core", "router.js");
+  const pattern = js.match(/\/\^plugins\\\/([^/]+)\$\//);
+
+  assert.ok(pattern, "the fallback must be anchored at both ends");
+  assert.ok(!pattern[1].includes(".*"), "and must not be a wildcard");
+});
+
+test("navigate uses the resolved route, not a raw table lookup", () => {
+  const js = read("core", "router.js");
+
+  assert.ok(js.includes("const route = this.resolve(panelName)"));
+  assert.ok(js.includes("const htmlPath = route"));
 });
 
 // --- the imports actually resolve ----------------------------------

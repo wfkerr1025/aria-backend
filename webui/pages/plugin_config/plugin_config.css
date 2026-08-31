@@ -241,6 +241,20 @@ select.plugin-config-input {
 
 /* ---------------------------------------------------------- */
 
+/* The "we found this for you" banner. Amber, matching the tile badge,
+   so the same state is the same colour in both places a user meets it. */
+.plugin-config-banner {
+  max-width: 640px;
+  padding: var(--space-md);
+
+  border-radius: var(--radius-md, 8px);
+  background: color-mix(in srgb, #e0a415 12%, transparent);
+  border: 1px solid color-mix(in srgb, #e0a415 55%, transparent);
+
+  color: #e0a415;
+  font-size: var(--font-size-sm);
+}
+
 .plugin-config-message {
   max-width: 640px;
   padding: var(--space-md);

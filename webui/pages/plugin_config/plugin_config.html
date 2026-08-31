@@ -17,6 +17,12 @@
     </div>
   </div>
 
+  <!-- Shown only for a plugin ARIA found by scanning, so the user knows
+       where a card they never added came from. -->
+  <div class="plugin-config-banner" id="plugin-config-banner" hidden>
+    This plugin was discovered on your system.
+  </div>
+
   <div class="plugin-config-message" id="plugin-config-message" hidden></div>
 
   <!-- Fields are built by plugin_config.js from the plugin's own record,
@@ -33,6 +39,7 @@
 
   <div class="plugin-config-actions">
     <button class="plugin-config-btn is-primary" type="button" id="plugin-config-save">Save</button>
+    <button class="plugin-config-btn is-primary" type="button" id="plugin-config-enable" hidden>Enable Plugin</button>
     <button class="plugin-config-btn" type="button" id="plugin-config-test">Test connection</button>
     <button class="plugin-config-btn is-danger" type="button" id="plugin-config-remove">Remove plugin</button>
   </div>

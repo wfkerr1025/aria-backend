@@ -4,6 +4,13 @@
     <p class="plugins-page-subtitle">Integrations ARIA can use. Choose one to configure.</p>
   </div>
 
+  <div class="plugins-page-actions">
+    <!-- The page scans by itself when it opens. This button is for
+         "look again", and unlike the automatic pass it reconsiders
+         plugins that were previously removed. -->
+    <button class="plugins-rescan" type="button" id="plugins-rescan">Rescan for Plugins</button>
+  </div>
+
   <div class="plugins-error" id="plugins-error" hidden></div>
 
   <!-- Filled by plugins.js from aria_config/plugins.json. Nothing is
