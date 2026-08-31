@@ -622,6 +622,23 @@ def verify_commit(names, operations, apply_commit, root: Path,
 
     result = apply_commit()
 
+    # Nothing was written, so there is nothing to check.
+    #
+    # Measured live, and it is the reported failure: the user clicked
+    # Commit with "commit the changess" -- one letter -- so consent was
+    # refused and commit_changes wrote nothing. This ran the full suite
+    # anyway. Three minutes of silence, then a refusal that was already
+    # known thirteen milliseconds in.
+    #
+    # Read off the RESULT rather than re-deciding consent here. Whether
+    # the user asked is ghost_workspace's question and it has already
+    # answered it; asking again with a second rule is how two answers
+    # start to disagree.
+    if not (result or {}).get("files") and not (result or {}).get("operations"):
+        logger.info("commit wrote nothing (%s); not running the tests",
+                    (result or {}).get("status"))
+        return result, verification
+
     _say(on_progress, "checking that this does no harm"
          if not whole else "running your full test suite")
     after = _run(suites, whole, root)

@@ -293,11 +293,115 @@ def diff_all(root: Path | None = None) -> dict[str, str]:
 # ------------------------------------------------------
 # Consent
 # ------------------------------------------------------
+# One typo, and the commit button does nothing.
+#
+# Reported twice, by the same user, in the same week:
+#
+#     "discard the changess"   -> refused
+#     "commit the changess"    -> refused, and the Commit button
+#                                 appeared to be broken
+#
+# Both are the intended phrase with one letter doubled. The consent
+# check is a substring test, so both missed entirely, and the second one
+# is what "the Commit inside the Settings doesn't work" was.
+#
+# WHY THIS IS NOT LOOSENING CONSENT
+# ---------------------------------
+# The rule being kept is "only the user's own words may authorise this".
+# "commit the changess" IS the user's own words, and there is no reading
+# of it that is not consent. Refusing it does not protect anybody; it
+# just fails to recognise what was plainly said.
+#
+# What is NOT relaxed, and must not be:
+#
+#   the negation veto still runs first and still wins outright, so
+#   "don't commit the changes" is refused however it is spelled;
+#
+#   the distance allowed is ONE edit on a whole multi-word phrase, so
+#   "commit the changes" is reachable from a slip and not from a
+#   different sentence. Nothing shorter than eight characters is
+#   matched loosely at all -- "do it" and "go" stay exact, because at
+#   that length one edit is a different phrase rather than a typo.
+#
+#   the match is still against the user's message. Nothing here reads
+#   model output.
+_MAX_TYPO_EDITS = 1
+_MIN_LENGTH_FOR_TYPO_TOLERANCE = 8
+
+
+def _within_one_edit(candidate: str, phrase: str) -> bool:
+    """Whether `candidate` is `phrase` with at most one letter wrong.
+
+    Levenshtein, bounded at two so the loop stays cheap and a genuinely
+    different sentence is rejected on the first row that exceeds it.
+    """
+    if abs(len(candidate) - len(phrase)) > _MAX_TYPO_EDITS:
+        return False
+    if candidate == phrase:
+        return True
+
+    previous = list(range(len(phrase) + 1))
+    before_previous = []
+    for index, letter in enumerate(candidate, start=1):
+        current = [index]
+        for position, other in enumerate(phrase, start=1):
+            current.append(min(
+                previous[position] + 1,
+                current[position - 1] + 1,
+                previous[position - 1] + (letter != other),
+            ))
+            # A transposition is ONE slip, not two. "teh" and "chnages"
+            # are the commonest typos there are, and plain Levenshtein
+            # scores them as two edits and refuses them.
+            if (index > 1 and position > 1
+                    and letter == phrase[position - 2]
+                    and candidate[index - 2] == other):
+                current[position] = min(current[position],
+                                        before_previous[position - 2] + 1)
+        if min(current) > _MAX_TYPO_EDITS:
+            return False
+        before_previous, previous = previous, current
+    return previous[-1] <= _MAX_TYPO_EDITS
+
+
+def _contains_phrase_or_a_slip(normalized: str, phrase: str) -> bool:
+    """The phrase, exactly, or one typo away from it."""
+    if f" {phrase} " in normalized:
+        return True
+    if len(phrase) < _MIN_LENGTH_FOR_TYPO_TOLERANCE:
+        return False
+
+    words = normalized.split()
+    span = len(phrase.split())
+    for start in range(0, max(0, len(words) - span) + 1):
+        window = " ".join(words[start:start + span])
+        if _within_one_edit(window, phrase):
+            logger.info("consent read through a typo: %r for %r", window, phrase)
+            return True
+    return False
+
+
 def _asked_for(user_text: str, phrases) -> bool:
     normalized = _normalize(user_text)
+    # First, and absolutely. A negation wins however the rest is spelled.
     if any(f" {marker} " in normalized for marker in NEGATION_VETO):
         return False
-    return any(f" {phrase} " in normalized for phrase in phrases)
+
+    # Nor does asking about it count as asking for it. "What happens if
+    # I commit the changes?" contained the phrase and was read as
+    # consent -- a substring test cannot tell a question from an
+    # instruction, and this is the same guard the chat path already
+    # applies through _is_an_imperative_file_request.
+    try:
+        from backend.core.action_plan import _is_a_question
+
+        if _is_a_question(user_text):
+            logger.info("consent not granted: that is a question, not an instruction")
+            return False
+    except Exception:  # pragma: no cover - consent must fail closed
+        logger.exception("could not tell whether that was a question; refusing")
+        return False
+    return any(_contains_phrase_or_a_slip(normalized, phrase) for phrase in phrases)
 
 
 def requests_commit(user_text: str) -> bool:
