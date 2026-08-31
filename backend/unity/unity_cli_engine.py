@@ -23,25 +23,29 @@ genuinely different things:
 Nothing here duplicates those; where a path is needed it is asked for
 rather than re-derived.
 
-WHAT IS VERIFIED HERE AND WHAT IS NOT
--------------------------------------
-Not verified: the Unity CLI's actual surface. There is no Unity on the
-machine this was written on -- the discovery scan checked and found
-none -- so `unity list --json`, `unity --version` and `unity env` are
-the task's description of the tool, not something confirmed against
-it. Every subcommand and flag is therefore a named constant, and the
-important ones are environment-overridable, so correcting them is a
-setting rather than a patch.
+WHAT THE CLI ACTUALLY IS
+------------------------
+Verified by running it: "CLI for Unity" 1.0.0-beta.5, at
+%LOCALAPPDATA%/Unity/bin/unity.exe. Everything below was checked
+against `--help` and against live output, replacing an earlier set of
+guesses that were wrong in three ways worth recording:
 
-Verified: everything on this side of the process boundary. The argv
-construction, the timeout, the exit-code handling, the streaming and
-the JSON parsing are all exercised by tests against a real subprocess
-running a real script -- a fake `unity` written by the test, so what is
-tested is this module rather than Unity's.
+  --project does not exist. It is --project-path on the commands that
+  take a flag, and a positional on `test` and `build`. Every command
+  ARIA sent would have been rejected. The project is now passed as
+  UNITY_PROJECT_PATH, which the CLI documents and which works for all
+  of them.
 
-The JSON parser deliberately accepts several plausible shapes for
-`list --json` rather than one guessed shape. When the real format is
-known, the others cost nothing and the right one already works.
+  --mode belongs to `test` alone, not to every command.
+
+  `list` returns {"data": {"tools": [...]}} -- 142 Editor tools from
+  the Pipeline package, each run as `unity cmd <name>`, NOT as a
+  top-level subcommand. The parser had never seen that shape and would
+  have reported the CLI as saying nothing.
+
+There is also a pager. Left on, a long listing would hold the pipe open
+until the timeout killed it, so UNITY_NO_PAGER and UNITY_NON_INTERACTIVE
+are set for every call: a prompt nobody can answer is a hang.
 
 SAFETY
 ------
@@ -118,8 +122,8 @@ CLI_EXECUTABLES = ("unity.cmd", "unity.exe", "unity")
 ENV_CLI_PATH = "ARIA_UNITY_CLI_PATH"
 ENV_TIMEOUT = "ARIA_UNITY_CLI_TIMEOUT"
 
-# The subcommands. UNVERIFIED -- see the module docstring. Overridable
-# because a wrong guess here should cost a setting, not a release.
+# Verified: `unity list --json` works, --json being a global shorthand
+# for --format json. Still overridable, because a beta CLI may move.
 ENV_LIST_ARGS = "ARIA_UNITY_CLI_LIST_ARGS"
 LIST_ARGS = ("list", "--json")
 
@@ -318,6 +322,23 @@ def _invoke(arguments: Sequence[str], *,
     argv = [str(executable), *[str(part) for part in arguments]]
     limit = timeout if timeout is not None else _timeout()
 
+    # The CLI reads all of these from the environment, which is better
+    # than flags here: it applies to every subcommand without ARIA
+    # having to know where each one accepts them.
+    #
+    # NO_PAGER is not a preference. A pager on a long listing waits for
+    # a keypress that will never come, and the only thing that ends the
+    # call is the timeout killing it.
+    environment = dict(os.environ)
+    environment.update({
+        "UNITY_NON_INTERACTIVE": "1",
+        "UNITY_NO_PAGER": "1",
+        "UNITY_NO_BANNER": "1",
+    })
+    project = _plugin_setting(FIELD_PROJECT)
+    if project:
+        environment["UNITY_PROJECT_PATH"] = project
+
     logger.info("unity cli: %s", " ".join(argv))
 
     lines: List[str] = []
@@ -331,6 +352,7 @@ def _invoke(arguments: Sequence[str], *,
             encoding="utf-8",
             errors="replace",
             cwd=cwd or None,
+            env=environment,
             # shell=False is the default and is load-bearing: argv is a
             # list, so nothing in an argument can start a second command.
             shell=False,
@@ -507,6 +529,19 @@ def _named_commands(data) -> List[dict]:
     if not isinstance(data, dict):
         return found
 
+    # The real shape, confirmed against the CLI: a success envelope with
+    # the tools under data.tools, each carrying name, description and
+    # group. 142 of them on a connected Editor.
+    payload = data.get("data")
+    if isinstance(payload, dict) and isinstance(payload.get("tools"), list):
+        for entry in payload["tools"]:
+            take(entry, str(entry.get("group") or "built-in")
+                 if isinstance(entry, dict) else "built-in")
+
+    if isinstance(data.get("tools"), list):
+        for entry in data["tools"]:
+            take(entry, "built-in")
+
     if isinstance(data.get("commands"), list):
         for entry in data["commands"]:
             take(entry, "builtin")
@@ -527,12 +562,10 @@ def list_commands() -> dict:
     that got nothing can show the user what the CLI actually printed
     instead of an empty list and no explanation.
     """
-    project = _plugin_setting(FIELD_PROJECT)
-    arguments = list(_list_args())
-    if project:
-        arguments += ["--project", project]
-
-    result = _invoke(arguments, timeout=60)
+    # No --project here either. The CLI rejects it outright -- measured:
+    # "error: unknown option '--project'" -- and the project reaches
+    # every command through UNITY_PROJECT_PATH, which _invoke sets.
+    result = _invoke(list(_list_args()), timeout=60)
     if not result["success"]:
         return {"success": False, "commands": [], "error": result["error"],
                 "output": result["output"]}
@@ -564,13 +597,17 @@ def command_record(command: dict) -> dict:
     label = str(command.get("label") or "").strip()
     group = str(command.get("group") or "builtin").strip()
 
+    # `unity list` reports EDITOR tools, which are run as
+    # `unity cmd <name>` -- not as top-level subcommands. Storing the
+    # bare name as the template would have produced `unity create_scene`,
+    # which is not a command the CLI has.
     return {
         "id": f"{COMMAND_PREFIX}{name}",
         "name": name,
         "type": COMMAND_TYPE,
         "plugin": PLUGIN_ID,
-        "label": label or f"unity {name}",
-        "command": name,
+        "label": label or f"unity cmd {name}",
+        "command": f"cmd {name}",
         "args": [],
         "group": group,
         "discovered": True,
@@ -624,15 +661,46 @@ def split_arguments(text: str) -> List[str]:
     return tokens
 
 
+# Words that mean the line is a sentence about Unity rather than a
+# command to Unity. "unity is a game engine" must never be executed.
+_PROSE_AFTER_UNITY = frozenset({
+    "is", "was", "are", "were", "be", "been", "can", "could", "does", "do",
+    "did", "has", "have", "had", "will", "would", "should", "might", "must",
+    "and", "or", "but", "the", "a", "an", "in", "on", "at", "for", "with",
+    "to", "from", "about", "as", "by", "of", "that", "this", "it", "its",
+    "seems", "looks", "says", "means", "gives", "needs", "uses", "supports",
+    "requires", "keeps", "works", "runs", "lets", "makes", "projects",
+})
+
+# How many words a command line may be when it carries no flags. Real
+# ones are short -- "unity env", "unity pipeline list" -- and the cap is
+# what stops a sentence like "unity projects are stored in a folder"
+# being read as the command `projects`.
+_MAX_BARE_TOKENS = 3
+
+
 def parse_invocation(text: str) -> Optional[dict]:
     """Read a typed line as a Unity CLI invocation, or decide it is not one.
 
     Deliberately narrow, because a false positive turns a sentence into
-    a command. "unity is a game engine" begins with the same word as
-    "unity build --target Android" and must not be treated the same way,
-    so a line counts only when the word after `unity` looks like a
-    subcommand AND either a flag follows or the subcommand is one the
-    CLI actually reported.
+    a command.
+
+    WHY THIS IS NOT "IS IT A REGISTERED COMMAND"
+    The first version asked the registry, and only treated a bare
+    `unity <word>` as a command when the CLI had already reported that
+    word. That was wrong in the way that matters: `unity env` and
+    `unity pipeline list` are exactly what a person types FIRST, before
+    anything has been registered, and both fell through to the language
+    model -- which duly routed them to phi-3-mini and answered with
+    prose and a web search. A command that only counts once you have
+    already discovered it cannot be the one that discovers things.
+
+    So the test is now about the shape of the line, not about what
+    happens to be in the registry:
+
+      * anything with a flag is a command line, whatever its length
+      * otherwise at most three words, no question mark, and the word
+        after `unity` must not be one that starts a sentence
 
     Returns {"command": ..., "args": [...]} or None.
     """
@@ -643,9 +711,7 @@ def parse_invocation(text: str) -> Optional[dict]:
     command = tokens[1].strip()
 
     # A bare flag is still an invocation -- `unity --version` is a thing
-    # a person types and expects to run. It is included so that it
-    # reaches an answer with an authority behind it rather than the
-    # model, which would simply make one up.
+    # a person types and expects to run.
     if command.startswith("-"):
         if not re.fullmatch(r"--?[A-Za-z][\w.-]*", command):
             return None
@@ -655,22 +721,13 @@ def parse_invocation(text: str) -> Optional[dict]:
         return None
 
     rest = tokens[2:]
-    looks_like_a_command_line = any(part.startswith("-") for part in rest)
+    if any(part.startswith("-") for part in rest):
+        return {"command": command, "args": rest}
 
-    if not looks_like_a_command_line:
-        try:
-            from backend.plugins import plugin_settings
-
-            # Matched on the NAME, which is what a person types and
-            # what the tile shows. The template is what gets run, and
-            # Edit can change it -- a command renamed to `boom` behind
-            # the scenes is still typed as `build`.
-            known = {str(record.get("name") or record.get("command") or "")
-                     for record in plugin_settings.list_commands(PLUGIN_ID)}
-        except Exception:  # pragma: no cover - a lookup is not a parse
-            known = set()
-        if command not in known:
-            return None
+    if command.lower() in _PROSE_AFTER_UNITY:
+        return None
+    if "?" in text or len(tokens) > _MAX_BARE_TOKENS:
+        return None
 
     return {"command": command, "args": rest}
 
@@ -688,13 +745,18 @@ def build_invocation(record: dict, args: Optional[Sequence[str]] = None) -> List
     template = str(record.get("command") or record.get("name") or "").strip()
     arguments: List[str] = template.split() if template else []
 
-    project = _plugin_setting(FIELD_PROJECT)
-    if project:
-        arguments += ["--project", project]
-
-    mode = _plugin_setting(FIELD_MODE)
-    if mode in MODES:
-        arguments += ["--mode", mode]
+    # The project is NOT passed as a flag. --project does not exist;
+    # --project-path exists on some commands and `test`/`build` take a
+    # positional instead. UNITY_PROJECT_PATH covers all of them and is
+    # set in _invoke's environment.
+    #
+    # --mode belongs to `test`. Appending it to everything, which an
+    # earlier version did, would have made every other command fail on
+    # an unknown option.
+    if arguments and arguments[0] == "test":
+        mode = _plugin_setting(FIELD_MODE)
+        if mode in MODES:
+            arguments += ["--mode", mode]
 
     for stored in (record.get("args") or []):
         text = str(stored).strip()
@@ -707,6 +769,50 @@ def build_invocation(record: dict, args: Optional[Sequence[str]] = None) -> List
             arguments.append(text)
 
     return arguments
+
+
+def run_invocation(command: str, args: Optional[Sequence[str]] = None,
+                   *, on_output: Optional[Callable[[str, str], None]] = None) -> dict:
+    """Run a subcommand the user typed, without consulting the registry.
+
+    WHY THIS IS NOT GATED THE WAY run_command IS
+    run_command refuses anything not registered and enabled, and that is
+    right for a tile and for a model: neither of those is the user, and
+    "the CLI mentioned it" is not the same as "you asked for it".
+
+    A line the user typed is different. They typed it. Requiring it to
+    have been discovered first is friction with no safety behind it --
+    they could open a terminal and run the same thing -- and it made
+    `unity env`, the command you would type FIRST, impossible.
+
+    The consent here is the plugin being enabled, which is a deliberate
+    act on its own page. Beyond that this runs what was asked for and
+    reports what happened.
+    """
+    from backend.plugins import plugin_settings
+
+    plugin = plugin_settings.load_plugins().get(PLUGIN_ID) or {}
+    if not plugin or plugin.get("dismissed", False):
+        return {"success": False, "output": "", "json": None,
+                "error": "The Unity CLI plugin is not installed."}
+    if not plugin.get("enabled", False):
+        return {"success": False, "output": "", "json": None,
+                "error": "The Unity CLI plugin is switched off."}
+
+    arguments = build_invocation({"command": command, "args": []}, args)
+    project = _plugin_setting(FIELD_PROJECT)
+
+    result = _invoke(arguments, on_output=on_output,
+                     cwd=project if project and Path(project).is_dir() else None)
+
+    return {
+        "success": result["success"],
+        "output": result["output"],
+        "json": result["json"],
+        "error": result["error"],
+        "code": result.get("code"),
+        "invocation": arguments,
+    }
 
 
 def run_command(command_id: str, args: Optional[Sequence[str]] = None,
@@ -783,30 +889,10 @@ def answer_invocation(invocation: dict) -> dict:
             "The Unity CLI plugin is installed but switched off. Enable "
             "it on its page under Plugins first.")}
 
-    registered = plugin_settings.list_commands(PLUGIN_ID)
-    # By name, for the same reason parse_invocation matches by name:
-    # the name is the command's identity, the template is its behaviour,
-    # and editing the second must not change what the first is called.
-    match = next((record for record in registered
-                  if str(record.get("name") or record.get("command")) == command), None)
-
-    if match is None:
-        known = ", ".join(sorted(str(r.get("name") or "") for r in registered))
-        detail = (f"The commands I know about are: {known}."
-                  if known else
-                  "I have not asked the Unity CLI what commands it has yet -- "
-                  "press Refresh Commands on the Plugins page.")
-        return {"ran": False, "text": (
-            f"I did not run `{spoken}`, and nothing was created.\n\n"
-            f"`{command}` is not a Unity CLI command I have registered. {detail}")}
-
-    if not match.get("enabled", False):
-        return {"ran": False, "text": (
-            f"I did not run `{spoken}`, and nothing was created.\n\n"
-            f"`{command}` is registered but not enabled. Enable it on the "
-            "Plugins page, then run it again.")}
-
-    outcome = run_command(match["id"], args)
+    # No registry check. See run_invocation: the user typed this, and
+    # `unity env` -- the first thing anybody types -- is not registered
+    # until something has already run `unity list`.
+    outcome = run_invocation(command, args)
 
     if outcome["success"]:
         body = (outcome["output"] or "").strip()
@@ -818,6 +904,108 @@ def answer_invocation(invocation: dict) -> dict:
     return {"ran": True, "text": (
         f"Ran `{spoken}` and it failed: {reason}\n\n"
         + (body if body else "It printed nothing."))}
+
+
+# ======================================================
+# What a model may ask for
+# ======================================================
+#
+# A FIXED LIST, NOT A COMMAND FIELD
+# The obvious design is one tool taking a command string. It is also the
+# wrong one: it hands a 12B a way to run any subcommand of a program,
+# and the difference between `unity test` and something destructive
+# becomes a matter of what the model typed.
+#
+# So each tool is one operation with a fixed subcommand. The model
+# chooses WHICH tool, never what the command line says, and a tool that
+# is not in this table cannot be called at all. Adding one is an entry
+# here, deliberately.
+#
+# The subcommands come from the task's own list. They are UNVERIFIED
+# against a real Unity CLI -- see the module docstring -- so a wrong one
+# fails loudly with the CLI's own message rather than silently doing
+# something else.
+UNITY_TOOLS = (
+    {
+        "name": "unity_env",
+        "command": "env",
+        "description": "Report the Unity CLI's environment: versions, paths "
+                       "and the project it is pointed at.",
+        "parameters": {},
+        "flags": (),
+    },
+    {
+        "name": "unity_pipeline_list",
+        # `unity list`, not `unity pipeline list`. `pipeline` is a real
+        # command but has no subcommands; the listing of Pipeline-package
+        # tools is what `list` does.
+        "command": "list",
+        "description": "List the tools the connected Unity Editor has "
+                       "registered through the Pipeline package.",
+        "parameters": {},
+        "flags": ("--json",),
+    },
+    {
+        "name": "unity_cmd_create_scene",
+        "command": "cmd",
+        "description": "Create a new scene in the configured Unity project.",
+        "parameters": {
+            "name": {"type": "string", "required": True,
+                     "description": "Name for the new scene, e.g. TestScene"},
+        },
+        "flags": ("create_scene",),
+    },
+    {
+        "name": "unity_test",
+        "command": "test",
+        "description": "Run the Unity project's tests.",
+        "parameters": {
+            "mode": {"type": "string", "required": False,
+                     "description": "EditMode or PlayMode. Omit for the default."},
+        },
+        "flags": (),
+    },
+    {
+        "name": "unity_build",
+        "command": "build",
+        "description": "Build the Unity project.",
+        "parameters": {
+            "target": {"type": "string", "required": False,
+                       "description": "Build target, e.g. Win64"},
+            "output": {"type": "string", "required": False,
+                       "description": "Output directory, e.g. Build/"},
+        },
+        "flags": (),
+    },
+)
+
+
+def run_tool(tool_name: str, arguments: Optional[dict] = None) -> dict:
+    """Run one of the tools above on behalf of a model.
+
+    Two things make this safe to expose. The subcommand is fixed by the
+    tool, so a model cannot compose a command line; and each named
+    parameter becomes one `--flag value` pair, so a value cannot smuggle
+    in a second argument -- it is a single argv entry either way.
+    """
+    spec = next((tool for tool in UNITY_TOOLS if tool["name"] == tool_name), None)
+    if spec is None:
+        return {"success": False, "output": "", "json": None,
+                "error": f"{tool_name!r} is not a Unity CLI tool."}
+
+    supplied = dict(arguments or {})
+    args: List[str] = list(spec["flags"])
+
+    for field_name, rules in spec["parameters"].items():
+        value = supplied.get(field_name)
+        if value is None or str(value).strip() == "":
+            if rules.get("required"):
+                return {"success": False, "output": "", "json": None,
+                        "error": f"{tool_name} needs {field_name}."}
+            continue
+        args += [f"--{field_name}", str(value)]
+
+    return run_invocation(spec["command"], args)
 
 
 def test_cli() -> dict:

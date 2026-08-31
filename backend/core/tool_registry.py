@@ -364,6 +364,67 @@ def register_fs_operation_tools() -> None:
         )
 
 
+def register_unity_cli_tools() -> None:
+    """Expose the Unity CLI's operations to a model.
+
+    Each tool is one fixed subcommand -- see UNITY_TOOLS. The model
+    picks which operation to run and supplies named values; it never
+    composes a command line, and nothing outside the table can be
+    called.
+
+    They are FILESYSTEM permission and generously timed on purpose: a
+    Unity build writes to disk and takes minutes, and describing it as
+    a safe ten-second call would be describing something else.
+
+    Registration is conditional. A machine with no Unity CLI configured
+    should not be told about five tools that can only fail -- an
+    unusable tool in the brief spends a small model's attention and
+    teaches it that tools do not work.
+    """
+    from backend.unity import unity_cli_engine as engine
+
+    try:
+        from backend.plugins import plugin_settings
+
+        plugin = plugin_settings.load_plugins().get(engine.PLUGIN_ID) or {}
+        available = bool(plugin.get("enabled")) and not plugin.get("dismissed")
+    except Exception:  # pragma: no cover - a registry read is not a tool
+        logger.debug("could not read the Unity CLI plugin", exc_info=True)
+        available = False
+
+    if not available:
+        logger.debug("register_unity_cli_tools() -> Unity CLI not enabled; skipped")
+        for spec in engine.UNITY_TOOLS:
+            _REGISTRY.pop(spec["name"], None)
+        return
+
+    def _make_handler(tool_name: str):
+        def handler(**arguments):
+            outcome = engine.run_tool(tool_name, arguments)
+            if not outcome.get("success"):
+                raise RuntimeError(outcome.get("error") or "the command failed")
+            # The JSON when the CLI produced some, the text when it did
+            # not. A caller that gets a dict has structure to read; one
+            # that gets a string has what the tool printed.
+            return outcome.get("json") if outcome.get("json") is not None                 else (outcome.get("output") or "")
+        return handler
+
+    for spec in engine.UNITY_TOOLS:
+        register_tool(
+            ToolSchema(
+                name=spec["name"],
+                description=spec["description"],
+                parameters=dict(spec["parameters"]),
+                permission=PERMISSION_FILESYSTEM,
+                timeout_seconds=float(engine.DEFAULT_TIMEOUT_SECONDS),
+            ),
+            _make_handler(spec["name"]),
+        )
+
+    logger.info("register_unity_cli_tools() -> %d Unity CLI tool(s)",
+                len(engine.UNITY_TOOLS))
+
+
 def register_file_tools() -> None:
     register_tool(
         ToolSchema(
@@ -419,6 +480,11 @@ def register_file_tools() -> None:
 
 register_file_tools()
 register_fs_operation_tools()
+
+# Conditional on the plugin being enabled, and re-run by the plugin
+# update handler -- so turning Unity CLI on does not need a restart to
+# make its tools callable.
+register_unity_cli_tools()
 
 
 # ============================================================

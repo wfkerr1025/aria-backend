@@ -39,18 +39,28 @@ from backend.unity import unity_cli_engine as engine
 
 _WINDOWS_CLI = """@echo off
 if "%1"=="--version" (echo unity 3.4.5 & exit /b 0)
-if "%1"=="list" (echo {"commands":[{"name":"build","description":"Build the project"},{"name":"test","description":"Run tests"}],"pipeline":[{"name":"deploy","description":"Ship it"}]} & exit /b 0)
+if "%1"=="list" (echo {"success":true,"command":"list","data":{"count":2,"tools":[{"name":"build","description":"Build the project","group":"built-in"},{"name":"test","description":"Run tests","group":"built-in"}]}} & exit /b 0)
+if "%1"=="cmd" goto tool
 if "%1"=="build" (echo compiling & echo linking & echo {"status":"ok","artifacts":2} & exit /b 0)
 if "%1"=="plain" (echo just text & exit /b 0)
 if "%1"=="boom" (echo it broke 1>&2 & exit /b 3)
 if "%1"=="echoargs" (echo ARGS %* & exit /b 0)
+goto unknown
+:tool
+if "%2"=="build" (echo compiling & echo linking & echo {"status":"ok","artifacts":2} & exit /b 0)
+if "%2"=="plain" (echo just text & exit /b 0)
+if "%2"=="boom" (echo it broke 1>&2 & exit /b 3)
+if "%2"=="echoargs" (echo ARGS %* & exit /b 0)
+:unknown
 echo unknown command & exit /b 1
 """
 
 _POSIX_CLI = """#!/bin/sh
-case "$1" in
+sub="$1"
+if [ "$1" = "cmd" ]; then sub="$2"; shift; fi
+case "$sub" in
   --version) echo "unity 3.4.5"; exit 0;;
-  list) echo '{"commands":[{"name":"build","description":"Build the project"},{"name":"test","description":"Run tests"}],"pipeline":[{"name":"deploy","description":"Ship it"}]}'; exit 0;;
+  list) echo '{"success":true,"command":"list","data":{"count":2,"tools":[{"name":"build","description":"Build the project","group":"built-in"},{"name":"test","description":"Run tests","group":"built-in"}]}}'; exit 0;;
   build) echo "compiling"; echo "linking"; echo '{"status":"ok","artifacts":2}'; exit 0;;
   plain) echo "just text"; exit 0;;
   boom) echo "it broke" >&2; exit 3;;
@@ -337,14 +347,15 @@ def test_listing_parses_the_commands(registry):
     listing = engine.list_commands()
 
     assert listing["success"] is True
-    assert {command["name"] for command in listing["commands"]} == {"build", "test", "deploy"}
+    assert {command["name"] for command in listing["commands"]} == {"build", "test"}
 
 
 def test_the_groups_survive(registry):
+    """The real CLI labels every tool with a group -- "built-in" for the
+    ones the Pipeline package ships."""
     by_name = {c["name"]: c for c in engine.list_commands()["commands"]}
 
-    assert by_name["build"]["group"] == "builtin"
-    assert by_name["deploy"]["group"] == "pipeline"
+    assert by_name["build"]["group"] == "built-in"
 
 
 @pytest.mark.parametrize("shape,expected", [
@@ -376,7 +387,10 @@ def test_a_command_record_has_the_shape_the_task_asked_for(registry):
     assert record["id"] == "unity_cmd_build"
     assert record["type"] == "unity_cli_command"
     assert record["plugin"] == "unity_cli"
-    assert record["command"] == "build"
+    # `unity list` reports EDITOR tools, run as `unity cmd <name>`. The
+    # bare name would produce `unity build`, which is a different thing
+    # -- a top-level subcommand that happens to share the name.
+    assert record["command"] == "cmd build"
     assert record["args"] == []
     assert record["discovered"] is True
     assert record["enabled"] is False
@@ -569,17 +583,59 @@ def test_a_command_that_never_finishes_is_given_up_on(registry, tmp_path, monkey
 # PART 5 - what gets run
 # ======================================================
 
-def test_the_invocation_is_settings_then_arguments(registry, tmp_path):
+def test_the_project_is_not_passed_as_a_flag(registry, tmp_path):
+    """--project does not exist on this CLI.
+
+    Measured against the real one: "error: unknown option '--project'".
+    An earlier version appended it to every command, which would have
+    made every command fail. The project travels as UNITY_PROJECT_PATH,
+    which the CLI documents.
+    """
     project = tmp_path / "MyGame"
     project.mkdir()
-    plugin_settings.update_plugin("unity_cli", {
-        engine.FIELD_PROJECT: str(project), engine.FIELD_MODE: "EditMode"})
+    plugin_settings.update_plugin("unity_cli", {engine.FIELD_PROJECT: str(project)})
     plugin_settings.refresh_unity_cli_commands()
 
     record = plugin_settings.get_plugin("unity_cmd_build")
     argv = engine.build_invocation(record, ["--extra"])
 
-    assert argv == ["build", "--project", str(project), "--mode", "EditMode", "--extra"]
+    assert "--project" not in argv
+    assert argv == ["cmd", "build", "--extra"]
+
+
+def test_the_mode_is_only_passed_to_test(registry, tmp_path):
+    """--mode belongs to `test`. On anything else it is an unknown
+    option and the command fails."""
+    plugin_settings.update_plugin("unity_cli", {engine.FIELD_MODE: "EditMode"})
+
+    assert engine.build_invocation({"command": "test"}) == ["test", "--mode", "EditMode"]
+    assert engine.build_invocation({"command": "build"}) == ["build"]
+    assert engine.build_invocation({"command": "cmd create_scene"}) == ["cmd", "create_scene"]
+
+
+def test_the_project_reaches_the_command_through_the_environment(registry, tmp_path,
+                                                                 monkeypatch):
+    project = tmp_path / "MyGame"
+    project.mkdir()
+    plugin_settings.update_plugin("unity_cli", {engine.FIELD_PROJECT: str(project)})
+
+    seen = {}
+    import subprocess
+
+    real = subprocess.Popen
+
+    def watched(*args, **kwargs):
+        seen.update(kwargs.get("env") or {})
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", watched)
+    engine.run_invocation("build")
+
+    assert seen.get("UNITY_PROJECT_PATH") == str(project)
+    # A pager waits for a keypress nobody will send, and a prompt is
+    # worse. Both would hang until the timeout killed the process.
+    assert seen.get("UNITY_NO_PAGER") == "1"
+    assert seen.get("UNITY_NON_INTERACTIVE") == "1"
 
 
 def test_an_empty_mode_passes_no_mode(registry):
@@ -693,7 +749,7 @@ def test_refreshing_over_ipc_finds_the_commands(registry):
                                   "payload": {}})
 
     assert {c["id"] for c in packet["payload"]["added"]} == {
-        "unity_cmd_build", "unity_cmd_test", "unity_cmd_deploy"}
+        "unity_cmd_build", "unity_cmd_test"}
 
 
 def test_running_over_ipc_streams_and_answers(registry):
@@ -708,7 +764,7 @@ def test_running_over_ipc_streams_and_answers(registry):
     payload = packet["payload"]
     assert payload["success"] is True
     assert payload["json"] == {"status": "ok", "artifacts": 2}
-    assert payload["invocation"] == ["build"]
+    assert payload["invocation"] == ["cmd", "build"]
 
     # Every streamed item is a whole packet, not a progress string:
     # build output must not become chat commentary.

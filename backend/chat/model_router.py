@@ -186,6 +186,15 @@ _FILE_NOUNS = (
 # project assistant -- nobody asks ARIA to "discard my changes" rhetorically.
 _WORKSPACE_VERBS = ("commit", "stage", "unstage", "discard", "rollback", "revert")
 
+# Said alongside "unity", these mean the CLI rather than the engine as a
+# subject. "unity build" is a request; "unity is a game engine" is not,
+# and neither is "how do I use Unity's animator" -- none of those words
+# appear in it.
+_UNITY_CLI_WORDS = (
+    "env", "cli", "pipeline", "build", "test", "cmd", "scene",
+    "run", "list", "project", "editmode", "playmode", "buildmode",
+)
+
 # "run the tests", "run pytest". The verb alone is far too common.
 _RUN_VERBS = ("run", "execute", "launch")
 _RUN_NOUNS = ("test", "tests", "pytest", "suite", "build", "lint", "typecheck", "script")
@@ -249,6 +258,18 @@ def _mentions_tools(text: str) -> bool:
         return False
 
     words = _word_set(lowered)
+
+    # A turn about the Unity CLI is a tool turn, however short it is.
+    #
+    # This is here because of what short meant. complexity_router picks
+    # its model from prompt LENGTH, and "unity env" is nine characters
+    # -- so it went to phi-3-mini, which cannot call tools, and answered
+    # with prose and a web search. The length of a request is not a
+    # measure of what it asks for, and this is the case that shows it
+    # most plainly: the shortest messages here are the ones that most
+    # need a model able to act.
+    if "unity" in words and (words & set(_UNITY_CLI_WORDS)):
+        return True
 
     if words & set(_WORKSPACE_VERBS):
         return True

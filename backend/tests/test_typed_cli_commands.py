@@ -140,13 +140,20 @@ def test_a_command_line_is_a_command(registry, text):
     assert engine.parse_invocation(text) is not None
 
 
-def test_a_bare_registered_command_is_recognised(registry):
-    """No flags, so it counts only because the CLI reported it."""
-    assert engine.parse_invocation("unity build") is None
+def test_a_bare_command_does_not_need_discovering_first(registry):
+    """`unity env` is the FIRST thing anybody types.
 
-    plugin_settings.refresh_unity_cli_commands()
-
+    An earlier version only recognised a bare `unity <word>` once the
+    CLI had already reported that word -- so `unity env` and
+    `unity pipeline list` fell through to the language model, which
+    routed them to phi-3-mini and answered with prose and a web search.
+    A command that only counts once you have discovered it cannot be
+    the one that does the discovering.
+    """
+    assert engine.parse_invocation("unity env")["command"] == "env"
     assert engine.parse_invocation("unity build")["command"] == "build"
+    assert engine.parse_invocation("unity pipeline list") == {
+        "command": "pipeline", "args": ["list"]}
 
 
 # ======================================================
@@ -181,22 +188,29 @@ def test_the_exact_message_that_was_hallucinated(registry):
 
     assert result is not None
     text = result.text
-    assert text.startswith("I did not run")
-    assert "nothing was created" in text
-    # The thing it must never say.
+    # `new-project` is not a command this CLI has, so it runs and the
+    # CLI rejects it. What matters is where the answer comes from: the
+    # original failure was a fabricated success, and now the outcome is
+    # the process's own, whatever it happens to be.
+    assert "failed" in text
+    # The sentence nemo-12b produced, which was false.
     assert "created at" not in text
-    assert "Refresh Commands" in text
+    # And no model was involved in producing this one.
+    assert result.model_id == turn_orchestrator.UNITY_CLI_MODEL
 
 
-def test_an_unregistered_command_is_refused_and_says_why(registry):
-    plugin_settings.refresh_unity_cli_commands()
+def test_an_unknown_command_is_answered_by_the_cli(registry):
+    """ARIA does not decide what the CLI has. The CLI does.
 
+    A command ARIA has never heard of is run and the CLI's own error is
+    reported, which is both shorter and more accurate than a list ARIA
+    maintains and the CLI has never seen.
+    """
     result = _reply("unity teleport --to mars")
 
-    assert "I did not run" in result.text
-    assert "not a Unity CLI command I have registered" in result.text
-    # It names what IS available rather than leaving the user guessing.
-    assert "build" in result.text
+    assert "failed" in result.text
+    # The CLI's own words, passed through rather than summarised.
+    assert "unknown" in result.text
 
 
 def test_a_disabled_plugin_is_refused(registry):
@@ -217,22 +231,30 @@ def test_a_missing_plugin_is_refused(tmp_path, monkeypatch):
     assert "not installed" in result.text
 
 
-def test_a_registered_but_disabled_command_is_refused(registry):
+def test_a_disabled_command_still_blocks_a_tile_or_a_model(registry):
+    """The registry gate did not go away; it moved to where it belongs.
+
+    A line the user typed is their own instruction and runs. A tile
+    press and a model tool call are not, and both still go through
+    run_command, which refuses anything not registered and enabled.
+    """
     plugin_settings.refresh_unity_cli_commands()
 
-    result = _reply("unity build --clean")
+    outcome = engine.run_command("unity_cmd_build")
 
-    assert "I did not run" in result.text
-    assert "not enabled" in result.text
+    assert outcome["success"] is False
+    assert "not enabled" in outcome["error"]
 
 
-def test_every_refusal_leads_with_the_fact_that_nothing_happened(registry):
+def test_a_refusal_leads_with_the_fact_that_nothing_happened(registry):
     """The first sentence is the one a person actually reads."""
-    for text in ("unity teleport --to mars", "unity build --clean"):
-        result = _reply(text)
-        first = result.text.splitlines()[0]
-        assert first.startswith("I did not run")
-        assert "nothing was created" in first
+    plugin_settings.disable_plugin("unity_cli")
+
+    result = _reply("unity build --clean")
+    first = result.text.splitlines()[0]
+
+    assert first.startswith("I did not run")
+    assert "nothing was created" in first
 
 
 # ======================================================
@@ -251,11 +273,7 @@ def test_an_enabled_command_actually_runs(registry):
 
 
 def test_a_failing_command_is_reported_as_failing(registry):
-    plugin_settings.refresh_unity_cli_commands()
-    plugin_settings.enable_plugin("unity_cmd_build")
-    plugin_settings.update_plugin("unity_cmd_build", {"command": "boom"})
-
-    result = _reply("unity build")
+    result = _reply("unity boom")
 
     assert "failed" in result.text
     assert "it broke" in result.text
@@ -308,3 +326,118 @@ def test_a_log_that_cannot_rotate_keeps_writing(tmp_path):
     written = path.read_text(encoding="utf-8")
     assert "line 59" in written, "records were dropped instead of written"
     assert handler._rollover_blocked is True
+
+
+# ======================================================
+# Tool schemas, so a model can act rather than describe
+# ======================================================
+
+def test_the_five_tools_the_task_asked_for_exist(registry):
+    from backend.core import tool_registry
+
+    tool_registry.register_unity_cli_tools()
+
+    for name in ("unity_env", "unity_pipeline_list", "unity_cmd_create_scene",
+                 "unity_test", "unity_build"):
+        assert name in tool_registry._REGISTRY, f"{name} is not registered"
+
+
+def test_a_model_cannot_compose_a_command_line(registry):
+    """The safety property of the whole tool layer.
+
+    Each tool is one fixed subcommand. A model chooses WHICH tool; it
+    never says what the command line is. A single tool with a `command`
+    field would have handed a 12B a way to run any subcommand of a
+    program on this machine.
+    """
+    for spec in engine.UNITY_TOOLS:
+        assert "command" not in spec["parameters"], (
+            f"{spec['name']} lets a model choose the command")
+        assert "args" not in spec["parameters"]
+
+
+def test_an_unknown_tool_is_refused(registry):
+    outcome = engine.run_tool("unity_rm_rf", {})
+
+    assert outcome["success"] is False
+    assert "not a Unity CLI tool" in outcome["error"]
+
+
+def test_a_required_argument_is_required(registry):
+    outcome = engine.run_tool("unity_cmd_create_scene", {})
+
+    assert outcome["success"] is False
+    assert "needs name" in outcome["error"]
+
+
+def test_a_value_becomes_one_argv_entry(registry):
+    """A value cannot smuggle in a second argument: it is one entry
+    either way, and there is no shell to reinterpret it."""
+    seen = {}
+    import subprocess
+
+    real = subprocess.Popen
+
+    def watched(*args, **kwargs):
+        seen["argv"] = args[0]
+        return real(*args, **kwargs)
+
+    import pytest as _pytest
+    monkey = _pytest.MonkeyPatch()
+    monkey.setattr(subprocess, "Popen", watched)
+    try:
+        engine.run_tool("unity_cmd_create_scene", {"name": "A B; rm -rf /"})
+    finally:
+        monkey.undo()
+
+    assert seen["argv"][-2:] == ["--name", "A B; rm -rf /"]
+
+
+def test_the_tools_disappear_when_the_plugin_is_off(registry):
+    """An unusable tool in the brief spends a small model's attention
+    and teaches it that tools do not work."""
+    from backend.core import tool_registry
+
+    plugin_settings.disable_plugin("unity_cli")
+    tool_registry.register_unity_cli_tools()
+
+    assert "unity_env" not in tool_registry._REGISTRY
+
+    plugin_settings.enable_plugin("unity_cli")
+    tool_registry.register_unity_cli_tools()
+
+    assert "unity_env" in tool_registry._REGISTRY
+
+
+# ======================================================
+# Routing: a short command is not a simple one
+# ======================================================
+
+def test_a_unity_command_is_a_tool_turn():
+    """complexity_router picks a model from prompt LENGTH, and
+    "unity env" is nine characters -- so it went to phi-3-mini, which
+    cannot call tools, and answered with prose and a web search.
+
+    The length of a request is not a measure of what it asks for.
+    """
+    from backend.chat import model_router
+
+    for text in ("unity env", "unity pipeline list", "build the unity project",
+                 "run the unity tests"):
+        assert model_router._mentions_tools(text) is True, text
+
+
+def test_talking_about_unity_is_still_just_talking():
+    from backend.chat import model_router
+
+    for text in ("unity is a game engine", "how do I use Unity's animator?"):
+        assert model_router._mentions_tools(text) is False, text
+
+
+def test_a_unity_turn_is_classified_as_tool_bearing():
+    from backend.chat import model_router
+
+    kind = model_router.classify_turn(_turn("unity env"))
+
+    assert kind in (model_router.TURN_TOOLS, model_router.TURN_HEAVY)
+    assert kind != model_router.TURN_CHAT, "TURN_CHAT is what routed it to phi-3-mini"

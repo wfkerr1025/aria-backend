@@ -860,6 +860,14 @@ def _handle_plugin_update(payload: Dict[str, Any]) -> Dict[str, Any]:
         return fmt.error_response(f"Could not save: {error}",
                                   schema.PLUGIN_UPDATE_REQUEST)
 
+    # Enabling or disabling the Unity CLI changes which tools a model
+    # may call, and a user who has just switched it on should not have
+    # to restart ARIA for that to be true.
+    try:
+        _tool_registry.register_unity_cli_tools()
+    except Exception:  # pragma: no cover - a tool refresh is not a save
+        logger.exception("could not refresh the Unity CLI tools")
+
     return fmt.plugin_update_result(updated)
 
 
