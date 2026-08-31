@@ -156,6 +156,9 @@ PLUGIN_UPDATE_REQUEST = "plugin_update_request"
 PLUGIN_REMOVE_REQUEST = "plugin_remove_request"
 PLUGIN_TEST_REQUEST = "plugin_test_request"
 PLUGIN_DISCOVERY_REQUEST = "plugin_discovery_request"
+UNITY_CLI_COMMANDS_REQUEST = "unity_cli_commands_request"
+UNITY_CLI_REFRESH_REQUEST = "unity_cli_refresh_request"
+UNITY_CLI_COMMAND_REQUEST = "unity_cli_command_request"
 
 MODULES_LIST_REQUEST = "modules_list_request"
 
@@ -186,6 +189,11 @@ PLUGIN_UPDATE_RESULT = "plugin_update_result"
 PLUGIN_REMOVE_RESULT = "plugin_remove_result"
 PLUGIN_TEST_RESULT = "plugin_test_result"
 PLUGIN_DISCOVERY_RESULT = "plugin_discovery_result"
+UNITY_CLI_COMMANDS_RESULT = "unity_cli_commands_result"
+UNITY_CLI_COMMAND_RESULT = "unity_cli_command_result"
+# Streamed while a command runs, many per request, so the terminal
+# view shows a long build as it happens rather than at the end.
+UNITY_CLI_OUTPUT = "unity_cli_output"
 
 MODULES_LIST_RESULT = "modules_list_result"
 MODULE_KEY_SET_REQUEST = "module_key_set_request"

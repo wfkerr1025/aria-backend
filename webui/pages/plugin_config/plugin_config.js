@@ -43,6 +43,12 @@ const FIELD_LABELS = {
                   hint: "The full path to blender.exe or the Blender binary." },
   executable_path: { label: "Program", type: "text",
                      hint: "The full path to the program ARIA should run." },
+  unity_cli_path: { label: "Unity CLI executable", type: "text",
+                    hint: "The full path to unity.cmd, unity.exe or unity." },
+  unity_cli_project: { label: "Default project", type: "text", optional: true,
+                       hint: "Passed as --project to every command that runs." },
+  unity_cli_mode: { label: "Default mode", type: "select", optional: true,
+                    hint: "Passed as --mode. Leave empty to pass no mode at all." },
   api_key: { label: "API key", type: "password",
              hint: "Stored in aria_config/plugins.json." },
   model: { label: "Model", type: "select", optional: true,
@@ -54,6 +60,14 @@ const FIELD_LABELS = {
 // and the rest is metadata rather than settings.
 const NOT_EDITABLE = new Set(["id", "name", "version", "logo", "configPage", "enabled",
                               "discovered", "dismissed"]);
+
+// What the test button says. Anything not named here connects to
+// something, and "Test connection" is right for it.
+const TEST_LABELS = {
+  unity_cli: "Test CLI",
+  unity: "Test Unity",
+  blender: "Test Blender",
+};
 
 const PluginConfig = {
   bound: false,
@@ -188,6 +202,12 @@ const PluginConfig = {
 
     const enable = document.getElementById("plugin-config-enable");
     if (enable) enable.hidden = !awaiting;
+
+    // "Test connection" is wrong for a program on this machine: nothing
+    // is being connected to. The button does the same thing either way;
+    // only what it claims to be doing changes.
+    const test = document.getElementById("plugin-config-test");
+    if (test) test.textContent = TEST_LABELS[plugin.id] || "Test connection";
 
     this.renderLogo(plugin, name);
 

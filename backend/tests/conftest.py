@@ -55,6 +55,48 @@ def no_machine_keys(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_real_plugin_registry(tmp_path_factory, monkeypatch):
+    """No test writes to the user's installed plugins.
+
+    Same reasoning as the key guard above, and added for the same
+    reason: it had already happened. A run of two plugin suites left
+    "unreal" and "wordpress" in the developer's real
+    aria_config/plugins.json, and the only reason anybody noticed was
+    that an unrelated test asserted the shipped registry holds three
+    plugins. It did not reproduce on either suite alone, which is the
+    kind of leak that gets diagnosed twice and fixed never.
+
+    So the default is a file of this test's own, and every plugin
+    function follows the environment variable. A test that wants its
+    own registry still sets one -- monkeypatch applies in fixture
+    order, so anything requested after this replaces it.
+
+    The teardown check is the belt to that braces: it catches a write
+    that went to the real path directly, which redirection alone would
+    not.
+    """
+    from backend.plugins import plugin_settings
+
+    real = plugin_settings.PLUGINS_FILE
+    before = real.read_bytes() if real.exists() else None
+
+    monkeypatch.setenv(plugin_settings.ENV_PLUGINS_FILE,
+                       str(tmp_path_factory.mktemp("plugins") / "plugins.json"))
+
+    yield
+
+    after = real.read_bytes() if real.exists() else None
+    if after != before:
+        # Put it back before failing. A guard that reports the damage
+        # and leaves it is half a guard.
+        if before is None:
+            real.unlink(missing_ok=True)
+        else:
+            real.write_bytes(before)
+        pytest.fail(f"this test wrote to the real plugin registry at {real}")
+
+
+@pytest.fixture(autouse=True)
 def no_live_classifier(monkeypatch):
     """The search classifier consults no model during the suite.
 

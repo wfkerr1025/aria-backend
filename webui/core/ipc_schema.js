@@ -112,6 +112,12 @@ export const IPC = Object.freeze({
   PLUGIN_TEST_RESULT: "plugin_test_result",
   PLUGIN_DISCOVERY_REQUEST: "plugin_discovery_request",
   PLUGIN_DISCOVERY_RESULT: "plugin_discovery_result",
+  UNITY_CLI_COMMANDS_REQUEST: "unity_cli_commands_request",
+  UNITY_CLI_COMMANDS_RESULT: "unity_cli_commands_result",
+  UNITY_CLI_REFRESH_REQUEST: "unity_cli_refresh_request",
+  UNITY_CLI_COMMAND_REQUEST: "unity_cli_command_request",
+  UNITY_CLI_COMMAND_RESULT: "unity_cli_command_result",
+  UNITY_CLI_OUTPUT: "unity_cli_output",
 
   MODULES_LIST_RESULT: "modules_list_result",
   MODULE_KEY_SET_REQUEST: "module_key_set_request",

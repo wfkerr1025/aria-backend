@@ -907,6 +907,79 @@ def _handle_plugin_discovery(payload: Dict[str, Any]) -> Dict[str, Any]:
     return fmt.plugin_discovery_result(plugin_settings.discover_plugins(force=force))
 
 
+def _handle_unity_cli_commands(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """List the Unity CLI commands already in the registry.
+
+    Reads only. Listing what is registered must not run the CLI --
+    that is what the refresh below is for, and keeping them separate is
+    what lets the Plugins page show the command tiles on every visit
+    without starting a process each time.
+    """
+    from backend.plugins import plugin_settings
+    from backend.unity import unity_cli_engine as engine
+
+    logger.debug("ipc_router: unity_cli_commands_request")
+    return fmt.unity_cli_commands_result(
+        {"commands": plugin_settings.list_commands(engine.PLUGIN_ID)})
+
+
+def _handle_unity_cli_refresh(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Ask the Unity CLI what commands it has, and merge the answer.
+
+    This one does run the CLI, so it happens when a person presses
+    Refresh. force=True additionally reconsiders commands they removed,
+    exactly as the plugin Rescan button does.
+    """
+    from backend.plugins import plugin_settings
+
+    force = bool(payload.get("force", False))
+    logger.info("ipc_router: unity_cli_refresh_request (force=%s)", force)
+
+    return fmt.unity_cli_commands_result(
+        plugin_settings.refresh_unity_cli_commands(force=force))
+
+
+def _handle_unity_cli_command(payload: Dict[str, Any],
+                              on_progress=None) -> Dict[str, Any]:
+    """Run one Unity CLI command, streaming its output as it arrives.
+
+    on_progress here carries dicts rather than strings -- whole packets
+    for the terminal view. A build's output is not chat commentary and
+    must not land in the transcript.
+
+    Nothing about this is reachable by a model. It runs because a
+    person pressed Run on a command they had already enabled.
+    """
+    from backend.unity import unity_cli_engine as engine
+
+    command_id = str(payload.get("id") or "")
+    args = payload.get("args") or []
+    logger.info("ipc_router: unity_cli_command_request -> %r", command_id)
+
+    if not command_id:
+        return fmt.error_response("Missing command id", schema.UNITY_CLI_COMMAND_REQUEST)
+    if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
+        return fmt.error_response("args must be a list of strings",
+                                  schema.UNITY_CLI_COMMAND_REQUEST)
+
+    def stream(kind: str, line: str) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(fmt.unity_cli_output(command_id, kind, line))
+        except Exception:  # pragma: no cover - a viewer is not the job
+            logger.debug("could not stream a Unity CLI line", exc_info=True)
+
+    try:
+        outcome = engine.run_command(command_id, args, on_output=stream)
+    except Exception as error:  # pragma: no cover - the engine catches its own
+        logger.exception("running %s failed", command_id)
+        outcome = {"success": False, "output": "", "json": None,
+                   "error": f"The command could not be run: {error}"}
+
+    return fmt.unity_cli_command_result(command_id, outcome)
+
+
 def _handle_modules_list(payload: Dict[str, Any]) -> Dict[str, Any]:
     logger.debug("ipc_router: modules_list_request")
     return fmt.modules_list_result(module_manager.list_modules())
@@ -1028,6 +1101,9 @@ _HANDLERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     schema.PLUGIN_REMOVE_REQUEST: _handle_plugin_remove,
     schema.PLUGIN_TEST_REQUEST: _handle_plugin_test,
     schema.PLUGIN_DISCOVERY_REQUEST: _handle_plugin_discovery,
+    schema.UNITY_CLI_COMMANDS_REQUEST: _handle_unity_cli_commands,
+    schema.UNITY_CLI_REFRESH_REQUEST: _handle_unity_cli_refresh,
+    schema.UNITY_CLI_COMMAND_REQUEST: _handle_unity_cli_command,
     schema.MODULES_LIST_REQUEST: _handle_modules_list,
     schema.WORKSPACE_STATUS_REQUEST: _handle_workspace_status,
     schema.WORKSPACE_SET_REQUEST: _handle_workspace_set,
@@ -1050,6 +1126,19 @@ _HANDLERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
 # membership here before calling dispatch(), so chat_request and
 # everything else keeps going through its existing code paths untouched.
 HANDLED_TYPES = frozenset(_HANDLERS.keys())
+
+
+# The handlers that take on_progress. A set rather than a chain of
+# comparisons, because it started as one special case and adding the
+# second by extending an `if` is how the third gets forgotten.
+#
+# The two use it differently and both are correct: commit sends
+# strings, which become chat commentary, and the Unity CLI sends whole
+# packets, which become terminal lines.
+_WANTS_PROGRESS = frozenset({
+    schema.WORKSPACE_COMMIT_REQUEST,
+    schema.UNITY_CLI_COMMAND_REQUEST,
+})
 
 
 def dispatch(packet: Dict[str, Any], on_progress=None) -> Dict[str, Any]:
@@ -1092,7 +1181,7 @@ def dispatch(packet: Dict[str, Any], on_progress=None) -> Dict[str, Any]:
         return fmt.error_response(f"Unknown packet type: {ptype}", ptype, ipc_errors.UNKNOWN_PACKET_TYPE)
 
     try:
-        if ptype == schema.WORKSPACE_COMMIT_REQUEST:
+        if ptype in _WANTS_PROGRESS:
             return handler(payload, on_progress=on_progress)
         return handler(payload)
     except Exception as e:

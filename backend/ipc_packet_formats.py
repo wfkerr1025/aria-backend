@@ -190,6 +190,51 @@ def plugin_discovery_result(outcome: Dict[str, Any]) -> Dict[str, Any]:
     })
 
 
+def unity_cli_commands_result(outcome: Dict[str, Any]) -> Dict[str, Any]:
+    """The Unity CLI commands in the registry, after any refresh.
+
+    "commands" is the whole current list either way, so a page that
+    listed and a page that refreshed render from the same field.
+    """
+    return _packet(schema.UNITY_CLI_COMMANDS_RESULT, {
+        "commands": outcome.get("commands") or [],
+        "added": outcome.get("added") or [],
+        "skipped": outcome.get("skipped") or [],
+        "output": outcome.get("output") or "",
+        "error": outcome.get("error"),
+    })
+
+
+def unity_cli_output(command_id: str, stream: str, line: str) -> Dict[str, Any]:
+    """One line of a running command, on its way to the terminal view.
+
+    Many of these per request, which is why it is a packet of its own
+    rather than a progress line: progress goes into the chat, and a
+    build log does not belong there.
+    """
+    return _packet(schema.UNITY_CLI_OUTPUT,
+                   {"id": command_id, "stream": stream, "line": line})
+
+
+def unity_cli_command_result(command_id: str, outcome: Dict[str, Any]) -> Dict[str, Any]:
+    """What running one command produced.
+
+    The shape the task specified -- success, output, json, error --
+    plus the id, so a viewer knows which command answered, and the
+    invocation, so a failure can be read against what was actually run
+    rather than what was meant to be.
+    """
+    return _packet(schema.UNITY_CLI_COMMAND_RESULT, {
+        "id": command_id,
+        "success": bool(outcome.get("success")),
+        "output": outcome.get("output") or "",
+        "json": outcome.get("json"),
+        "error": outcome.get("error"),
+        "code": outcome.get("code"),
+        "invocation": outcome.get("invocation") or [],
+    })
+
+
 def modules_list_result(modules: List[Dict[str, Any]]) -> Dict[str, Any]:
     return _packet(schema.MODULES_LIST_RESULT, {"modules": modules})
 

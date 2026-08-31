@@ -10,10 +10,13 @@ the user's.
 WHAT THIS IS ALLOWED TO DO
 --------------------------
 Read-only, and narrowly. It globs a handful of known install roots,
-stats the files it finds, and reads manifest.json out of plugins/*.
-It never executes a discovered binary -- not to ask its version, not
-to check it runs. A discovery pass happens when a page opens, and a
-page opening must not start a program.
+stats the files it finds, reads manifest.json out of plugins/*, and
+looks along PATH for the Unity CLI. It never executes a discovered
+binary -- not to ask its version, not to check it runs. A discovery
+pass happens when a page opens, and a page opening must not start a
+program. This is why a discovered Unity CLI reports version 0.0.0
+until somebody presses Test CLI: the version is knowable, and not at
+this price.
 
 The scan is bounded by explicit glob patterns rather than a walk, so
 it cannot wander off into the rest of the disk however the machine is
@@ -49,6 +52,7 @@ __all__ = [
     "discover",
     "discover_installed_programs",
     "discover_plugin_folders",
+    "discover_unity_cli",
     "program_roots",
     "project_root",
 ]
@@ -358,6 +362,61 @@ def _merge_one(into: dict, extra: dict) -> dict:
     return merged
 
 
+def discover_unity_cli() -> List[dict]:
+    """The `unity` command-line tool, if it is on this machine.
+
+    Not a Family, because the others are found by knowing which folder
+    they install into and this one is found the way command-line tools
+    are found: on PATH, or beside a Unity Hub install. A glob over
+    Program Files would miss every CLI installed by npm, a package
+    manager, or anything else that puts a shim on PATH.
+
+    This is a DIFFERENT PLUGIN from unity. unity_path runs the Editor
+    in batchmode through ARIAEditorBridge; unity_cli_path runs the
+    `unity` command. One machine can have either, both or neither, and
+    sharing a field would mean configuring one broke the other.
+
+    THE VERSION IS NOT ASKED FOR HERE
+    The obvious way to fill in the version is to run `unity --version`.
+    This does not, because discovery runs every time the Plugins page
+    opens and the rule at the top of this file is that opening a page
+    must not start a program -- a rule that is worth more than a
+    version string on a card. The task allows "detected CLI version or
+    0.0.0"; this is the 0.0.0 case, and pressing Test CLI on the config
+    page detects the real one and saves it. That is a deliberate act by
+    a person, which is the difference.
+    """
+    from backend.unity import unity_cli_engine as engine
+
+    try:
+        executable = engine.cli_path()
+    except engine.UnityCliUnavailable:
+        return []
+    except Exception:  # pragma: no cover - a lookup fault is not a find
+        logger.exception("could not look for the Unity CLI")
+        return []
+
+    logger.info("discovered the Unity CLI at %s", executable)
+
+    return [{
+        "id": engine.PLUGIN_ID,
+        "name": "Unity CLI",
+        "version": "0.0.0",
+        # It is Unity, so it wears Unity's mark. The task asked for this
+        # explicitly and the file already exists.
+        "logo": _LOGO_HREF.format(id="unity"),
+        "configPage": "unity-cli-config",
+        "settings": {
+            engine.FIELD_PATH: str(executable),
+            engine.FIELD_PROJECT: "",
+            engine.FIELD_MODE: "",
+        },
+        "executable_path": str(executable),
+        "source": "cli",
+        "discovered": True,
+    }]
+
+
 def discover() -> List[dict]:
     """Everything found, one entry per plugin id.
 
@@ -367,7 +426,8 @@ def discover() -> List[dict]:
     """
     by_id: Dict[str, dict] = {}
 
-    for finding in discover_plugin_folders() + discover_installed_programs():
+    for finding in (discover_plugin_folders() + discover_installed_programs()
+                    + discover_unity_cli()):
         plugin_id = finding["id"]
         if plugin_id in by_id:
             by_id[plugin_id] = _merge_one(by_id[plugin_id], finding)

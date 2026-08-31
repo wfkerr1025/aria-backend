@@ -483,8 +483,17 @@ class WebSocketHandler:
         """
         loop = asyncio.get_running_loop()
 
-        def report(message: str) -> None:
-            """Called from the executor thread, delivered on the loop."""
+        def report(message) -> None:
+            """Called from the executor thread, delivered on the loop.
+
+            A string is chat commentary and goes through _emit_progress.
+            A dict is a whole packet and is sent as it is -- which is how
+            Unity CLI output reaches the terminal view without passing
+            through the chat, where a build log does not belong.
+            """
+            if isinstance(message, dict):
+                asyncio.run_coroutine_threadsafe(self._send(message), loop)
+                return
             asyncio.run_coroutine_threadsafe(self._emit_progress(message), loop)
 
         return await loop.run_in_executor(

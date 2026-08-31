@@ -52,10 +52,26 @@ test("both stylesheets are actually loaded", () => {
 // --- nothing hard-coded -------------------------------------------
 
 test("no plugin is written into the markup", () => {
+  // The rule is that no plugin CARD is hard-coded -- the page this
+  // replaced listed two, with their names, versions and buttons typed
+  // in, so removing one meant editing the page.
+  //
+  // This used to be a blacklist of words, which caught the section
+  // heading "Unity CLI Commands" -- a static label, not a plugin. The
+  // structural check is what the word list was reaching for anyway,
+  // and it is stronger: a card cannot exist in markup at all.
   const html = read("pages", "plugins", "plugins.html");
 
-  for (const word of ["Unity", "Blender", "Ludo", "Self", "Diagnostics"]) {
-    assert.ok(!html.includes(word), `${word} is hard-coded into the page`);
+  assert.ok(!html.includes("settings-tile "), "a tile is built in JS, never typed");
+  assert.ok(!html.includes("plugin-tile"), "a tile is built in JS, never typed");
+  assert.ok(!/v\d+\.\d+\.\d+/.test(html), "no plugin's version is written here");
+
+  // Both grids ship empty. Anything between the tags would be a plugin
+  // that keeps appearing after it has been removed.
+  for (const id of ["plugins-grid", "unity-commands-grid"]) {
+    const grid = new RegExp(`id="${id}"[^>]*>([\\s\\S]*?)</div>`).exec(html);
+    assert.ok(grid, `${id} is missing`);
+    assert.equal(grid[1].trim(), "", `${id} has content typed into it`);
   }
 });
 
@@ -446,6 +462,183 @@ test("navigate uses the resolved route, not a raw table lookup", () => {
   assert.ok(js.includes("const htmlPath = route"));
 });
 
+// --- the Unity CLI plugin ------------------------------------------
+
+test("the Unity CLI's fields are labelled, and the mode is a dropdown", () => {
+  const js = read("pages", "plugin_config", "plugin_config.js");
+
+  for (const field of ["unity_cli_path", "unity_cli_project", "unity_cli_mode"]) {
+    assert.ok(js.includes(`  ${field}: {`), `${field} renders unlabelled`);
+  }
+  const mode = js.slice(js.indexOf("  unity_cli_mode: {"));
+  assert.ok(mode.slice(0, 200).includes('type: "select"'));
+});
+
+test("the mode dropdown's options come from the backend", () => {
+  // Same rule as Ludo's model list: a page that held its own copy would
+  // eventually offer a value the validator refuses.
+  const js = read("pages", "plugin_config", "plugin_config.js");
+
+  assert.ok(!/EditMode/.test(js), "the modes must not be hard-coded in the page");
+  assert.ok(js.includes("payload.choices"));
+});
+
+test("the test button says what it actually does", () => {
+  // "Test connection" is wrong for a program on this machine; nothing
+  // is being connected to.
+  const js = read("pages", "plugin_config", "plugin_config.js");
+
+  assert.ok(js.includes("TEST_LABELS"));
+  assert.ok(js.includes('unity_cli: "Test CLI"'));
+});
+
+test("unity and unity_cli are separate plugins with separate paths", () => {
+  // One runs the Editor in batchmode, the other runs the `unity`
+  // command. Sharing a field would mean configuring one broke the other.
+  const js = read("pages", "plugin_config", "plugin_config.js");
+
+  assert.ok(js.includes("  unity_path: {"));
+  assert.ok(js.includes("  unity_cli_path: {"));
+});
+
+// --- Unity CLI command tiles ---------------------------------------
+
+test("commands render as tiles with name, label and state", () => {
+  const js = read("pages", "plugins", "plugins.js");
+  const block = js.slice(js.indexOf("  commandTile(command) {"));
+  const body = block.slice(0, block.indexOf("\n  commandButton"));
+
+  assert.ok(body.includes("command.name"));
+  assert.ok(body.includes("command.label"));
+  assert.ok(body.includes("plugin-tile-status"));
+  assert.ok(body.includes('badge.textContent = "Discovered"'));
+});
+
+test("a command tile is not a button full of buttons", () => {
+  // It holds three controls. A <button> containing buttons is invalid
+  // HTML that browsers repair by hoisting them out of the tile.
+  const js = read("pages", "plugins", "plugins.js");
+  const block = js.slice(js.indexOf("  commandTile(command) {"));
+  const body = block.slice(0, block.indexOf("\n  commandButton"));
+
+  assert.ok(body.includes('createElement("div")'));
+  assert.ok(!body.includes('createElement("button")'));
+});
+
+test("Run only appears once a command is enabled", () => {
+  // Discovery lists what a CLI could do. Being listed is not permission
+  // to run it, and the backend refuses a disabled command anyway.
+  const js = read("pages", "plugins", "plugins.js");
+  const block = js.slice(js.indexOf("  commandTile(command) {"));
+  const body = block.slice(0, block.indexOf("\n  commandButton"));
+
+  assert.ok(body.includes("if (!enabled) {"));
+  assert.ok(body.indexOf('"Enable"') < body.indexOf('"Run"'),
+            "Enable is the disabled branch and Run the enabled one");
+});
+
+test("every command action exists", () => {
+  const js = read("pages", "plugins", "plugins.js");
+
+  for (const action of ['"Run"', '"Edit"', '"Remove"']) {
+    assert.ok(js.includes(action), `${action} is missing from the tiles`);
+  }
+  assert.ok(js.includes("editCommand"));
+});
+
+test("removing a command asks first and says it can come back", () => {
+  const js = read("pages", "plugins", "plugins.js");
+
+  assert.ok(js.includes("window.confirm"));
+  assert.ok(js.includes("Refresh Commands will offer it again"));
+});
+
+test("the commands section hides itself when there are none", () => {
+  const js = read("pages", "plugins", "plugins.js");
+
+  assert.ok(js.includes("section.hidden = commands.length === 0"),
+            "a machine without the Unity CLI should not be asked about it");
+});
+
+test("listing commands does not run the CLI, refreshing does", () => {
+  const js = read("pages", "plugins", "plugins.js");
+  const opening = js.slice(js.indexOf("  init() {"), js.indexOf("  bind() {"));
+
+  assert.ok(opening.includes("UNITY_CLI_COMMANDS_REQUEST"));
+  assert.ok(!opening.includes("UNITY_CLI_REFRESH_REQUEST"),
+            "opening a page must not start a program");
+  assert.ok(js.includes("UNITY_CLI_REFRESH_REQUEST"));
+});
+
+// --- the terminal --------------------------------------------------
+
+test("the terminal exists and Run opens it", () => {
+  const js = read("pages", "plugins", "plugins.js");
+  const html = read("pages", "plugins", "plugins.html");
+
+  assert.ok(js.includes("UnityTerminal.run(command"));
+  assert.ok(html.includes('id="unity-terminal"'));
+  assert.ok(html.includes('id="unity-terminal-body"'));
+});
+
+test("the terminal has the parts the task asked for", () => {
+  const html = read("pages", "plugins", "plugins.html");
+
+  for (const id of ["unity-terminal-status", "unity-terminal-json",
+                    "unity-terminal-clear", "unity-terminal-body"]) {
+    assert.ok(html.includes(`id="${id}"`), `the terminal is missing ${id}`);
+  }
+});
+
+test("output is written as text, never as markup", () => {
+  // This is a program's output. A build log containing markup is a log.
+  const js = read("pages", "plugins", "unity_terminal.js");
+
+  assert.ok(js.includes("line.textContent = text"));
+  assert.ok(!/body\.innerHTML\s*=\s*[`'"].*\$\{/.test(js));
+});
+
+test("scrollback is bounded, and says when it dropped lines", () => {
+  const js = read("pages", "plugins", "unity_terminal.js");
+
+  assert.ok(js.includes("MAX_LINES"));
+  assert.ok(js.includes("earlier line(s) not shown"),
+            "a truncated log must not look like a whole one");
+});
+
+test("the terminal only shows output for the command it is running", () => {
+  const js = read("pages", "plugins", "unity_terminal.js");
+
+  assert.ok(js.includes("payload.id !== this.commandId"),
+            "two runs must not interleave");
+});
+
+test("JSON is pretty-printed, and only when there was JSON", () => {
+  const js = read("pages", "plugins", "unity_terminal.js");
+
+  assert.ok(js.includes("JSON.stringify(payload.json, null, 2)"));
+  assert.ok(js.includes("payload.json === null || payload.json === undefined"),
+            "an empty JSON panel would suggest something was lost");
+});
+
+test("failure is visible without reading", () => {
+  const js = read("pages", "plugins", "unity_terminal.js");
+  const css = read("pages", "plugins", "plugins.css");
+
+  assert.ok(js.includes('this.setStatus("failed"'));
+  assert.ok(js.includes("exit ${code}"));
+  assert.ok(css.includes(".unity-terminal-status.is-failed"));
+});
+
+test("Unity CLI output does not go through the chat", () => {
+  // progress packets land in the chat transcript, in the history the
+  // next turn reads, and in the text actions are parsed from.
+  const js = read("pages", "plugins", "unity_terminal.js");
+
+  assert.ok(js.includes("IPC.UNITY_CLI_OUTPUT"));
+  assert.ok(!js.includes('"progress"'));
+});
+
 // --- the imports actually resolve ----------------------------------
 
 test("every import in the plugin pages names an export that exists", () => {
@@ -457,7 +650,8 @@ test("every import in the plugin pages names an export that exists", () => {
   //
   // So this one resolves each import against the target's exports.
   const pages = [["pages", "plugin_config", "plugin_config.js"],
-                 ["pages", "plugins", "plugins.js"]];
+                 ["pages", "plugins", "plugins.js"],
+                 ["pages", "plugins", "unity_terminal.js"]];
 
   for (const page of pages) {
     const source = read(...page);

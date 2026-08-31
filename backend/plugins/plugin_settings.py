@@ -48,8 +48,11 @@ __all__ = [
     "PluginError",
     "configured_path",
     "disable_plugin",
+    "COMMAND_TYPE",
     "discover_plugins",
+    "list_commands",
     "merge_discovered",
+    "refresh_unity_cli_commands",
     "validate_registry",
     "enable_plugin",
     "get_plugin",
@@ -93,6 +96,35 @@ _FLAG_FIELDS = ("enabled", "discovered", "dismissed")
 # rather than one per family nobody has written yet.
 DISCOVERED_FIELD = "executable_path"
 
+# ONE REGISTRY, TWO KINDS OF RECORD
+# ---------------------------------
+# plugins.json holds integrations and, since Unity CLI, the commands a
+# CLI reports it can run. That is deliberate: a second registry file
+# would be a second thing to keep in step, and this codebase already
+# has more of those than it needs.
+#
+# A command carries a "type"; a plugin does not. Everything that must
+# tell them apart asks that one question, and list_plugins/list_commands
+# are the two doors.
+COMMAND_TYPE = "unity_cli_command"
+
+# The keys a discovered COMMAND adds to a plugin record's usual set.
+# Copied by name, so a finding cannot introduce a field nothing
+# validates.
+_DISCOVERY_EXTRAS = ("type", "plugin", "label", "command", "args", "group")
+
+# What a command's own fields are, and how each is checked. Held apart
+# from _FIELD_RULES because they belong to every command rather than to
+# one id -- a command's id is unity_cmd_<whatever the CLI said>.
+_COMMAND_FIELD_RULES = {
+    "label": "text",
+    "command": "text",
+    "args": "arguments",
+    "group": "text",
+    "type": "locked",
+    "plugin": "locked",
+}
+
 # What each plugin additionally needs, and how to check it.
 #
 # A path is checked for EXISTENCE only when it is non-empty: an empty
@@ -109,6 +141,15 @@ _FIELD_RULES = {
     "ludo": {
         "api_key": "secret",
         "model": "choice",
+    },
+    # The Unity CLI is a different tool from the Unity Editor, so it is
+    # a different plugin with its own path -- unity_path runs the editor
+    # in batchmode, this runs the `unity` command. Sharing one field
+    # would mean whichever was configured last broke the other.
+    "unity_cli": {
+        "unity_cli_path": "executable",
+        "unity_cli_project": "folder",
+        "unity_cli_mode": "choice",
     },
 }
 
@@ -128,6 +169,11 @@ _SECRET_FIELDS = frozenset({"api_key"})
 FIELD_CHOICES = {
     "ludo": {
         "model": ("", "ludo-default", "ludo-fast", "ludo-quality"),
+    },
+    # The three the task names, plus empty for "do not pass --mode at
+    # all", which is not the same as any of them.
+    "unity_cli": {
+        "unity_cli_mode": ("", "EditMode", "PlayMode", "BuildMode"),
     },
 }
 
@@ -263,10 +309,31 @@ def list_plugins() -> list:
     a version and a switch, and needs no API key to do it.
     """
     plugins = [plugin for plugin in load_plugins().values()
-               if not plugin.get("dismissed", False)]
+               if not plugin.get("dismissed", False)
+               # A command lives in the same file but is not a plugin,
+               # and would otherwise render as a card on the Plugins
+               # page with no logo and no config page.
+               and not plugin.get("type")]
     ordered = sorted(plugins,
                      key=lambda plugin: str(plugin.get("name") or plugin.get("id") or ""))
     return [redact_secrets(plugin) for plugin in ordered]
+
+
+def list_commands(plugin: str = "") -> list:
+    """Every CLI command in the registry, ordered by name.
+
+    The other door out of the same file. Pass a plugin id to get only
+    that plugin's commands; today only unity_cli registers any, and the
+    argument is what stops the next one needing a second function.
+    """
+    wanted = str(plugin or "")
+    commands = [record for record in load_plugins().values()
+                if record.get("type") == COMMAND_TYPE
+                and not record.get("dismissed", False)
+                and (not wanted or record.get("plugin") == wanted)]
+
+    return sorted(commands,
+                  key=lambda record: str(record.get("name") or record.get("id") or ""))
 
 
 # ======================================================
@@ -289,6 +356,11 @@ def _rules_for(plugin_id: str) -> dict:
         stored = load_plugins().get(str(plugin_id or "")) or {}
     except Exception:  # pragma: no cover - a read fault is not a rule
         stored = {}
+
+    # A command's fields belong to every command rather than to one id,
+    # so they come from what the record IS, not from what it is called.
+    if stored.get("type") == COMMAND_TYPE:
+        rules.update(_COMMAND_FIELD_RULES)
 
     if DISCOVERED_FIELD in stored:
         rules.setdefault(DISCOVERED_FIELD, "executable")
@@ -315,6 +387,25 @@ def validate_plugin(plugin_id: str, fields: dict) -> list:
         kind = rules.get(name)
         if kind is None:
             problems.append(f"{plugin_id} has no field called {name!r}")
+            continue
+
+        if kind == "locked":
+            # Present so the field is known rather than rejected as
+            # unknown, and refused so a form cannot retype a command as
+            # something else or reassign it to another plugin.
+            problems.append(f"{name} cannot be changed")
+            continue
+
+        if kind == "arguments":
+            # A list of strings, and nothing cleverer. These become
+            # separate argv entries, which is what makes shell quoting
+            # something this codebase never has to get right.
+            if not isinstance(value, list):
+                problems.append(f"{name} must be a list of arguments")
+            elif any(not isinstance(entry, str) for entry in value):
+                problems.append(f"every entry in {name} must be text")
+            elif any("\n" in entry or "\r" in entry for entry in value):
+                problems.append(f"{name} cannot contain line breaks")
             continue
 
         text = value if isinstance(value, str) else ""
@@ -358,6 +449,12 @@ def validate_plugin(plugin_id: str, fields: dict) -> list:
                 problems.append(
                     f"{name} must be one of: "
                     + ", ".join(choice or "(default)" for choice in allowed))
+        elif kind == "text":
+            # A command's label and template. One line each: these are
+            # shown on a tile and split into argv, and a newline in
+            # either is a mistake rather than a value.
+            if "\n" in stripped or "\r" in stripped:
+                problems.append(f"{name} must be a single line")
 
     return problems
 
@@ -500,6 +597,14 @@ def validate_registry(plugins: dict) -> list:
             # A tombstone is not a plugin and does not compete for a name.
             continue
 
+        if plugin.get("type"):
+            # Nor is a command. The unique-name rule exists so a user
+            # cannot end up with two identical plugin cards; commands
+            # are keyed by id and shown in their own section, and a
+            # command called "build" beside a plugin called "build"
+            # confuses nobody.
+            continue
+
         name = str(plugin.get("name") or "").strip().casefold()
         if not name:
             continue
@@ -583,7 +688,22 @@ def merge_discovered(findings: list, *, respect_dismissed: bool = True) -> dict:
         # them flat, the way every hand-written entry already is.
         for name_, value in (finding.get("settings") or {}).items():
             record[str(name_)] = value
-        record.setdefault(DISCOVERED_FIELD, str(finding.get(DISCOVERED_FIELD) or ""))
+
+        # What a command entry carries beyond a plugin's fields. Copied
+        # by name rather than wholesale, so a finding cannot smuggle in
+        # a key the validator has never heard of.
+        for extra in _DISCOVERY_EXTRAS:
+            if extra in finding:
+                record[extra] = finding[extra]
+
+        # executable_path is discovery's generic "where the program is"
+        # field, and it is only added when the finding has no field of
+        # its own. Unity CLI stores unity_cli_path and a command stores
+        # no path at all; giving either an empty executable_path would
+        # put a box on their pages that nothing reads.
+        if not (finding.get("settings") or record.get("type")):
+            record.setdefault(DISCOVERED_FIELD,
+                              str(finding.get(DISCOVERED_FIELD) or ""))
 
         plugins[plugin_id] = record
         added.append(redact_secrets(record))
@@ -596,6 +716,50 @@ def merge_discovered(findings: list, *, respect_dismissed: bool = True) -> dict:
         logger.debug("discovery added nothing (%d skipped)", len(skipped))
 
     return {"added": added, "skipped": skipped}
+
+
+def refresh_unity_cli_commands(*, force: bool = False) -> dict:
+    """Ask the Unity CLI what it can do, and record the answer.
+
+    Merged the same way plugins are, through the same function, so
+    commands inherit the same three promises for free: an existing
+    entry is never overwritten, a removed one is not resurrected by an
+    automatic pass, and nothing is written when nothing changed.
+
+    A user who edited a command's arguments and then pressed Rescan
+    keeps their edit -- that is merge_discovered's "already installed"
+    rule doing its job on a record it was not written for.
+    """
+    from backend.unity import unity_cli_engine as engine
+
+    plugin = load_plugins().get(engine.PLUGIN_ID) or {}
+    if not plugin:
+        return {"success": False, "commands": [], "added": [], "skipped": [],
+                "error": "The Unity CLI plugin is not installed."}
+    if not plugin.get("enabled", False):
+        # Listing commands means running the CLI. A disabled plugin is
+        # one the user has not adopted, and adopting it is the consent.
+        return {"success": False, "commands": list_commands(engine.PLUGIN_ID),
+                "added": [], "skipped": [],
+                "error": "Enable the Unity CLI plugin before listing its commands."}
+
+    try:
+        outcome = engine.discover_commands()
+    except Exception as error:  # pragma: no cover - a subprocess fault
+        logger.exception("could not list Unity CLI commands")
+        return {"success": False, "commands": list_commands(engine.PLUGIN_ID),
+                "added": [], "skipped": [], "error": str(error)}
+
+    merged = merge_discovered(outcome["found"], respect_dismissed=not force)
+
+    return {
+        "success": outcome["success"],
+        "commands": list_commands(engine.PLUGIN_ID),
+        "added": merged["added"],
+        "skipped": merged["skipped"],
+        "output": outcome.get("output", ""),
+        "error": outcome.get("error"),
+    }
 
 
 def discover_plugins(*, force: bool = False) -> dict:
@@ -675,6 +839,8 @@ def test_plugin_connection(plugin_id: str) -> dict:
         return _test_executable(plugin, "blender_path", "Blender")
     if plugin_id == "ludo":
         return _test_ludo(plugin)
+    if plugin_id == "unity_cli":
+        return _test_unity_cli(plugin)
 
     # Anything discovery found is a program with a path, so the same
     # check the Blender button runs works for all of them. Without this
@@ -707,6 +873,42 @@ def _test_unity() -> dict:
         return {"ok": False, "message": str(error)}
 
     return {"ok": True, "message": f"Found {editor.name} at {editor}."}
+
+
+def _test_unity_cli(plugin: dict) -> dict:
+    """Run the Unity CLI and see whether it answers.
+
+    This is the one place the CLI's version is detected, and it saves
+    it -- so the card stops saying v0.0.0 once somebody has confirmed
+    the tool works. Discovery deliberately does not do this; see
+    plugin_discovery.discover_unity_cli.
+
+    The version is saved directly rather than through update_plugin,
+    because "version" is identity that a form may not edit and this is
+    not a form: it is ARIA recording what the program said about
+    itself.
+    """
+    from backend.unity import unity_cli_engine as engine
+
+    outcome = engine.test_cli()
+    if not outcome.get("ok"):
+        return outcome
+
+    try:
+        # The version test_cli already learned. Asking the engine again
+        # would start the program a second time for one string.
+        version = str(outcome.get("version") or "0.0.0")
+        if version != "0.0.0" and str(plugin.get("version") or "") != version:
+            plugins = load_plugins()
+            record = plugins.get(engine.PLUGIN_ID)
+            if record is not None:
+                record["version"] = version
+                save_plugins(plugins)
+                logger.info("recorded Unity CLI version %s", version)
+    except Exception:  # pragma: no cover - a version is not worth failing over
+        logger.exception("could not record the Unity CLI version")
+
+    return outcome
 
 
 def _test_executable(plugin: dict, field: str, label: str) -> dict:
