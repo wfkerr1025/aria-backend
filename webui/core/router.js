@@ -46,6 +46,12 @@ const Router = {
     "plugins/unity-config": "pages/plugin_config/plugin_config.html",
     "plugins/blender-config": "pages/plugin_config/plugin_config.html",
     "plugins/ludo-config": "pages/plugin_config/plugin_config.html",
+
+    // The Unity Editor's tools, as things to run. Its own page rather
+    // than a section on the hub: a connected Editor reports 142 of
+    // them, which is twenty times the size of the page that listed
+    // them and needs a filter of its own.
+    "plugins/unity-cli-commands": "pages/unity_commands/unity_commands.html",
   },
 
   init() {

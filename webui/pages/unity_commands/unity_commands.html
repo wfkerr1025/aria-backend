@@ -1,0 +1,45 @@
+<div class="unity-commands" id="unity-commands">
+  <button class="unity-commands-back" type="button" id="unity-commands-back">← Unity CLI</button>
+
+  <div class="unity-commands-header">
+    <div class="unity-commands-heading">
+      <h1>Unity CLI Commands</h1>
+      <p class="unity-commands-subtitle" id="unity-commands-count"></p>
+    </div>
+    <button class="unity-commands-refresh" type="button" id="unity-commands-refresh">Refresh Commands</button>
+  </div>
+
+  <div class="unity-commands-message" id="unity-commands-message" hidden></div>
+
+  <!-- A search box, because the Editor reports 142 of these and a grid
+       of 142 tiles is a list nobody reads. Filters on name and label. -->
+  <div class="unity-commands-filter">
+    <input class="unity-commands-search" type="search" id="unity-commands-search"
+           placeholder="Filter commands…" autocomplete="off" />
+    <label class="unity-commands-toggle">
+      <input type="checkbox" id="unity-commands-enabled-only" />
+      <span>Enabled only</span>
+    </label>
+  </div>
+
+  <!-- Filled by unity_commands.js. Nothing is hard-coded here: a
+       command listed in markup is a command that keeps appearing after
+       the Editor has stopped reporting it. -->
+  <div class="settings-tile-grid" id="unity-commands-grid"></div>
+
+  <p class="unity-commands-empty" id="unity-commands-empty" hidden></p>
+
+  <!-- The terminal. One viewer, reused by every command. -->
+  <section class="unity-terminal" id="unity-terminal" hidden>
+    <div class="unity-terminal-bar">
+      <span class="unity-terminal-title" id="unity-terminal-title">Unity CLI</span>
+      <span class="unity-terminal-status" id="unity-terminal-status"></span>
+      <span class="unity-terminal-spacer"></span>
+      <button class="unity-terminal-btn" type="button" id="unity-terminal-clear">Clear</button>
+      <button class="unity-terminal-btn" type="button" id="unity-terminal-close">Close</button>
+    </div>
+    <div class="unity-terminal-note" id="unity-terminal-note" hidden></div>
+    <div class="unity-terminal-body" id="unity-terminal-body"></div>
+    <pre class="unity-terminal-json" id="unity-terminal-json" hidden></pre>
+  </section>
+</div>

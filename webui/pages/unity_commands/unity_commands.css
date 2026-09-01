@@ -1,0 +1,331 @@
+/* ==========================================================
+   UNITY CLI COMMANDS — the Editor's tools, as things to run.
+
+   The tiles reuse .settings-tile and .plugin-tile, exactly as the
+   Plugins page does, so a command tile and a plugin tile cannot drift
+   apart in spacing, corners or hover. Those two classes are defined
+   once, elsewhere; this file adds only what a COMMAND tile needs on
+   top of them -- its action row -- plus the filter bar and the
+   terminal.
+   ========================================================== */
+
+.unity-commands {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: var(--space-xl);
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.unity-commands-back {
+  align-self: flex-start;
+  padding: var(--space-xs) var(--space-sm);
+
+  background: transparent;
+  border: 1px solid var(--border-hairline, var(--input-border));
+  border-radius: var(--radius-md, 8px);
+
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.unity-commands-back:hover,
+.unity-commands-back:focus-visible {
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.unity-commands-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.unity-commands-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.unity-commands-header h1 {
+  margin: 0 0 var(--space-xs) 0;
+  font-size: var(--font-size-xl);
+  color: var(--text-primary);
+}
+
+.unity-commands-subtitle {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  opacity: 0.75;
+}
+
+.unity-commands-refresh {
+  padding: var(--space-sm) var(--space-lg);
+
+  background: transparent;
+  border: 1px solid var(--border-hairline, var(--input-border));
+  border-radius: var(--radius-md, 8px);
+
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.unity-commands-refresh:hover,
+.unity-commands-refresh:focus-visible {
+  border-color: var(--accent-primary);
+  outline: none;
+}
+
+/* ----------------------------------------------------------
+   The filter. Not decoration: the Editor reports 142 tools, and a
+   grid of 142 tiles is a list nobody reads to the end of.
+   ---------------------------------------------------------- */
+
+.unity-commands-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.unity-commands-search {
+  flex: 1;
+  min-width: 220px;
+  padding: var(--space-sm);
+
+  background: var(--input-bg, transparent);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-md, 8px);
+
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+}
+
+.unity-commands-search:focus {
+  border-color: var(--accent-primary);
+  outline: none;
+}
+
+.unity-commands-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.unity-commands-empty {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+/* One banner, two jobs. News is not a fault, and colouring it like one
+   teaches the reader to ignore the box that also reports real ones. */
+.unity-commands-message {
+  padding: var(--space-md);
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--border-hairline, var(--input-border));
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.unity-commands-message.is-error {
+  border-color: var(--danger, #c0392b);
+  color: var(--danger, #c0392b);
+}
+
+.unity-commands [hidden] {
+  display: none !important;
+}
+
+/* ----------------------------------------------------------
+   Unity CLI commands.
+
+   The same tile, with actions. A command is not a plugin -- it has no
+   logo and no config page -- but it has the same three states, and
+   showing them differently would mean learning the page twice.
+   ---------------------------------------------------------- */
+
+.plugins-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.plugins-section-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.plugins-section-header h2 {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  color: var(--text-primary);
+}
+
+.unity-command-tile {
+  position: relative;
+  cursor: default;
+}
+
+.unity-command-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+}
+
+.unity-command-btn {
+  padding: var(--space-xs) var(--space-sm);
+
+  background: transparent;
+  border: 1px solid var(--border-hairline, var(--input-border));
+  border-radius: var(--radius-md, 8px);
+
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.unity-command-btn:hover,
+.unity-command-btn:focus-visible {
+  border-color: var(--accent-primary);
+  outline: none;
+}
+
+.unity-command-btn.is-primary {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.unity-command-btn.is-danger {
+  color: var(--danger, #c0392b);
+  border-color: color-mix(in srgb, var(--danger, #c0392b) 50%, transparent);
+}
+
+/* ----------------------------------------------------------
+   The terminal.
+   ---------------------------------------------------------- */
+
+.unity-terminal {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-hairline, var(--input-border));
+  border-radius: var(--radius-md, 8px);
+  overflow: hidden;
+}
+
+.unity-terminal-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+
+  background: var(--input-bg, transparent);
+  border-bottom: 1px solid var(--border-hairline, var(--input-border));
+}
+
+.unity-terminal-title {
+  color: var(--text-primary);
+  font-weight: var(--font-weight-bold);
+  font-size: var(--font-size-sm);
+}
+
+.unity-terminal-spacer {
+  flex: 1;
+}
+
+/* Running, finished, failed -- three states, and the failed one has to
+   be readable without reading, because it is the one people look for. */
+.unity-terminal-status {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.unity-terminal-status.is-ok {
+  color: var(--accent-primary);
+}
+
+.unity-terminal-status.is-failed {
+  color: var(--danger, #c0392b);
+}
+
+.unity-terminal-btn {
+  padding: 2px var(--space-sm);
+
+  background: transparent;
+  border: 1px solid var(--border-hairline, var(--input-border));
+  border-radius: var(--radius-sm, 6px);
+
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.unity-terminal-btn:hover,
+.unity-terminal-btn:focus-visible {
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.unity-terminal-note {
+  padding: var(--space-xs) var(--space-md);
+  color: var(--danger, #c0392b);
+  font-size: var(--font-size-sm);
+}
+
+/* Fixed height with its own scrollbar: the page must not grow by two
+   thousand lines because a build was verbose. */
+.unity-terminal-body {
+  height: 320px;
+  overflow: auto;
+  padding: var(--space-sm) var(--space-md);
+
+  background: var(--bg-primary, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+
+.unity-terminal-line {
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.unity-terminal-line.is-stderr {
+  color: var(--danger, #c0392b);
+}
+
+.unity-terminal-json {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: var(--space-md);
+
+  border-top: 1px solid var(--border-hairline, var(--input-border));
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--font-size-sm);
+}
+
+.unity-terminal [hidden],
+.plugins-page [hidden] {
+  display: none !important;
+}

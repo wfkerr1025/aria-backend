@@ -20,7 +20,6 @@
 
 import { bridge } from "../../core/bridge.js";
 import { IPC } from "../../core/ipc_schema.js";
-import UnityTerminal from "./unity_terminal.js";
 
 function pluginLog(message) {
   try {
@@ -43,10 +42,6 @@ const Plugins = {
     // user has installed but never told it about. The scan respects
     // anything they have already removed -- see Rescan, which does not.
     this.discover(false);
-
-    // Only lists what is already registered. Asking the CLI what it can
-    // do means running it, and that happens when Refresh is pressed.
-    bridge.send(IPC.UNITY_CLI_COMMANDS_REQUEST, {});
   },
 
   bind() {
@@ -64,15 +59,6 @@ const Plugins = {
     // button listened to last time is not the button on screen now.
     document.getElementById("plugins-rescan")
       ?.addEventListener("click", () => this.discover(true));
-
-    document.getElementById("unity-commands-refresh")
-      ?.addEventListener("click", () => {
-        this.say("Asking the Unity CLI what it can do…");
-        bridge.send(IPC.UNITY_CLI_REFRESH_REQUEST, { force: true });
-      });
-
-    UnityTerminal.bind();
-    UnityTerminal.bindControls();
   },
 
   refresh() {
@@ -111,19 +97,11 @@ const Plugins = {
       return;
     }
 
-    if (packet.type === IPC.UNITY_CLI_COMMANDS_RESULT) {
-      this.renderCommands(payload);
-      return;
-    }
-
     // A removal or a change made on a config page changes what this
     // page should show, so it asks again rather than guessing.
     if (packet.type === IPC.PLUGIN_REMOVE_RESULT
         || packet.type === IPC.PLUGIN_UPDATE_RESULT) {
       this.refresh();
-      // A command lives in the same registry, so enabling or removing
-      // one changes this list too.
-      bridge.send(IPC.UNITY_CLI_COMMANDS_REQUEST, {});
       return;
     }
 
@@ -171,149 +149,6 @@ const Plugins = {
       return;
     }
     this.say("");
-  },
-
-  /**
-   * The Unity CLI Commands section.
-   *
-   * Hidden entirely when there are none, rather than shown empty: a
-   * machine without the Unity CLI should not be asked about it.
-   */
-  renderCommands(payload) {
-    const commands = payload.commands || [];
-    const section = document.getElementById("unity-commands-section");
-    const grid = document.getElementById("unity-commands-grid");
-    const note = document.getElementById("unity-commands-note");
-    if (!section || !grid) return;
-
-    if (payload.error) this.say(payload.error);
-    else if ((payload.added || []).length) {
-      this.say(`Found ${payload.added.length} new Unity CLI command(s).`);
-    }
-
-    // Shown whenever the Unity CLI is available -- NOT only when it has
-    // commands.
-    //
-    // It used to hide on an empty list, and Refresh Commands lives
-    // inside it. So the button that discovers commands was invisible
-    // until commands had been discovered, and a fresh install had no
-    // way to get its first one. Exactly the same mistake as the parser
-    // that only recognised `unity build` after the CLI had reported it:
-    // the thing that does the discovering cannot be gated on the
-    // discovery having happened.
-    section.hidden = !payload.available;
-    grid.innerHTML = "";
-    commands.forEach((command) => grid.appendChild(this.commandTile(command)));
-
-    if (note) {
-      note.textContent = commands.length
-        ? "Enable a command before running it."
-        : "No commands yet. Open your Unity project in the Editor, then "
-          + "press Refresh Commands.";
-    }
-    pluginLog(`rendered ${commands.length} unity command tile(s)`);
-  },
-
-  commandTile(command) {
-    const enabled = command.enabled === true;
-    const awaiting = command.discovered === true && !enabled;
-
-    // A <div>, not a <button>: this tile holds three controls, and a
-    // button containing buttons is invalid HTML the browser repairs by
-    // pulling them out of it.
-    const tile = document.createElement("div");
-    tile.className = "settings-tile plugin-tile unity-command-tile"
-      + (enabled ? "" : " is-disabled")
-      + (awaiting ? " is-discovered" : "");
-    tile.dataset.commandId = command.id || "";
-
-    if (awaiting) {
-      const badge = document.createElement("span");
-      badge.className = "plugin-tile-badge";
-      badge.textContent = "Discovered";
-      tile.appendChild(badge);
-    }
-
-    const title = document.createElement("span");
-    title.className = "settings-tile-title";
-    title.textContent = command.name || command.id || "Unnamed command";
-    tile.appendChild(title);
-
-    const label = document.createElement("span");
-    label.className = "settings-tile-subtitle";
-    label.textContent = command.label || "";
-    tile.appendChild(label);
-
-    const status = document.createElement("span");
-    status.className = "plugin-tile-status" + (enabled ? " is-enabled" : "");
-    status.textContent = enabled ? "Enabled" : "Disabled";
-    tile.appendChild(status);
-
-    const actions = document.createElement("div");
-    actions.className = "unity-command-actions";
-
-    if (!enabled) {
-      actions.appendChild(this.commandButton("Enable", () => {
-        bridge.send(IPC.PLUGIN_UPDATE_REQUEST,
-                    { id: command.id, fields: { enabled: true } });
-      }));
-    } else {
-      // Run only appears once a command is on. Discovery lists what a
-      // CLI could do; being listed is not permission to run it, and
-      // the backend refuses a disabled command anyway.
-      actions.appendChild(this.commandButton("Run", () => {
-        UnityTerminal.run(command, []);
-      }, "is-primary"));
-    }
-
-    actions.appendChild(this.commandButton("Edit", () => this.editCommand(command)));
-    actions.appendChild(this.commandButton("Remove", () => {
-      if (!window.confirm(`Remove ${command.name || command.id}?\n\n`
-                          + `Refresh Commands will offer it again.`)) return;
-      bridge.send(IPC.PLUGIN_REMOVE_REQUEST, { id: command.id });
-    }, "is-danger"));
-
-    tile.appendChild(actions);
-    return tile;
-  },
-
-  commandButton(text, onClick, extra = "") {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "unity-command-btn" + (extra ? ` ${extra}` : "");
-    button.textContent = text;
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      onClick();
-    });
-    return button;
-  },
-
-  /**
-   * Edit one command's template and arguments.
-   *
-   * A prompt() pair rather than a modal. It is the smallest thing that
-   * actually works, and the backend validates both -- args become
-   * separate argv entries, so splitting on spaces here cannot produce
-   * a shell injection, only a wrong argument.
-   */
-  editCommand(command) {
-    const template = window.prompt(
-      `Command template for ${command.name}:`, command.command || "");
-    if (template === null) return;
-
-    const args = window.prompt(
-      "Default arguments, separated by spaces:",
-      (command.args || []).join(" "));
-    if (args === null) return;
-
-    bridge.send(IPC.PLUGIN_UPDATE_REQUEST, {
-      id: command.id,
-      fields: {
-        command: template.trim(),
-        args: args.split(/\s+/).filter(Boolean),
-      },
-    });
   },
 
   tile(plugin) {

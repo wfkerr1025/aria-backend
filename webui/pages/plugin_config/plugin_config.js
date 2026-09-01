@@ -63,6 +63,13 @@ const FIELD_LABELS = {
 const NOT_EDITABLE = new Set(["id", "name", "version", "logo", "configPage", "enabled",
                               "discovered", "dismissed"]);
 
+// Plugins that have a page of their own beyond their settings, and
+// where it is. Only Unity CLI has one today; the map exists so the
+// second does not need this page edited again.
+const EXTRA_PAGES = {
+  unity_cli: { label: "Commands", panel: "plugins/unity-cli-commands" },
+};
+
 // What the test button says. Anything not named here connects to
 // something, and "Test connection" is right for it.
 const TEST_LABELS = {
@@ -139,6 +146,14 @@ const PluginConfig = {
 
     document.getElementById("plugin-config-enable")
       ?.addEventListener("click", () => this.save({ enable: true }));
+
+    document.getElementById("plugin-config-commands")
+      ?.addEventListener("click", () => {
+        const extra = EXTRA_PAGES[this.pluginId];
+        if (!extra) return;
+        window.dispatchEvent(new CustomEvent("navigatePanel",
+                                             { detail: extra.panel }));
+      });
 
     document.getElementById("plugin-config-remove")
       ?.addEventListener("click", () => this.remove());
@@ -230,6 +245,16 @@ const PluginConfig = {
     // only what it claims to be doing changes.
     const test = document.getElementById("plugin-config-test");
     if (test) test.textContent = TEST_LABELS[plugin.id] || "Test connection";
+
+    // The way through to a plugin's own page, for the plugins that
+    // have one. Hidden rather than absent for the rest, so the button
+    // row does not change shape between plugins.
+    const extra = EXTRA_PAGES[plugin.id];
+    const commands = document.getElementById("plugin-config-commands");
+    if (commands) {
+      commands.hidden = !extra;
+      if (extra) commands.textContent = extra.label;
+    }
 
     this.renderLogo(plugin, name);
 
