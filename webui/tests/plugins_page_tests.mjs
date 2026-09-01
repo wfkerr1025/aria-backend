@@ -609,11 +609,39 @@ test("removing a command asks first and says it can come back", () => {
   assert.ok(js.includes("Refresh Commands will offer it again"));
 });
 
-test("the commands section hides itself when there are none", () => {
+test("the Refresh button is not gated on having refreshed", () => {
+  // It used to be. The section hid itself on an empty command list, and
+  // Refresh Commands lives inside the section -- so the button that
+  // discovers commands was invisible until commands had been
+  // discovered, and a fresh install had no way to get its first one.
   const js = read("pages", "plugins", "plugins.js");
 
-  assert.ok(js.includes("section.hidden = commands.length === 0"),
-            "a machine without the Unity CLI should not be asked about it");
+  assert.ok(js.includes("section.hidden = !payload.available"),
+            "visibility follows the plugin, not the command count");
+  assert.ok(!js.includes("section.hidden = commands.length === 0"));
+});
+
+test("a machine without the Unity CLI is not asked about it", () => {
+  const js = read("pages", "plugins", "plugins.js");
+
+  assert.ok(js.includes("payload.available"));
+});
+
+test("an empty command list says what to do about it", () => {
+  const js = read("pages", "plugins", "plugins.js");
+
+  assert.ok(js.includes("No commands yet"));
+  assert.ok(js.includes("Refresh Commands"));
+});
+
+test("the project hint describes what is actually sent", () => {
+  // It said "Passed as --project", which is a flag this CLI does not
+  // have -- it answers "error: unknown option '--project'".
+  const js = read("pages", "plugin_config", "plugin_config.js");
+  const hint = js.slice(js.indexOf("  unity_cli_project: {"));
+
+  assert.ok(hint.slice(0, 300).includes("UNITY_PROJECT_PATH"));
+  assert.ok(!/hint: "Passed as --project/.test(js));
 });
 
 test("listing commands does not run the CLI, refreshing does", () => {

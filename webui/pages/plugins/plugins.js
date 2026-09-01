@@ -191,14 +191,25 @@ const Plugins = {
       this.say(`Found ${payload.added.length} new Unity CLI command(s).`);
     }
 
-    section.hidden = commands.length === 0 && !payload.error;
+    // Shown whenever the Unity CLI is available -- NOT only when it has
+    // commands.
+    //
+    // It used to hide on an empty list, and Refresh Commands lives
+    // inside it. So the button that discovers commands was invisible
+    // until commands had been discovered, and a fresh install had no
+    // way to get its first one. Exactly the same mistake as the parser
+    // that only recognised `unity build` after the CLI had reported it:
+    // the thing that does the discovering cannot be gated on the
+    // discovery having happened.
+    section.hidden = !payload.available;
     grid.innerHTML = "";
     commands.forEach((command) => grid.appendChild(this.commandTile(command)));
 
     if (note) {
       note.textContent = commands.length
         ? "Enable a command before running it."
-        : "";
+        : "No commands yet. Open your Unity project in the Editor, then "
+          + "press Refresh Commands.";
     }
     pluginLog(`rendered ${commands.length} unity command tile(s)`);
   },

@@ -46,7 +46,8 @@ const FIELD_LABELS = {
   unity_cli_path: { label: "Unity CLI executable", type: "text",
                     hint: "The full path to unity.cmd, unity.exe or unity." },
   unity_cli_project: { label: "Default project", type: "text", optional: true,
-                       hint: "Passed as --project to every command that runs." },
+                       hint: "Sent as UNITY_PROJECT_PATH to every command. "
+                             + "(--project is not a flag this CLI has.)" },
   unity_cli_mode: { label: "Default mode", type: "select", optional: true,
                     hint: "Passed as --mode. Leave empty to pass no mode at all." },
   api_key: { label: "API key", type: "password",

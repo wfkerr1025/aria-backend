@@ -198,6 +198,7 @@ def unity_cli_commands_result(outcome: Dict[str, Any]) -> Dict[str, Any]:
     """
     return _packet(schema.UNITY_CLI_COMMANDS_RESULT, {
         "commands": outcome.get("commands") or [],
+        "available": bool(outcome.get("available")),
         "added": outcome.get("added") or [],
         "skipped": outcome.get("skipped") or [],
         "output": outcome.get("output") or "",

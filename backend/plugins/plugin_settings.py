@@ -813,12 +813,13 @@ def refresh_unity_cli_commands(*, force: bool = False) -> dict:
     plugin = load_plugins().get(engine.PLUGIN_ID) or {}
     if not plugin:
         return {"success": False, "commands": [], "added": [], "skipped": [],
+                "available": False,
                 "error": "The Unity CLI plugin is not installed."}
     if not plugin.get("enabled", False):
         # Listing commands means running the CLI. A disabled plugin is
         # one the user has not adopted, and adopting it is the consent.
         return {"success": False, "commands": list_commands(engine.PLUGIN_ID),
-                "added": [], "skipped": [],
+                "added": [], "skipped": [], "available": False,
                 "error": "Enable the Unity CLI plugin before listing its commands."}
 
     try:
@@ -826,13 +827,14 @@ def refresh_unity_cli_commands(*, force: bool = False) -> dict:
     except Exception as error:  # pragma: no cover - a subprocess fault
         logger.exception("could not list Unity CLI commands")
         return {"success": False, "commands": list_commands(engine.PLUGIN_ID),
-                "added": [], "skipped": [], "error": str(error)}
+                "added": [], "skipped": [], "available": True, "error": str(error)}
 
     merged = merge_discovered(outcome["found"], respect_dismissed=not force)
 
     return {
         "success": outcome["success"],
         "commands": list_commands(engine.PLUGIN_ID),
+        "available": True,
         "added": merged["added"],
         "skipped": merged["skipped"],
         "output": outcome.get("output", ""),

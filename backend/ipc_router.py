@@ -935,8 +935,14 @@ def _handle_unity_cli_commands(payload: Dict[str, Any]) -> Dict[str, Any]:
     from backend.unity import unity_cli_engine as engine
 
     logger.debug("ipc_router: unity_cli_commands_request")
-    return fmt.unity_cli_commands_result(
-        {"commands": plugin_settings.list_commands(engine.PLUGIN_ID)})
+
+    # Whether the section should exist at all is a different question
+    # from whether it has anything in it, and the page needs both.
+    plugin = plugin_settings.load_plugins().get(engine.PLUGIN_ID) or {}
+    return fmt.unity_cli_commands_result({
+        "commands": plugin_settings.list_commands(engine.PLUGIN_ID),
+        "available": bool(plugin.get("enabled")) and not plugin.get("dismissed"),
+    })
 
 
 def _handle_unity_cli_refresh(payload: Dict[str, Any]) -> Dict[str, Any]:

@@ -134,7 +134,12 @@ VERSION_PROBES = (("--version",), ("env",))
 DEFAULT_TIMEOUT_SECONDS = 120
 
 # A version-looking token anywhere in the output of --version.
-_VERSION = re.compile(r"(\d+(?:\.\d+)+[A-Za-z0-9.]*)")
+#
+# The hyphen is in the class because this CLI reports "1.0.0-beta.5",
+# and without it the card read "v1.0.0" -- a real version, for a
+# different build than the one installed. A prerelease suffix is part
+# of the version, not decoration after it.
+_VERSION = re.compile(r"(\d+(?:\.\d+)+[A-Za-z0-9.\-]*[A-Za-z0-9])")
 
 
 # ======================================================
