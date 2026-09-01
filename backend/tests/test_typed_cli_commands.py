@@ -342,6 +342,24 @@ def test_the_five_tools_the_task_asked_for_exist(registry):
         assert name in tool_registry._REGISTRY, f"{name} is not registered"
 
 
+def test_pipeline_list_and_list_are_different_questions(registry):
+    """`unity pipeline list` reports the Editor INSTANCES and whether
+    each has Pipeline running. `unity list` reports the TOOLS inside
+    one of them.
+
+    An earlier version mapped unity_pipeline_list to `list`, because
+    `pipeline --help` prints no Commands section and I concluded it had
+    none. It has them; the help does not print them, and the CLI's own
+    error text recommends "unity pipeline list" by name. Running it
+    settled what reading the help had not.
+    """
+    by_name = {tool["name"]: tool for tool in engine.UNITY_TOOLS}
+
+    assert by_name["unity_pipeline_list"]["command"] == "pipeline"
+    assert by_name["unity_pipeline_list"]["flags"] == ("list",)
+    assert by_name["unity_list_tools"]["command"] == "list"
+
+
 def test_a_model_cannot_compose_a_command_line(registry):
     """The safety property of the whole tool layer.
 

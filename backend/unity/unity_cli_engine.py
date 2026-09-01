@@ -967,9 +967,25 @@ UNITY_TOOLS = (
     },
     {
         "name": "unity_pipeline_list",
-        # `unity list`, not `unity pipeline list`. `pipeline` is a real
-        # command but has no subcommands; the listing of Pipeline-package
-        # tools is what `list` does.
+        # `unity pipeline list` after all. An earlier version mapped this
+        # to `unity list` because `pipeline --help` prints no Commands
+        # section -- so I concluded it had no subcommands. It does; the
+        # help simply does not list them, and the CLI's own error text
+        # recommends "unity pipeline list" by name. Running it settled
+        # it, which reading the help had not.
+        #
+        # The two are different questions. `pipeline list` reports the
+        # Editor instances and whether each has Pipeline running;
+        # `list` reports the tools inside one of them. This tool is the
+        # first, because that is what its name says.
+        "command": "pipeline",
+        "description": "List the Unity Editor instances and whether each "
+                       "has the Pipeline server running.",
+        "parameters": {},
+        "flags": ("list",),
+    },
+    {
+        "name": "unity_list_tools",
         "command": "list",
         "description": "List the tools the connected Unity Editor has "
                        "registered through the Pipeline package.",
