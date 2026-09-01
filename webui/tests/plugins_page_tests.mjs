@@ -318,6 +318,23 @@ test("every plugin's fields have a label and a hint", () => {
   }
 });
 
+test("the output folder field is offered and explained", () => {
+  const js = read("pages", "plugin_config", "plugin_config.js");
+  const shape = js.slice(js.indexOf("  output_dir: {"), js.indexOf("  api_key: {"));
+
+  assert.ok(shape.includes('label: "Output folder"'),
+            "the field must say what it is, not show a raw key name");
+  assert.ok(shape.includes("optional: true"),
+            "leaving it empty is a legitimate answer and means the default");
+  // A person choosing a folder needs to know two things this form
+  // cannot show them: that it will be created, and where their files
+  // go if they say nothing.
+  assert.ok(shape.includes("Made if it does not"),
+            "the hint must say the folder is created");
+  assert.ok(shape.includes("Documents/ARIA"),
+            "the hint must name the default, or nobody can find their files");
+});
+
 test("the API key field is a password field", () => {
   const js = read("pages", "plugin_config", "plugin_config.js");
   const shape = js.slice(js.indexOf("  api_key: {"));

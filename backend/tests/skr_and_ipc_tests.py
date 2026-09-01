@@ -123,6 +123,7 @@ def test_websocket_dispatch_survives_dict_type_and_does_not_poison_connection():
 
         # The malformed packet — must not raise.
         await handler._dispatch({"type": {"type": "load_model_override", "model_id": "x"}, "payload": {}})
+        await handler.wait_for_turns()
 
         # A normal, valid packet on the SAME handler right after — proves
         # the malformed one didn't leave any bad state behind.
@@ -272,6 +273,7 @@ def test_skr_short_circuit_never_touches_a_model():
             "conversationId": "skr-no-model-test",
             "messages": [{"role": "user", "content": "what models do you have?"}],
         })
+        await handler.wait_for_turns()
         return ws.sent
 
     import json
@@ -520,6 +522,7 @@ def test_chat_request_reads_fields_from_bridge_payload_shape():
                 "multiTurn": True,
             },
         })
+        await handler.wait_for_turns()
         return ws.sent
 
     sent = _run(scenario())
@@ -550,6 +553,7 @@ def test_switch_to_lighter_model_reads_model_id_from_bridge_payload_shape():
             "type": "switch_to_lighter_model",
             "payload": {"model_id": target},
         })
+        await handler.wait_for_turns()
         return ws.sent
 
     try:
@@ -582,6 +586,7 @@ def test_load_model_override_reads_model_id_from_bridge_payload_shape():
             "type": "load_model_override",
             "payload": {"model_id": "nemo-12b-q5"},
         })
+        await handler.wait_for_turns()
         return handler._override_model_id, ws.sent
 
     override_model_id, sent = _run(scenario())
@@ -622,6 +627,7 @@ def test_switch_to_lighter_model_persists_active_model():
         ws = FakeWebSocket()
         handler = WebSocketHandler(ws)
         await handler._dispatch({"type": "switch_to_lighter_model", "model_id": target})
+        await handler.wait_for_turns()
         return ws.sent
 
     try:
@@ -699,6 +705,7 @@ def test_switch_to_lighter_model_grants_one_shot_safety_bypass():
         handler = handlers_mod.WebSocketHandler(ws)
 
         await handler._dispatch({"type": "switch_to_lighter_model", "model_id": target})
+        await handler.wait_for_turns()
         assert handler._override_model_id == target, "switch_to_lighter_model must arm the one-shot bypass"
 
         captured = {}
@@ -715,6 +722,7 @@ def test_switch_to_lighter_model_grants_one_shot_safety_bypass():
                 "conversationId": "bypass-test",
                 "messages": [{"role": "user", "content": "hello"}],
             })
+            await handler.wait_for_turns()
         finally:
             _turn_orch.evaluate_safety = original_evaluate_safety
 
@@ -739,6 +747,7 @@ def test_switch_to_lighter_model_missing_model_id_sends_error():
         ws = FakeWebSocket()
         handler = WebSocketHandler(ws)
         await handler._dispatch({"type": "switch_to_lighter_model"})
+        await handler.wait_for_turns()
         return ws.sent
 
     import json
@@ -757,6 +766,7 @@ def test_switch_to_lighter_model_unknown_id_sends_error_and_does_not_change_acti
         ws = FakeWebSocket()
         handler = WebSocketHandler(ws)
         await handler._dispatch({"type": "switch_to_lighter_model", "model_id": "totally-fake-model-id"})
+        await handler.wait_for_turns()
         return ws.sent
 
     import json
@@ -788,6 +798,7 @@ def test_proceed_anyway_allow_override_threads_to_inference_request():
         handler._start_inference_from = _capture
 
         await handler._dispatch({"type": "load_model_override", "model_id": "nemo-12b-q5"})
+        await handler.wait_for_turns()
         # _handle_model_override must NOT call _start_inference.
         assert "packet" not in captured, "load_model_override must not start inference directly"
 
@@ -798,6 +809,7 @@ def test_proceed_anyway_allow_override_threads_to_inference_request():
             "messages": [{"role": "user", "content": "go ahead"}],
             "allowOverride": True,
         })
+        await handler.wait_for_turns()
         return ws.sent
 
     import json
@@ -855,6 +867,7 @@ def test_skip_safety_check_bypasses_safety_gate_and_never_calls_evaluate_safety(
                 "messages": [{"role": "user", "content": "hello"}],
                 "skipSafetyCheck": True,
             })
+            await handler.wait_for_turns()
         finally:
             _turn_orch.evaluate_safety = original_evaluate_safety
         return ws.sent
@@ -898,6 +911,7 @@ def test_safety_check_still_fires_without_skip_flag():
             "conversationId": "no-skip-test",
             "messages": [{"role": "user", "content": "hello"}],
         })
+        await handler.wait_for_turns()
         return ws.sent
 
     import json

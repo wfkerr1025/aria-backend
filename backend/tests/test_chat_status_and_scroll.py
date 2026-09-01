@@ -83,6 +83,7 @@ def run_turn(message: str, reply_tokens, monkeypatch):
                 "skipSafetyCheck": True,
             },
         })
+        await handler.wait_for_turns()
         # run_coroutine_threadsafe hands the sends back to this loop from
         # the executor thread; yield once so they land before we look.
         await asyncio.sleep(0.05)

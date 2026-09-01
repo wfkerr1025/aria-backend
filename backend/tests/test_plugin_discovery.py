@@ -180,6 +180,26 @@ def test_the_scan_never_runs_what_it_finds(installed, monkeypatch):
 # PART 1 - the plugins/ folder scan
 # ======================================================
 
+@pytest.fixture(autouse=True)
+def no_real_unity_cli(monkeypatch):
+    """Discovery must not read the developer's own machine.
+
+    The Unity CLI is NOT found through ENV_PROGRAM_ROOTS -- it is
+    found the way command-line tools are, on PATH or beside a Unity
+    Hub install (see discover_unity_cli's docstring). So on a machine
+    that has one -- this one does, at
+    C:/Users/.../AppData/Local/Unity/bin/unity.exe -- it appeared in
+    every result here, and whether the assertions passed depended on
+    what had run before them and left the environment in the right
+    state.
+
+    A test that reads the real machine is not a test of discovery, it
+    is a test of the machine. Neutralised for the whole module, since
+    the leak reached tests that use no fixture at all.
+    """
+    monkeypatch.setattr(plugin_discovery, "discover_unity_cli", lambda: [])
+
+
 @pytest.fixture
 def plugin_folders(tmp_path, monkeypatch):
     root = tmp_path / "project"
@@ -195,6 +215,7 @@ def plugin_folders(tmp_path, monkeypatch):
 
     monkeypatch.setenv(plugin_discovery.ENV_PROJECT_ROOT, str(root))
     monkeypatch.setenv(plugin_discovery.ENV_PROGRAM_ROOTS, str(tmp_path / "empty"))
+
     return root
 
 

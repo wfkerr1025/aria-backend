@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -58,7 +59,10 @@ __all__ = [
     "get_plugin",
     "list_plugins",
     "load_plugins",
+    "default_output_dir",
+    "output_dir",
     "redact_secrets",
+    "with_declared_fields",
     "remove_plugin",
     "save_plugins",
     "test_plugin_connection",
@@ -137,10 +141,12 @@ _FIELD_RULES = {
     },
     "blender": {
         "blender_path": "executable",
+        "output_dir": "output_folder",
     },
     "ludo": {
         "api_key": "secret",
         "model": "choice",
+        "output_dir": "output_folder",
     },
     # The Unity CLI is a different tool from the Unity Editor, so it is
     # a different plugin with its own path -- unity_path runs the editor
@@ -317,13 +323,35 @@ def save_plugins(plugins: dict) -> None:
 # Reading one
 # ======================================================
 
+def with_declared_fields(plugin_id: str, record: dict) -> dict:
+    """A record carrying every field its plugin is allowed to have.
+
+    The config page builds its form from the keys a record actually
+    has, so a field nobody has set yet would simply not appear -- and
+    a setting you cannot see is a setting you do not have. Adding the
+    key here means declaring it in _FIELD_RULES is enough to make it
+    show up, with no hand-editing of plugins.json and nothing written
+    to disk until somebody saves.
+
+    Only ever ADDS empty strings. A stored value is never touched.
+    """
+    if not isinstance(record, dict) or record.get("type"):
+        return record          # a command has its own fields
+
+    filled = dict(record)
+    for name, kind in _FIELD_RULES.get(str(plugin_id or ""), {}).items():
+        if name not in filled and kind != "locked":
+            filled[name] = ""
+    return filled
+
+
 def get_plugin(plugin_id: str) -> dict:
     """One plugin's record. Raises when it is not installed."""
     plugins = load_plugins()
     plugin = plugins.get(str(plugin_id or ""))
     if plugin is None:
         raise PluginError(f"{plugin_id!r} is not an installed plugin")
-    return plugin
+    return with_declared_fields(str(plugin_id or ""), plugin)
 
 
 def get_plugin_by_config_page(page: str) -> dict:
@@ -347,7 +375,7 @@ def get_plugin_by_config_page(page: str) -> dict:
 
     for plugin in load_plugins().values():
         if str(plugin.get("configPage") or "") == wanted:
-            return plugin
+            return with_declared_fields(str(plugin.get("id") or ""), plugin)
 
     raise PluginError(f"no plugin has a configuration page called {wanted!r}")
 
@@ -432,6 +460,104 @@ def _rules_for(plugin_id: str) -> dict:
     return rules
 
 
+# ======================================================
+# Where a plugin writes what it makes
+#
+# Generated assets are the user's, not ARIA's. They were going into
+# aria_output/ beside the source tree, which is the wrong place twice
+# over: it is a repository, and it is not anywhere somebody would
+# think to look for a model they asked for.
+#
+# So each plugin that produces files has an output_dir, and the
+# resolution below is shared rather than written once per plugin --
+# two copies of "where do the files go" drift, and the one nobody
+# updated is the one somebody is using.
+# ======================================================
+
+OUTPUT_FIELD = "output_dir"
+
+# The folder name under the user's own documents. Not the plugin id,
+# which is a slug -- this is a name a person reads in a file dialog.
+_OUTPUT_LABELS = {
+    "blender": "Blender",
+    "ludo": "Ludo",
+}
+
+
+def _output_env(plugin_id: str) -> str:
+    """ARIA_BLENDER_OUTPUT, ARIA_LUDO_OUTPUT, and so on."""
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", str(plugin_id or "")).strip("_").upper()
+    return f"ARIA_{slug}_OUTPUT"
+
+
+def default_output_dir(plugin_id: str) -> Path:
+    """Where a plugin's output goes when nobody has said.
+
+    Under the user's documents, because that is where a person looks
+    for a file they asked a program to make. Falls back to the home
+    directory itself on a machine with no Documents folder, which is
+    every Linux install that never made one.
+    """
+    label = _OUTPUT_LABELS.get(str(plugin_id or ""), str(plugin_id or "ARIA"))
+    home = Path.home()
+    documents = home / "Documents"
+    root = documents if documents.is_dir() else home
+    return root / "ARIA" / label
+
+
+def _output_folder_problems(name: str, stripped: str) -> list:
+    """Why a chosen output folder could not be written to, if it could not."""
+    candidate = Path(stripped)
+    if not candidate.is_absolute():
+        return [f"{name} must be a full path"]
+    if candidate.is_file():
+        return [f"{name}: {stripped} is a file, not a folder"]
+    if candidate.is_dir():
+        return []
+
+    # Not there yet. That is fine as long as something above it is, so
+    # it can actually be created -- "Z:/assets" on a machine with no Z
+    # drive is a typo, not a plan.
+    for ancestor in candidate.parents:
+        if ancestor.is_dir():
+            return []
+        if ancestor.is_file():
+            return [f"{name}: {ancestor} is a file, so {stripped} cannot be made"]
+    return [f"{name}: {stripped} is not on any drive I can see"]
+
+
+def output_dir(plugin_id: str, *, create: bool = True) -> Path:
+    """Where this plugin writes what it makes.
+
+    Environment first, then the plugin's own setting, then the
+    default. Same order and reasoning as every other path in this
+    file: an explicit setting beats a guess, and an environment
+    variable beats both so one run can be redirected without changing
+    anybody's configuration.
+    """
+    configured = str(os.environ.get(_output_env(plugin_id)) or "").strip()
+
+    if not configured:
+        try:
+            plugin = load_plugins().get(str(plugin_id or "")) or {}
+            configured = str(plugin.get(OUTPUT_FIELD) or "").strip()
+        except Exception:  # pragma: no cover - a read fault is not a setting
+            configured = ""
+
+    folder = Path(configured) if configured else default_output_dir(plugin_id)
+
+    if create:
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            # A folder that cannot be made is worth saying out loud
+            # rather than failing later inside Blender with a path it
+            # could not open.
+            raise OSError(
+                f"Could not create the output folder {folder}: {error}") from error
+    return folder
+
+
 def validate_plugin(plugin_id: str, fields: dict) -> list:
     """Everything wrong with these field values, as sentences.
 
@@ -504,6 +630,14 @@ def validate_plugin(plugin_id: str, fields: dict) -> list:
                 problems.append(f"{name} must be a full path")
             elif not candidate.is_dir():
                 problems.append(f"{name}: no folder at {stripped}")
+        elif kind == "output_folder":
+            # Somewhere to WRITE, which is not the same question as
+            # somewhere to read from. A folder that does not exist yet
+            # is the normal case -- somebody types where they want
+            # their assets to go, and it gets made on first use. What
+            # is refused is a path that cannot be made: a file sitting
+            # in the way, or a drive that is not there.
+            problems.extend(_output_folder_problems(name, stripped))
         elif kind == "secret":
             if len(stripped) < 8:
                 problems.append(f"{name} looks too short to be a real key")

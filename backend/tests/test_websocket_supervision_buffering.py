@@ -263,7 +263,12 @@ def test_the_load_is_announced_before_generation_starts():
     source = code_of(handlers.WebSocketHandler._stream_inference)
 
     # After it starts is after the wait it explains.
-    assert source.index("_announce_model_load") < source.index("run_in_executor")
+    # Anchored on the call that STARTS generation, which is now
+    # _stream_with_fallback -- retry and fallback moved the executor
+    # call inside it. The rule is unchanged: the load is announced
+    # before any generation begins, because a silent 55-second model
+    # load reads as a freeze.
+    assert source.index("_announce_model_load") < source.index("_stream_with_fallback")
 
 
 def test_the_client_handles_both_new_packets():

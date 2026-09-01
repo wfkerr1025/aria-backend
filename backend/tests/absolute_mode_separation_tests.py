@@ -180,6 +180,7 @@ def test_handlers_send_structured_safety_warning_when_cloud_mode_has_no_provider
                 "conversationId": "cloud-no-provider-test",
                 "messages": [{"role": "user", "content": "hello"}],
             })
+            await handler.wait_for_turns()
             assert exploded["n"] == 0, "_start_inference must never be reached"
             return [json.loads(p) for p in ws.sent]
 

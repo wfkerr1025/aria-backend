@@ -434,6 +434,7 @@ def test_live_chat_request_switches_model_with_no_provider_call():
                 "multiTurn": True,
             },
         })
+        await handler.wait_for_turns()
         return ws.sent
 
     try:
@@ -473,6 +474,7 @@ def test_live_chat_request_switches_mode_with_no_provider_call():
                 "multiTurn": True,
             },
         })
+        await handler.wait_for_turns()
         return ws.sent
 
     try:
@@ -533,6 +535,7 @@ def test_auto_mode_is_reachable_from_live_chat_request():
                 "multiTurn": True,
             },
         })
+        await handler.wait_for_turns()
         return captured
 
     try:
@@ -590,6 +593,7 @@ def test_local_mode_still_resolves_an_explicit_model_id():
                 "skipSafetyCheck": True,
             },
         })
+        await handler.wait_for_turns()
         return captured
 
     try:
@@ -708,6 +712,7 @@ def test_explicit_model_override_persists_and_wins_over_auto_routing():
                 "multiTurn": True,
             },
         })
+        await handler.wait_for_turns()
 
         captured = {}
 
@@ -734,6 +739,7 @@ def test_explicit_model_override_persists_and_wins_over_auto_routing():
                 "skipSafetyCheck": True,
             },
         })
+        await handler.wait_for_turns()
         return captured
 
     try:
@@ -883,6 +889,7 @@ def test_weather_intent_short_circuits_to_real_tool_no_model_call():
                 "multiTurn": True,
             },
         })
+        await handler.wait_for_turns()
         return ws.sent
 
     try:
@@ -983,6 +990,7 @@ def test_search_intent_runs_the_tool_and_then_answers_with_a_model():
                 "multiTurn": True,
             },
         })
+        await handler.wait_for_turns()
         return captured
 
     try:

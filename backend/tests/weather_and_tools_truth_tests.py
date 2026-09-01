@@ -343,6 +343,7 @@ def test_weather_chat_intent_skipped_when_connection_unhealthy():
                     "multiTurn": True,
                 },
             })
+            await handler.wait_for_turns()
         finally:
             weather_router.get_weather_truthful = original
         return ws.sent
@@ -657,6 +658,7 @@ def test_nl_weather_request_with_county_name_only_uses_fusion():
                 "conversationId": "county-only-test", "multiTurn": True,
             },
         })
+        await handler.wait_for_turns()
         return ws.sent
 
     try:
@@ -697,6 +699,7 @@ def test_nl_weather_request_with_full_city_and_zip_resolves_via_geocoding():
                 "conversationId": "city-zip-test", "multiTurn": True,
             },
         })
+        await handler.wait_for_turns()
         return ws.sent
 
     try:
@@ -737,6 +740,7 @@ def test_nl_weather_correction_flow_never_hallucinates():
             "type": "chat_request",
             "payload": {"messages": [{"role": "user", "content": "what is the weather in Orange County VA"}], "conversationId": "correction-test", "multiTurn": True},
         })
+        await handler.wait_for_turns()
         first_turn = _result_packets(ws.sent)
         ws.sent.clear()
 
@@ -744,6 +748,7 @@ def test_nl_weather_correction_flow_never_hallucinates():
             "type": "chat_request",
             "payload": {"messages": [{"role": "user", "content": "that is incorrect, try again"}], "conversationId": "correction-test", "multiTurn": True},
         })
+        await handler.wait_for_turns()
         second_turn = _result_packets(ws.sent)
         ws.sent.clear()
 
@@ -751,6 +756,7 @@ def test_nl_weather_correction_flow_never_hallucinates():
             "type": "chat_request",
             "payload": {"messages": [{"role": "user", "content": "Orange, VA, 22960"}], "conversationId": "correction-test", "multiTurn": True},
         })
+        await handler.wait_for_turns()
         third_turn = _result_packets(ws.sent)
 
         return first_turn, second_turn, third_turn
@@ -799,6 +805,7 @@ def test_nl_weather_still_uses_fusion_when_owm_and_weatherapi_unconfigured():
             "type": "chat_request",
             "payload": {"messages": [{"role": "user", "content": "weather in Orange County VA"}], "conversationId": "no-keys-test", "multiTurn": True},
         })
+        await handler.wait_for_turns()
         return ws.sent
 
     try:

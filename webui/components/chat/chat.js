@@ -449,6 +449,7 @@ const Chat = {
 
     unifiedLog("chat", "INFO", "Summarize requested", { conversationId: this._conversationId });
 
+    this._setTurnRunning(true);
     bridge.send(IPC.CHAT_REQUEST, {
       messages: this._buildOutgoingMessages(),
       conversationId: this._conversationId,
@@ -504,6 +505,15 @@ const Chat = {
     }
 
     this.sendBtn.addEventListener("click", () => {
+      // One button, two jobs: Send while idle, Stop while a turn is
+      // running. A separate Stop control would sit dead for almost
+      // all of a session, and the moment you want it is exactly the
+      // moment Send is useless.
+      if (this.isTurnRunning()) {
+        chatLog("Stop button clicked.");
+        this.stopCurrentTurn();
+        return;
+      }
       chatLog("Send button clicked.");
       this.sendMessage();
     });
@@ -520,8 +530,15 @@ const Chat = {
     this.input.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" && !ev.shiftKey) {
         ev.preventDefault();
+        // Enter always sends and never stops. Muscle memory would
+        // otherwise cancel the turn it had just started.
         chatLog("Enter pressed → sending message.");
         this.sendMessage();
+      }
+      if (ev.key === "Escape" && this.isTurnRunning()) {
+        ev.preventDefault();
+        chatLog("Escape pressed → stopping the running turn.");
+        this.stopCurrentTurn();
       }
     });
 
@@ -596,6 +613,18 @@ const Chat = {
 
     if (type === IPC.STREAM_ERROR) {
       this._handleStreamError(packet);
+      return;
+    }
+
+    if (type === IPC.STREAM_CANCELLED) {
+      chatLog("stream_cancelled received. requestId=" + packet.requestId);
+      // The bubble itself is closed by the stream_end that follows.
+      return;
+    }
+
+    if (type === IPC.CHAT_STOP_RESULT) {
+      chatLog("chat_stop_result: stopped=" + packet.stopped);
+      this._setTurnRunning(false);
       return;
     }
 
@@ -727,6 +756,7 @@ const Chat = {
     });
 
     // FIXED: Use unified dispatcher instead of window.aria.sendToBackend
+    this._setTurnRunning(true);
     bridge.send(IPC.CHAT_REQUEST, {
       messages: messagesToSend,
       conversationId: this._conversationId,
@@ -770,6 +800,7 @@ const Chat = {
 
     const messagesToSend = this._buildOutgoingMessages();
 
+    this._setTurnRunning(true);
     bridge.send(IPC.CHAT_REQUEST, {
       messages: messagesToSend,
       conversationId: this._conversationId,
@@ -1006,6 +1037,50 @@ const Chat = {
     this._renderActiveStream();
   },
 
+  /* ----------------------------------------------------------
+     Send / Stop
+
+     One button, two jobs. A separate Stop control would sit dead for
+     almost all of a session, and the moment you want it is exactly
+     the moment Send is useless -- so Send becomes Stop while a turn is
+     running.
+
+     This is only possible because chat turns stopped blocking the
+     backend's message loop: a stop packet sent during a turn could
+     not previously even be READ, because the loop was parked awaiting
+     that same turn.
+     ---------------------------------------------------------- */
+
+  _setTurnRunning(running) {
+    const wanted = !!running;
+    if (this._turnRunning === wanted) return;
+    this._turnRunning = wanted;
+
+    const button = this.sendBtn || document.getElementById("chat-send-btn");
+    if (!button) return;
+
+    button.textContent = wanted ? "Stop" : "Send";
+    button.classList.toggle("is-stopping", wanted);
+    // Deliberately NOT disabled while running -- that is the whole
+    // point. A disabled button is what made a slow turn look like a
+    // frozen application.
+    button.disabled = false;
+  },
+
+  // Called by the Send button. Which job it does depends on whether a
+  // turn is in flight.
+  stopCurrentTurn() {
+    chatLog("chat_stop requested.");
+    bridge.send(IPC.CHAT_STOP, {});
+    // Not flipped back here: the button returns to Send when
+    // chat_stop_result (or the stream_end that precedes it) arrives,
+    // so it never claims to have stopped something it has not.
+  },
+
+  isTurnRunning() {
+    return !!this._turnRunning;
+  },
+
   // Begin a new incrementally-rendered aria bubble for this requestId.
   _handleStreamStart(packet) {
     chatLog("stream_start received. requestId=" + packet.requestId);
@@ -1032,12 +1107,31 @@ const Chat = {
     });
 
     if (!this._activeStream || this._activeStream.requestId !== packet.requestId) {
-      // No matching stream_start (missed, out of order, or a stale
-      // requestId from a previous turn) — start a shell now so the
-      // token still renders instead of being silently dropped.
-      chatLog("stream_token with no matching active stream — starting bubble now.");
-      const { line } = this._createMessageShell("aria");
-      this._activeStream = { requestId: packet.requestId, buffer: "", line };
+      // A continuation reopens the bubble it is continuing.
+      //
+      // The backend routes an attached turn's tokens under the
+      // SESSION's requestId -- the one the previous reply used -- so
+      // a token arriving for the last closed stream is "carry on
+      // where you left off", not a new answer. Without this the reply
+      // would arrive as a second bubble with no relationship to the
+      // first, which is the thing multi-turn streaming exists to fix.
+      if (this._lastStream && this._lastStream.requestId === packet.requestId
+          && this._lastStream.line && this._lastStream.line.isConnected) {
+        chatLog("stream_token continues the previous bubble. requestId="
+                + packet.requestId);
+        this._activeStream = {
+          requestId: packet.requestId,
+          buffer: this._lastStream.buffer || "",
+          line: this._lastStream.line,
+        };
+      } else {
+        // No matching stream_start (missed, out of order, or a stale
+        // requestId from a previous turn) — start a shell now so the
+        // token still renders instead of being silently dropped.
+        chatLog("stream_token with no matching active stream — starting bubble now.");
+        const { line } = this._createMessageShell("aria");
+        this._activeStream = { requestId: packet.requestId, buffer: "", line };
+      }
     }
 
     this._activeStream.buffer += token;
@@ -1062,11 +1156,20 @@ const Chat = {
       if (this._activeStream.buffer) {
         this._pushHistory("assistant", this._activeStream.buffer);
       }
+      // Kept addressable, so a continuation can append to it rather
+      // than opening a second reply. Only the LAST one: an older
+      // bubble is not something "continue" could ever mean.
+      this._lastStream = {
+        requestId: this._activeStream.requestId,
+        buffer: this._activeStream.buffer,
+        line: this._activeStream.line,
+      };
       this._activeStream = null;
       this._maybeScroll("stream_end");
     }
     this._clearProgress();
     this.hideTyping();
+    this._setTurnRunning(false);
   },
 
   // Surface a mid-stream failure inline instead of leaving a dangling

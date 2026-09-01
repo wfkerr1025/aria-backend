@@ -5,6 +5,7 @@ import json
 import re
 import asyncio
 import functools
+import threading
 import time
 
 from backend.core.provider_router import ProviderRouter
@@ -36,6 +37,9 @@ from backend.core import action_render
 BUFFER_FOR_SUPERVISION = False
 
 
+from backend.core import stream_session
+from backend.core import tool_jobs
+from backend.core import turn_budget
 from backend.core.turn_orchestrator import orchestrate_turn
 from backend.core.tool_orchestrator import run_answer_actions
 from backend.core.turn_types import (
@@ -130,6 +134,37 @@ def _expects_an_action(user_text: str, history=()) -> bool:
 
 
 
+# Packets that mutate this connection's turn state, and therefore run
+# one at a time in arrival order. Everything else -- heartbeats,
+# status reads, tool listings -- is free to overtake them.
+SERIALISED_TYPES = frozenset({
+    "chat_request",
+    "load_model_override",
+    "switch_to_lighter_model",
+    "context_reset",
+})
+
+# Stopping the turn that is running.
+#
+# DELIBERATELY NOT IN SERIALISED_TYPES. A stop that queued behind the
+# turn it is meant to stop would arrive after that turn had finished,
+# which is not a stop -- it is a no-op with a misleading name. It has
+# to overtake, which is only possible at all because chat turns stopped
+# blocking the message loop.
+STOP_TYPE = "chat_stop"
+
+# Background tool work.
+#
+# DELIBERATELY NOT IN SERIALISED_TYPES, for the same reason chat_stop
+# is not: a job request that queued behind a running turn would start
+# only once that turn had finished, which is the opposite of running
+# it alongside. They mutate no turn state -- that is the criterion
+# SERIALISED_TYPES encodes -- so they overtake.
+JOB_REQUEST_TYPE = "tool_job_request"
+JOB_CANCEL_TYPE = "tool_job_cancel"
+JOB_STATUS_TYPE = "tool_jobs_status"
+
+
 class WebSocketHandler:
     """
     Handles WebSocket messages from the frontend.
@@ -143,6 +178,101 @@ class WebSocketHandler:
         self.router = ProviderRouter()
         self.streamer = StreamingEngine()
         self.suggester = LighterModelEngine()
+
+        # WHY A CHAT TURN IS A TASK AND NOT AN AWAIT
+        # ------------------------------------------
+        # The message loop reads with `async for raw in self.websocket:`
+        # and then `await self._dispatch(packet)`, so for as long as a
+        # turn was awaited there, NOTHING ELSE WAS READ -- heartbeats
+        # included.
+        #
+        # Measured twice on the developer's machine. A commit request
+        # ran the pytest suite for three minutes and the client gave up
+        # and reported "reconnecting" while the commit was still
+        # working; _dispatch_off_the_loop was added for that. Then a
+        # Ludo.ai image generation took 25 seconds and every
+        # heartbeat_ack stalled until it finished, and a 3D generation
+        # took two minutes with the UI showing nothing at all.
+        #
+        # So the turn runs as its own task and the loop goes back to
+        # reading.
+        #
+        # WHAT THE LOCK IS FOR, WHICH IS NOT THE SAME THING
+        # -------------------------------------------------
+        # Letting the loop run on means a packet that arrives DURING a
+        # turn is now handled during it. For a heartbeat that is the
+        # entire point. For a context_reset, a model override or a
+        # lighter-model switch it would be a race that could not happen
+        # before: they mutate the same session state a turn is reading,
+        # and one landing mid-turn could clear the history out from
+        # under it or change the model it had already resolved.
+        #
+        # Everything that mutates that state therefore goes through
+        # _run_serialised and takes this lock. asyncio.Lock hands it to
+        # waiters in arrival order, so those packets keep exactly the
+        # ordering they had when the loop blocked -- while heartbeats
+        # and status reads, which mutate nothing, no longer queue
+        # behind a generation.
+        self._turn_lock = asyncio.Lock()
+        self._turns_in_flight = set()
+
+        # The turn a stop packet would stop, and the flag that stops it.
+        #
+        # WHY A threading.Event AND NOT JUST task.cancel()
+        # ------------------------------------------------
+        # Cancelling the task stops this coroutine awaiting the result.
+        # It does NOT stop the worker thread: _stream_inference hands
+        # streamer.stream() to run_in_executor, and that thread goes on
+        # producing tokens and handing them back through
+        # run_coroutine_threadsafe. Cancel alone would therefore stop
+        # the waiting and leave the tokens still arriving.
+        #
+        # The event is read by send_packet_sync on the worker thread,
+        # which is why it is a threading.Event and not an asyncio one.
+        # Every tool job this connection owns. Per-connection, not
+        # global: cancellation, teardown and reporting all follow the
+        # socket, exactly as _turns_in_flight does. A global set would
+        # let one client's disconnect kill another's work.
+        self._tool_jobs = tool_jobs.ToolJobSet()
+
+        # Bubbles that outlive the turn that opened them. Opt-in: a
+        # turn that opens no session behaves exactly as it does today,
+        # which is the right trade for the case that happens most --
+        # one question, one answer.
+        self._sessions = stream_session.SessionRegistry()
+        # The session THIS turn is attached to, if any. Per-turn, so it
+        # is cleared with the rest of the turn state.
+        self._turn_session = None
+
+        self._turn_stop = None
+        self._turn_task = None
+        # Why the turn is ending, once something has decided. Set by
+        # _end_turn and cleared with the rest of the turn state.
+        #
+        # This is what makes stop and timeout safe TOGETHER. Without
+        # it: a user clicks Stop at 119.8s, the deadline fires at
+        # 120.0s, and the client receives two stream_end packets for
+        # one bubble and two contradictory explanations of why.
+        self._turn_ending = None
+        # Which attempt of this turn is running, and what has been
+        # tried. A retry or a fallback is still ONE turn and ONE
+        # bubble; these are what keep the second attempt from opening
+        # a second reply.
+        self._turn_attempt = 0
+        self._turn_models_tried = []
+        # The deadline handle, armed when a chat turn claims the lock
+        # and disarmed when it lets go.
+        self._turn_deadline = None
+        self._turn_budget = None
+        self._turn_started_at = None
+        self._turn_kind = None
+        # A Ludo job that outlived its turn. Tier 3: the credit is
+        # already spent, so the id is the only thing worth keeping.
+        self._turn_job_id = None
+        # The requestId the client opened its bubble with. A stop has to
+        # close that same bubble or the UI waits forever for an end that
+        # the cancelled turn will never send.
+        self._turn_stream_id = None
 
         # Every connection starts as its own conversation; a context_reset
         # packet (or the client sending a fresh conversationId) rotates it.
@@ -271,6 +401,9 @@ class WebSocketHandler:
                     })
         finally:
             logger.debug("Exiting async message loop.")
+            self._sessions.close_all("disconnected")
+            await self._tool_jobs.cancel_all()
+            await self._cancel_turns_in_flight()
             heartbeat_task.cancel()
             self._health_monitor.stop()
             connection_state.connection_closed()
@@ -406,24 +539,31 @@ class WebSocketHandler:
             # IPC_HANDLED_TYPES branch below for the actual heartbeat_ack.
             backend_watchdog.watchdog.record_heartbeat()
 
-        if ptype == "chat_request":
-            logger.debug("chat_request received.")
-            await self._handle_chat_request(packet)
+        # The four packets that mutate this connection's turn state.
+        # Each runs as its own task holding _turn_lock: the loop keeps
+        # reading, and they keep their arrival order relative to one
+        # another. See __init__ for why both halves are needed.
+        if ptype == JOB_REQUEST_TYPE:
+            await self._handle_tool_job_request(packet)
             return
 
-        if ptype == "load_model_override":
-            logger.debug("load_model_override received.")
-            await self._handle_model_override(packet)
+        if ptype == JOB_CANCEL_TYPE:
+            await self._handle_tool_job_cancel(packet)
             return
 
-        if ptype == "switch_to_lighter_model":
-            logger.debug("switch_to_lighter_model received.")
-            await self._handle_switch_to_lighter_model(packet)
+        if ptype == JOB_STATUS_TYPE:
+            await self._send({"type": JOB_STATUS_TYPE + "_result",
+                              "jobs": self._tool_jobs.snapshot()})
             return
 
-        if ptype == "context_reset":
-            logger.debug("context_reset received.")
-            await self._handle_context_reset(packet)
+        if ptype == STOP_TYPE:
+            logger.debug("chat_stop received.")
+            await self._handle_chat_stop()
+            return
+
+        if ptype in SERIALISED_TYPES:
+            logger.debug("%s received; running as a serialised turn.", ptype)
+            self._run_serialised(ptype, packet)
             return
 
         # Batch 3 — "Tools must not run during backend disconnect": gated
@@ -453,6 +593,499 @@ class WebSocketHandler:
             "type": "error",
             "message": f"Unknown packet type: {ptype}"
         })
+
+    def _run_serialised(self, ptype: str, packet: dict) -> None:
+        """Start a state-mutating packet as its own ordered task.
+
+        Returns immediately, which is the whole point: the caller is
+        the message loop, and it has other packets to read.
+        """
+        task = asyncio.create_task(self._serialised_turn(ptype, packet))
+
+        # Held so the task is not garbage collected mid-flight --
+        # asyncio keeps only a weak reference -- and so the connection
+        # can cancel what is still running when it closes.
+        self._turns_in_flight.add(task)
+        task.add_done_callback(self._turns_in_flight.discard)
+
+    async def _serialised_turn(self, ptype: str, packet: dict) -> None:
+        """One mutating packet, in arrival order, off the message loop.
+
+        An exception here cannot reach the message loop's try/except
+        any more -- it is a different task -- so it is caught, logged
+        and reported exactly as dispatch errors were. Without this the
+        turn would fail silently and asyncio would print "Task
+        exception was never retrieved" to a log nobody reads.
+        """
+        handlers = {
+            "chat_request": self._handle_chat_request,
+            "load_model_override": self._handle_model_override,
+            "switch_to_lighter_model": self._handle_switch_to_lighter_model,
+            "context_reset": self._handle_context_reset,
+        }
+        handler = handlers.get(ptype)
+        if handler is None:  # pragma: no cover - SERIALISED_TYPES gates this
+            logger.error("no serialised handler for %s", ptype)
+            return
+
+        try:
+            async with self._turn_lock:
+                if ptype == "chat_request":
+                    # Claimed here, inside the lock, so it always names
+                    # the turn that is actually running rather than one
+                    # still queued behind it.
+                    self._turn_stop = threading.Event()
+                    self._turn_task = asyncio.current_task()
+                    self._turn_ending = None
+                    self._turn_job_id = None
+                    self._turn_attempt = 0
+                    self._turn_models_tried = []
+                    self._arm_deadline(packet)
+                    # Tool retries read the same stop flag and deadline
+                    # the turn does, so a stopped turn stops retrying.
+                    self._tool_jobs.bind_turn(
+                        stop_flag=self._turn_stop,
+                        deadline=(time.monotonic() + self._turn_budget
+                                  if self._turn_budget else None))
+                    self._attach_session(packet)
+                try:
+                    if ptype == "context_reset":
+                        self._close_session("reset")
+                        # Resetting the conversation while three of its
+                        # jobs are still writing results into it is the
+                        # race this whole design exists to prevent.
+                        await self._tool_jobs.cancel_all()
+                    await handler(packet)
+                finally:
+                    if ptype == "chat_request":
+                        self._disarm_deadline()
+                        self._turn_stop = None
+                        self._turn_task = None
+                        self._turn_stream_id = None
+                        self._turn_ending = None
+                        self._turn_budget = None
+                        self._turn_started_at = None
+                        self._turn_kind = None
+                        self._turn_job_id = None
+                        self._turn_session = None
+                        self._turn_attempt = 0
+                        self._turn_models_tried = []
+                        self._tool_jobs.bind_turn(stop_flag=None, deadline=None)
+        except asyncio.CancelledError:
+            # The connection is going away. Nothing to report to a
+            # socket that is closing.
+            logger.debug("%s cancelled while running.", ptype)
+            raise
+        except Exception as error:
+            logger.exception("Error while handling %s: %s", ptype, error)
+            unified_log("websocket", "ERROR", f"Turn error: {error}", {
+                "packet_type": ptype,
+            })
+            try:
+                await self._send({
+                    "type": "error",
+                    "message": f"Dispatch error: {error}",
+                })
+            except Exception:  # pragma: no cover - the socket may be gone
+                logger.debug("could not report a turn error; socket closed")
+
+    def _arm_deadline(self, packet: dict) -> None:
+        """Start this turn's clock.
+
+        loop.call_later rather than asyncio.wait_for around the turn.
+        wait_for cancels the coroutine that is AWAITING the result and
+        does nothing to the executor thread producing tokens -- the
+        exact failure the stop work already had to solve. The deadline
+        has to go through the same two-step terminator, so it is a
+        timer that calls it.
+        """
+        # The kind is PREDICTED from the message, not taken from the
+        # client -- a client that could name its own budget could name
+        # a large one. turn_budget.classify asks the same public
+        # predicates the short-circuits use to claim the turn, so
+        # routing and budgeting cannot disagree.
+        kind = str(packet.get("turnKind") or "").strip()
+        if not kind:
+            kind = turn_budget.classify(self._latest_user_text(packet))
+
+        budget = turn_budget.budget_for(
+            kind,
+            requested=packet.get("deadlineSeconds") or packet.get("deadline_seconds"),
+        )
+        self._turn_kind = kind
+        self._turn_budget = budget
+
+        loop = asyncio.get_running_loop()
+        self._turn_deadline = loop.call_later(
+            budget, lambda: asyncio.ensure_future(self._on_turn_deadline(budget)))
+        logger.debug("turn deadline armed at %.0fs", budget)
+
+    @staticmethod
+    def _latest_user_text(packet: dict) -> str:
+        """The message this turn is about, from whatever shape arrived.
+
+        Reads the LAST user message rather than the first: multi-turn
+        packets carry the whole conversation, and classifying by
+        messages[0] would budget every turn by whatever was said at
+        the start of the session.
+        """
+        direct = packet.get("message") or packet.get("text")
+        if isinstance(direct, str) and direct.strip():
+            return direct
+
+        messages = packet.get("messages")
+        if isinstance(messages, list):
+            for entry in reversed(messages):
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("role") or "") != "user":
+                    continue
+                content = entry.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+        return ""
+
+    def _disarm_deadline(self) -> None:
+        """A turn that finished on time must never fire its timer."""
+        handle, self._turn_deadline = self._turn_deadline, None
+        if handle is not None:
+            handle.cancel()
+
+    async def _on_turn_deadline(self, budget: float) -> None:
+        logger.warning("turn passed its %.0fs budget; ending it", budget)
+        unified_log("websocket", "WARNING", "Turn timed out", {
+            "budget_seconds": budget,
+        })
+        if not await self._end_turn("timeout", budget=budget):
+            return
+
+        packet = {
+            "type": "turn_timeout",
+            "reason": "timeout",
+            "budgetSeconds": budget,
+            "message": self._ending_message("timeout", budget),
+        }
+        # Tier 3. If a Ludo generation outlived the turn, the credit is
+        # already gone and the job may still finish -- dropping the id
+        # here would turn a recoverable delay into a paid-for asset
+        # nobody can reach.
+        if self._turn_job_id:
+            packet["jobId"] = self._turn_job_id
+            packet["message"] += (
+                f" The Ludo job is still running: say "
+                f"\u201ccollect {self._turn_job_id} in Ludo\u201d to fetch it, "
+                f"which costs nothing."
+            )
+        await self._send(packet)
+
+    def reuses_open_bubble(self) -> bool:
+        """Whether this attempt should write into the bubble already open.
+
+        A retry or a fallback is still ONE answer to ONE question. A
+        second stream_start would render a second reply and leave the
+        first one never closed, so attempts after the first reuse the
+        stream id the first opened.
+
+        A method rather than two lines inside send_packet_sync's
+        closure, for the same reason delivery_stopped() is one: it is
+        a decision worth testing on its own, and a closure cannot be
+        reached from a test.
+        """
+        return bool(self._turn_attempt > 1 and self._turn_stream_id is not None)
+
+    def delivery_stopped(self) -> bool:
+        """Whether this turn's output should stop reaching the client.
+
+        A method rather than two lines inside send_packet_sync's
+        closure, because this is the half of a stop that actually
+        stops the tokens and it deserves a test of its own. Called
+        from the executor's worker thread, which is why the flag
+        behind it is a threading.Event.
+        """
+        stop = self._turn_stop
+        return stop is not None and stop.is_set()
+
+    # What each ending is called, and what the user is told. The
+    # honesty clause is shared because the FACTS are shared -- only
+    # the trigger differs, so only the first sentence does.
+    ENDING_REASONS = {
+        "stopped": "Stopped.",
+        "timeout": "This turn ran past its {budget:.0f}s limit and was ended.",
+    }
+
+    ENDING_CAVEAT = (
+        "Anything already sent to a model or an API finishes on its own -- "
+        "its output is discarded, and a paid generation is not refunded."
+    )
+
+    async def _end_turn(self, reason: str, *, budget: float = 0.0) -> bool:
+        """Stop delivering the running turn. False if none was running.
+
+        ONE PATH, TWO REASONS. Stop and timeout differ in what
+        triggers them and what is said; everything after the trigger
+        is identical, and two code paths that must stay in step will
+        not.
+
+        WHAT THIS DOES AND DOES NOT DO, PLAINLY
+        ---------------------------------------
+        It stops the CLIENT seeing any more of this turn, within one
+        token, and it frees the lock so the next message can be
+        answered.
+
+        It does not kill the work. streamer.stream() runs on a worker
+        thread and Python cannot kill a thread; none of the providers
+        in backend.llm.providers accepts an external cancellation
+        signal, so a local generation loop or a cloud request already
+        in flight runs to completion in the background with its output
+        discarded.
+
+        For a Ludo.ai turn that matters more than usual: the credit is
+        spent when the request is made, so ending the turn does not
+        refund it. What CAN be saved is the job id, which is why it
+        travels with the answer.
+        """
+        task = self._turn_task
+        stop = self._turn_stop
+
+        if task is None or task.done():
+            return False
+
+        # Idempotent. A stop landing during a timeout -- or two clicks
+        # -- must not cancel twice, close the bubble twice, or explain
+        # itself twice.
+        if self._turn_ending is not None:
+            logger.debug("turn already ending (%s); ignoring %s",
+                         self._turn_ending, reason)
+            return True
+        self._turn_ending = reason
+
+        # The flag first, then the cancel. In that order the worker
+        # thread is already dropping packets by the time the coroutine
+        # unwinds; the other way round leaves a window in which tokens
+        # from an ended turn still reach the client.
+        if stop is not None:
+            stop.set()
+        task.cancel()
+
+        # A session that survived a stop or a timeout would glue the
+        # next message onto a bubble the user has already abandoned.
+        self._close_session(reason)
+
+        # Close the bubble the client opened. The ended turn will never
+        # send its own stream_end, and chat.js waits for one.
+        request_id = self._turn_stream_id
+        await self._send({"type": "stream_cancelled", "requestId": request_id})
+        await self._send({"type": "stream_end", "requestId": request_id})
+        await self._emit_status(turn_status.IDLE)
+        return True
+
+    def _ending_message(self, reason: str, budget: float) -> str:
+        opening = self.ENDING_REASONS.get(reason, "The turn was ended.")
+        return opening.format(budget=budget) + " " + self.ENDING_CAVEAT
+
+    # Words that mean "keep going" rather than "answer this". The
+    # first real caller of the session machinery: today a continuation
+    # opens a fresh bubble, so a long answer arrives as two replies
+    # with no relationship between them.
+    CONTINUATION_WORDS = (
+        "continue", "carry on", "keep going", "go on", "and then",
+        "more", "next", "finish that", "carry on with that",
+    )
+
+    @classmethod
+    def _is_continuation(cls, text: str) -> bool:
+        said = str(text or "").strip().lower().strip(".!? ")
+        if not said or len(said) > 40:
+            # A continuation is a nudge, not a paragraph. A long
+            # message that happens to start with "more" is a new
+            # request.
+            return False
+        return any(said == word or said.startswith(word + " ")
+                   for word in cls.CONTINUATION_WORDS)
+
+    def _attach_session(self, packet: dict) -> None:
+        """Join this turn to an open session, if it should.
+
+        Only a continuation attaches today. Streaming across a tool
+        call -- the other reader of this machinery -- needs a
+        multi-step loop in the orchestrator that does not exist yet,
+        and inventing a caller for it would be building a road to
+        nowhere.
+        """
+        text = self._latest_user_text(packet)
+        if not self._is_continuation(text):
+            return
+
+        conversation_id = str(packet.get("conversationId")
+                              or self.conversation_id or "")
+        # Model is not compared here: the turn's model has not been
+        # resolved yet at attach time. It is compared when the session
+        # is remembered, and a turn that resolves to a different model
+        # replaces the session rather than continuing it.
+        session = self._sessions.attachable(conversation_id, None)
+        if session is None:
+            return
+
+        session.begin_turn(text)
+        self._turn_session = session
+        logger.debug("turn attached to session %s", session.session_id)
+
+    def _remember_session(self, request=None) -> None:
+        """Keep this turn's bubble attachable by a continuation.
+
+        Conservative in the way that matters: remembering cannot glue
+        anything together by itself. Attaching needs a continuation
+        PHRASE, the same conversation, the same model, and less than
+        stream_session.IDLE_SECONDS since the last turn. Any of stop,
+        timeout, context_reset or disconnect closes it.
+        """
+        if self._turn_session is not None:
+            return                      # already attached to one
+        if self._turn_stream_id is None:
+            return                      # nothing streamed; no bubble
+
+        self._sessions.open(
+            str(self.conversation_id or ""),
+            model_id=getattr(request, "model_id", None),
+            stream_id=self._turn_stream_id,
+        )
+
+    def _close_session(self, outcome: str) -> None:
+        """End the bubble. Stop, timeout, reset and disconnect all
+        come here, because a session that survives any of those is a
+        bubble the client is no longer showing."""
+        self._sessions.close(str(self.conversation_id or ""), outcome)
+        self._turn_session = None
+
+    def _job_progress(self, job) -> None:
+        """Report one job's state change. Called from the loop."""
+        asyncio.ensure_future(self._send({
+            "type": "tool_job_update", **job.as_dict(),
+        }))
+
+    async def _handle_tool_job_request(self, packet: dict) -> None:
+        """Run one or more tools alongside whatever else is happening.
+
+        Progress is streamed and results are batched. Four tools
+        finishing in a random order produce four interruptions and no
+        narrative, so each state change emits a small packet and the
+        answer is composed once, when everything is terminal.
+        """
+        raw = packet.get("jobs") or packet.get("tools") or []
+        if isinstance(raw, dict):
+            raw = [raw]
+
+        specs = []
+        for entry in raw:
+            if not isinstance(entry, dict) or not entry.get("tool"):
+                continue
+            specs.append(tool_jobs.ToolJobSpec(
+                tool=str(entry["tool"]),
+                args=dict(entry.get("args") or {}),
+                family=str(entry.get("family") or ""),
+                label=str(entry.get("label") or ""),
+                timeout_seconds=entry.get("timeoutSeconds"),
+            ))
+
+        if not specs:
+            await self._send({"type": JOB_REQUEST_TYPE + "_result",
+                              "ok": False,
+                              "message": "No tools were named."})
+            return
+
+        refusal = tool_jobs.spend_check(
+            specs, confirmed=bool(packet.get("confirmedSpend")))
+        if refusal:
+            await self._send({"type": JOB_REQUEST_TYPE + "_result",
+                              "ok": False, "message": refusal})
+            return
+
+        async def run() -> None:
+            jobs = await tool_jobs.route_tools_in_parallel(
+                specs, job_set=self._tool_jobs,
+                on_progress=self._job_progress,
+                confirmed_spend=bool(packet.get("confirmedSpend")))
+            await self._send({"type": "tool_jobs_done",
+                              "jobs": [job.as_dict() for job in jobs]})
+
+        # Its own task, so several fan-outs can overlap and none of
+        # them blocks the message loop.
+        task = asyncio.create_task(run())
+        self._turns_in_flight.add(task)
+        task.add_done_callback(self._turns_in_flight.discard)
+
+        await self._send({"type": JOB_REQUEST_TYPE + "_result",
+                          "ok": True, "count": len(specs)})
+
+    async def _handle_tool_job_cancel(self, packet: dict) -> None:
+        job_id = str(packet.get("jobId") or "").strip()
+        job = self._tool_jobs.get(job_id) if job_id else None
+
+        if job is None:
+            await self._send({"type": JOB_CANCEL_TYPE + "_result",
+                              "ok": False,
+                              "message": "No such job is running."})
+            return
+
+        before = job.state
+        stopped = await self._tool_jobs.cancel(job_id)
+
+        # What cancelling ACHIEVED depends on the family, and saying
+        # "cancelled" without saying which would be the half-truth
+        # this codebase keeps paying for.
+        if before == tool_jobs.QUEUED:
+            said = "It had not started, so nothing was spent."
+        else:
+            said = tool_jobs.cancel_truth(job.family)
+
+        await self._send({"type": JOB_CANCEL_TYPE + "_result",
+                          "ok": bool(stopped), "jobId": job_id,
+                          "state": job.state, "message": said})
+
+    async def _handle_chat_stop(self) -> None:
+        """The stop packet. A thin caller of the shared terminator."""
+        if not await self._end_turn("stopped"):
+            await self._send({
+                "type": STOP_TYPE + "_result",
+                "stopped": False,
+                "message": "There is nothing running to stop.",
+            })
+            return
+
+        await self._send({
+            "type": STOP_TYPE + "_result",
+            "stopped": True,
+            "message": self._ending_message("stopped", 0.0),
+        })
+
+    async def wait_for_turns(self) -> None:
+        """Wait for every serialised turn that is currently running.
+
+        A caller that dispatched a chat_request and wants to see what
+        it did has to wait for it now -- _dispatch hands the turn to a
+        task and returns, which is the point of the change. Tests use
+        this; so could a shutdown that wants to finish rather than
+        cancel.
+        """
+        while True:
+            pending = [task for task in self._turns_in_flight
+                       if not task.done()]
+            if not pending:
+                return
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _cancel_turns_in_flight(self) -> None:
+        """Stop anything still running when the connection ends.
+
+        Without this a two-minute generation would go on writing to a
+        socket nobody is reading, and the task would outlive the
+        handler that owns its session state.
+        """
+        pending = list(self._turns_in_flight)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _dispatch_off_the_loop(self, packet: dict) -> dict:
         """Run an ipc_router handler without stopping the event loop.
@@ -560,6 +1193,12 @@ class WebSocketHandler:
             # to the loop the same way stream tokens are.
             asyncio.run_coroutine_threadsafe(self._emit_status(value), loop)
 
+        def record_job(job_id: str) -> None:
+            # Called from the executor thread. A plain assignment, so
+            # no cross-thread scheduling is needed -- and it is read
+            # only by _on_turn_deadline, on the loop.
+            self._turn_job_id = job_id
+
         result = await loop.run_in_executor(
             None,
             functools.partial(
@@ -568,6 +1207,7 @@ class WebSocketHandler:
                 mode_manager=self.router.mode_manager,
                 suggester=self.suggester,
                 on_status=forward_status,
+                on_job=record_job,
             ),
         )
 
@@ -706,7 +1346,8 @@ class WebSocketHandler:
         await self._send({"type": "stream_start", "modelId": model_id, "requestId": request_id})
         await self._send({"type": "stream_token", "modelId": model_id,
                           "requestId": request_id, "token": text})
-        await self._send({"type": "stream_end", "modelId": model_id, "requestId": request_id})
+        await self._send({"type": "stream_end", "modelId": model_id,
+                          "requestId": request_id})
 
     async def _start_inference_from(self, result) -> None:
         """Stream the provider reply for a turn the orchestrator prepared.
@@ -1008,6 +1649,12 @@ class WebSocketHandler:
         # revision at all.
         published: list[str] = []
 
+        # Where a held-back stream_error lands, so the attempt loop can
+        # read it after the engine returns. The engine reports failure
+        # by SENDING a packet rather than raising, so there is nothing
+        # to catch -- this is how a failure is noticed at all.
+        failure: dict = {}
+
         # The answer, separated from the scaffolding, before anything is
         # sent. optimize_response below still runs on the raw text, so the
         # log keeps recording what the model actually produced -- what
@@ -1029,8 +1676,56 @@ class WebSocketHandler:
             # tokens actually arrive in real time instead of in a burst.
             logger.debug("Streaming packet: %s", packet)
 
+            # Asked on the WORKER THREAD, which is the only place that
+            # can stop the tokens. Cancelling the task stops the
+            # coroutine awaiting the result; this thread would go on
+            # sending regardless.
+            if self.delivery_stopped():
+                return
+
+            # A provider failure is not final until the chain says so.
+            # Forwarding it here would show the user an error and then
+            # stream a successful fallback answer underneath it.
+            if packet.get("type") == "stream_error":
+                failure["message"] = str(packet.get("message") or "")
+                failure["code"] = packet.get("code")
+                return
+
+            # An attached turn's packets belong to the SESSION's bubble.
+            # The engine numbers them by its own request object, which
+            # the client has never heard of and would drop.
+            session = self._turn_session
+            if (session is not None and session.open
+                    and packet.get("requestId") is not None):
+                packet = {**packet, "requestId": session.stream_id}
+
             if packet.get("type") == "stream_start":
+                # A RETRY OR FALLBACK IS STILL ONE ANSWER. See
+                # reuses_open_bubble().
+                if self.reuses_open_bubble():
+                    stream_id["value"] = self._turn_stream_id
+                    return
+
+                # ATTACHING. A turn joining an open session must not
+                # open a second bubble: the client would render two
+                # replies for one continuous answer, and the first
+                # would never be closed.
+                session = self._turn_session
+                if session is not None and session.open:
+                    stream_id["value"] = session.stream_id
+                    self._turn_stream_id = session.stream_id
+                    asyncio.run_coroutine_threadsafe(
+                        self._emit_status(turn_status.WRITING,
+                                          tool_runs=list(tool_runs or [])),
+                        loop,
+                    )
+                    return          # swallowed: the bubble is already open
+
                 stream_id["value"] = packet.get("requestId")
+                # Kept on the handler too, so a stop packet -- which
+                # runs on the loop and cannot see this closure -- can
+                # close the same bubble.
+                self._turn_stream_id = packet.get("requestId")
                 asyncio.run_coroutine_threadsafe(
                     self._emit_status(turn_status.WRITING, tool_runs=list(tool_runs or [])),
                     loop,
@@ -1123,7 +1818,21 @@ class WebSocketHandler:
             asyncio.run_coroutine_threadsafe(self._send(packet), loop)
 
         try:
-            await loop.run_in_executor(None, self.streamer.stream, request, send_packet_sync)
+            await self._stream_with_fallback(request, send_packet_sync,
+                                             failure, published, loop)
+
+            # Remember the bubble, so "continue" can append to it
+            # rather than opening a second reply with no relationship
+            # to the first.
+            #
+            # Every streamed turn, not only ones flagged continuable.
+            # A flag would need a producer -- something that knows the
+            # answer was cut short -- and no provider here reports a
+            # finish reason. Remembering costs one dictionary entry
+            # per conversation and cannot glue anything together on
+            # its own: only a continuation PHRASE attaches, and the
+            # session is closed by stop, timeout, reset and disconnect.
+            self._remember_session(request)
 
             # The RAW answer drives the actions, and a rendered copy is
             # what the user reads. They must not be the same string:
@@ -1166,6 +1875,146 @@ class WebSocketHandler:
     # -----------------------------------------------------
     # Buffered delivery
     # -----------------------------------------------------
+    async def _stream_with_fallback(self, request, send_packet_sync,
+                                    failure: dict, published: list,
+                                    loop) -> None:
+        """Run the turn, retrying and falling back into the same bubble.
+
+        WHY THE RETRY STOPS ONCE ANYTHING IS ON SCREEN
+        ----------------------------------------------
+        The hardest rule here, and the least obvious. Once tokens have
+        reached the client, a retry has only bad options: stream the
+        new answer after the old half and show one reply made of two
+        different attempts, or discard what the user has already read.
+        Both are worse than saying it failed.
+
+        So retry and fallback apply only while `published` is empty.
+        After that a failure is surfaced -- which is also why the
+        error envelope carries `partial`, so the reply says whether
+        the user is looking at half an answer.
+
+        WHY IT NEVER LOADS A MODEL ITSELF
+        ---------------------------------
+        It sets request.model_id and re-enters the same path the first
+        attempt took. Mode separation, the capability gate and
+        _evaluate_safety therefore run over a fallback exactly as they
+        run over an original choice -- the brief that built this
+        system said never to switch a model around the safety gate,
+        and returning an id rather than loading one is how that holds.
+        """
+        from backend.core import fallback_chain, retry_policy
+
+        policy = retry_policy.PROVIDER_POLICY
+        started_on = getattr(request, "model_id", None)
+        mode = fallback_chain.mode_for_turn(
+            needs_tools=bool(getattr(request, "tools", None)))
+
+        attempts = 0
+        while True:
+            attempts += 1
+            self._turn_attempt = attempts
+            failure.clear()
+
+            current = getattr(request, "model_id", None)
+            if current and current not in self._turn_models_tried:
+                self._turn_models_tried.append(current)
+
+            await loop.run_in_executor(
+                None, self.streamer.stream, request, send_packet_sync)
+
+            if not failure:
+                return                       # it worked
+
+            reason = failure.get("message") or "the provider failed"
+
+            # Anything on screen ends it. See the docstring.
+            if published:
+                logger.warning("provider failed after %d token(s) were shown; "
+                               "not retrying", len(published))
+                await self._report_turn_error(
+                    "provider_failed", attempts, reason, partial=True)
+                return
+
+            if self.delivery_stopped() or self._turn_ending is not None:
+                return                       # stop or timeout owns this now
+
+            # Same model again, if the failure could plausibly clear.
+            if retry_policy.should_retry(reason, policy, attempts):
+                logger.info("provider attempt %d failed transiently: %s",
+                            attempts, reason)
+                await self._emit_status(turn_status.THINKING)
+                went = await asyncio.to_thread(
+                    retry_policy.sleep_before_retry, policy, attempts + 1,
+                    remaining_budget=self._remaining_turn_budget(),
+                    stopped=self.delivery_stopped)
+                if not went:
+                    await self._report_turn_error(
+                        "provider_failed", attempts, reason)
+                    return
+                continue
+
+            # A different model, if there is one left.
+            following = fallback_chain.next_model(
+                current, mode, tried=self._turn_models_tried)
+            if following is None:
+                await self._report_turn_error(
+                    "fallback_exhausted", attempts, reason)
+                return
+
+            logger.warning("falling back from %s to %s: %s",
+                           current or started_on, following, reason)
+            unified_log("websocket", "WARNING", "Model fallback", {
+                "from": current, "to": following, "reason": reason,
+                "attempt": attempts,
+            })
+            try:
+                request.model_id = following
+            except Exception:  # pragma: no cover - a frozen request
+                await self._report_turn_error(
+                    "fallback_exhausted", attempts, reason)
+                return
+
+            await self._send({"type": "active_model_changed",
+                              "modelId": following,
+                              "requestId": self._turn_stream_id,
+                              "reason": "fallback"})
+            attempts = 0                     # a new model gets its own tries
+
+    def _remaining_turn_budget(self):
+        """Seconds left before the deadline ends this turn, if any."""
+        if self._turn_budget is None or self._turn_started_at is None:
+            return None
+        spent = time.monotonic() - self._turn_started_at
+        return max(0.0, float(self._turn_budget) - spent)
+
+    async def _report_turn_error(self, reason: str, attempts: int,
+                                 detail: str, *, partial: bool = False) -> None:
+        """One envelope for every provider and tool failure.
+
+        The caveat is the same sentence stop and timeout use, because
+        the facts are the same: Python cannot kill the worker thread,
+        no provider takes a cancellation signal, and a Ludo credit is
+        spent when the request is made. A failure does not undo any of
+        that.
+        """
+        message = self.ENDING_CAVEAT
+        if partial:
+            message = ("Part of the answer was already sent, so this stopped "
+                       "rather than starting over. " + message)
+
+        await self._send({
+            "type": "turn_error",
+            "reason": reason,
+            "attempts": int(attempts),
+            "fallbacksTried": list(self._turn_models_tried),
+            "detail": str(detail or ""),
+            "partial": bool(partial),
+            "message": message,
+        })
+        await self._send({"type": "stream_end",
+                          "requestId": self._turn_stream_id})
+        await self._emit_status(turn_status.IDLE)
+
     async def _announce_model_load(self, model_id) -> None:
         """Say "loading X" when X is not already in memory.
 

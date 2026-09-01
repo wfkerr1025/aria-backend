@@ -12,6 +12,16 @@ export const IPC = Object.freeze({
   STREAM_TOKEN: "stream_token",
   STREAM_END: "stream_end",
   STREAM_ERROR: "stream_error",
+  // Stopping the turn that is running. Sent by the Send button while
+  // it is showing "Stop"; answered with stream_cancelled + stream_end
+  // so the open bubble closes, then chat_stop_result.
+  //
+  // The backend does NOT serialise this one -- a stop that queued
+  // behind the turn it is meant to stop would arrive after that turn
+  // had finished.
+  CHAT_STOP: "chat_stop",
+  CHAT_STOP_RESULT: "chat_stop_result",
+  STREAM_CANCELLED: "stream_cancelled",
   // Sent once per turn by backend/core/streaming_engine.py, right after
   // provider/model resolution, before any tokens — announces which
   // specific model (local or cloud) actually serves this turn. Not

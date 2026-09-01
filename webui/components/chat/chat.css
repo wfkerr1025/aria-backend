@@ -196,6 +196,22 @@
   background: var(--button-bg-active);
 }
 
+/* Send becomes Stop while a turn is running. Different enough to be
+   noticed mid-sentence, not so different that the toolbar jumps --
+   the label changes width and the border does the rest. Uses the
+   existing danger tokens so it follows the theme like everything
+   else. */
+#chat-send-btn.is-stopping {
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+
+#chat-send-btn.is-stopping:hover {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+
 /* -------------------------------------------------------
    CHAT TOOLBAR (PREMIUM GRADIENT + DEPTH)
    ------------------------------------------------------- */

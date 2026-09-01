@@ -50,6 +50,9 @@ const FIELD_LABELS = {
                              + "(--project is not a flag this CLI has.)" },
   unity_cli_mode: { label: "Default mode", type: "select", optional: true,
                     hint: "Passed as --mode. Leave empty to pass no mode at all." },
+  output_dir: { label: "Output folder", type: "text", optional: true,
+                hint: "Where finished assets are written. Made if it does not "
+                      + "exist. Leave empty for Documents/ARIA/<plugin>." },
   api_key: { label: "API key", type: "password",
              hint: "Sent as Authorization: ApiKey. Stored in aria_config/plugins.json." },
   model: { label: "Preferred model", type: "select", optional: true,

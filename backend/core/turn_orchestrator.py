@@ -36,7 +36,7 @@ richer of the two:
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Callable
+from typing import Callable, Optional
 
 from backend.core import (
     chat_capability_gate,
@@ -112,6 +112,16 @@ UNITY_CLI_MODEL = "unity_cli"
 # A turn answered by a plugin's own program -- Blender and whatever
 # joins it. Same convention: not a model id, because no model wrote it.
 CLI_PROGRAM_MODEL = "cli_program"
+
+# A turn answered by actually building something in Blender. Separate
+# from CLI_PROGRAM_MODEL because that one is a command line the user
+# typed and this one is a sentence they said.
+BLENDER_MODEL = "blender_actions"
+
+# A turn answered by generating something with Ludo.ai. The only
+# short-circuit that spends money, which is why its gate is the
+# user naming the tool and not an inference.
+LUDO_MODEL = "ludo_actions"
 
 # Cloud Mode with no key configured anywhere. Shaped like every other
 # safety warning so both transports' existing warning branch renders it
@@ -465,6 +475,144 @@ def _cli_program_reply(request: TurnRequest, telemetry: list):
     )
 
 
+def _blender_reply(request: TurnRequest, telemetry: list):
+    """A modelling request said in someone's own words.
+
+    The two above read a typed command line. This reads a sentence,
+    and exists because of the same failure in a politer form.
+    Measured, with the Blender plugin installed, enabled and pointing
+    at a working Blender 5.0.1:
+
+        create a car for me in Blender
+          -> routed to phi-3-mini, which replied "I can guide you
+             through creating a car in Blender. What specific features
+             would you like for your car model?"
+
+    Nothing ran. The model could not build anything and did not say
+    so; it offered to help, which reads like progress and is not.
+
+    Returns None for anything that is not a Blender request, and for
+    questions ABOUT Blender -- those want a model, and a model can
+    answer them.
+
+    TWO GATES BEFORE A SUBPROCESS
+    The sentence must name Blender, and the Blender plugin must be
+    installed and enabled. Neither is inferred: naming the tool is the
+    person's word, and enabling the plugin is a deliberate act on its
+    own page.
+    """
+    text = (request.latest_user_text or "").strip()
+    if not text:
+        return None
+
+    try:
+        from backend.blender import blender_actions
+
+        answer = blender_actions.answer_request(text)
+        if answer is None:
+            return None
+    except Exception:
+        logger.exception("could not answer a Blender request")
+        # Silence would hand the turn back to the model, which is the
+        # one outcome this function exists to prevent.
+        return TurnResult(
+            kind=KIND_TEXT,
+            text=("I could not run that in Blender, and nothing happened. "
+                  "Something went wrong on my side."),
+            model_id=BLENDER_MODEL,
+            conversation_id=request.conversation_id,
+            session_updates={"last_turn_was_weather": False},
+            telemetry=telemetry + [_event("blender_request_failed")],
+        )
+
+    return TurnResult(
+        kind=KIND_TEXT,
+        text=answer["text"],
+        model_id=BLENDER_MODEL,
+        conversation_id=request.conversation_id,
+        session_updates={"last_turn_was_weather": False},
+        telemetry=telemetry + [_event("blender_request",
+                                      ran=answer.get("ran", False))],
+    )
+
+
+def _ludo_reply(request: TurnRequest, telemetry: list, on_status=None,
+                on_job: Optional[Callable[[str], None]] = None):
+    """An asset request for Ludo.ai, said in someone's own words.
+
+    Measured, with the plugin installed, enabled and holding a working
+    key:
+
+        Create a stylized cartoon girl with bright red hair, a large
+        pink bow, a pink dress, big expressive eyes, and a confident
+        heroic pose in Ludo
+
+          -> routed to phi-3-mini: "As an AI, I can't directly create
+             images, but I can guide you through the process..." and
+             then a paragraph describing the character.
+
+    Nothing was generated. Every piece needed existed and was tested;
+    nothing called any of it.
+
+    THIS ONE SPENDS MONEY, WHICH THE OTHERS DO NOT
+    Blender is free to run and can be run again. A Ludo generation
+    costs credits that do not come back. Two things stand in front of
+    it, and both are the user's own act:
+
+      * the sentence must name Ludo -- "in Ludo", "with Ludo", "Ludo,"
+        -- and naming Blender instead hands the turn away; and
+      * the Ludo plugin must be installed, enabled and hold a key.
+
+    Beyond that a named request is treated as meant, because "create X
+    in Ludo" is not ambiguous, and the reply always says what was
+    spent. To require a confirmation turn instead, reply with
+    plan["summary"] here and run on the next message -- map_text costs
+    nothing.
+    """
+    text = (request.latest_user_text or "").strip()
+    if not text:
+        return None
+
+    try:
+        from backend.ludo import ludo_actions
+
+        answer = ludo_actions.answer_request(text, on_status=on_status)
+        if answer is None:
+            return None
+
+        # Tier 3. If this turn is later ended by a deadline, the
+        # credit is already gone and the job may still finish --
+        # handing the id up is what keeps it collectable.
+        if on_job is not None and answer.get("job_id"):
+            try:
+                on_job(str(answer["job_id"]))
+            except Exception:  # pragma: no cover - reporting must not fail a turn
+                logger.debug("could not record a Ludo job id", exc_info=True)
+    except Exception:
+        logger.exception("could not answer a Ludo request")
+        # Silence would hand the turn back to the model, which is the
+        # one outcome this function exists to prevent.
+        return TurnResult(
+            kind=KIND_TEXT,
+            text=("I could not ask Ludo for that, and nothing happened. "
+                  "Something went wrong on my side."),
+            model_id=LUDO_MODEL,
+            conversation_id=request.conversation_id,
+            session_updates={"last_turn_was_weather": False},
+            telemetry=telemetry + [_event("ludo_request_failed")],
+        )
+
+    return TurnResult(
+        kind=KIND_TEXT,
+        text=answer["text"],
+        model_id=LUDO_MODEL,
+        conversation_id=request.conversation_id,
+        session_updates={"last_turn_was_weather": False},
+        telemetry=telemetry + [_event("ludo_request",
+                                      ran=answer.get("ran", False))],
+    )
+
+
 def _self_knowledge_reply(intent: str, request: TurnRequest, mode_manager, telemetry: list) -> TurnResult:
     """An answer from the registry about ARIA itself. No model is invoked."""
     active_id, provider_name = self_knowledge.resolve_active_model_and_provider(mode_manager)
@@ -762,6 +910,7 @@ def orchestrate_turn(
     generator: Callable[[str], str] | None = None,
     reasoning_enabled: bool = True,
     on_status: Callable[[str], None] | None = None,
+    on_job: Callable[[str], None] | None = None,
 ) -> TurnResult:
     """Decide what should happen for one chat turn.
 
@@ -832,11 +981,49 @@ def orchestrate_turn(
         telemetry.append(_event("intent_detected", intent=INTENT_WEATHER_QUERY))
         return _weather_reply("", request, telemetry)
 
-    # --- 2. Intent.
+    # --- 2. Tool short-circuits, BEFORE anything that spends a model.
     #
-    # The classifier runs first, because detect_intent is one of the two
-    # consumers of its verdict and the other is the planner. Priming here
-    # is what makes them agree: one inference, read twice.
+    # These four are deterministic and free: they read the sentence,
+    # match a vocabulary this codebase owns, and answer or decline.
+    # None of them consults the search verdict or the detected intent.
+    #
+    # WHY THEY MOVED ABOVE prime()
+    # Measured on the developer's machine. Typed into chat:
+    #
+    #     Create a 3D Model in Blender of a Anime Swordsman holding a
+    #     katana
+    #
+    # The Blender layer answered "I do not know how to make that yet"
+    # -- correctly, and in microseconds. The turn still took NINE
+    # SECONDS, and a second identical message took more than
+    # SEVENTY-SEVEN, because search_activation.prime() spends a real
+    # inference and ran first. On a 12B that is a model LOAD, before a
+    # single token of an answer nobody was going to read.
+    #
+    # The comment on the old placement already said these go "first,
+    # ahead of intent detection". They were simply below the expensive
+    # part. Now they are not: a turn a tool can answer costs no model
+    # at all.
+    cli_reply = _unity_cli_reply(request, telemetry)
+    if cli_reply is None:
+        cli_reply = _cli_program_reply(request, telemetry)
+    if cli_reply is None:
+        # A sentence rather than a command line, but the same rule:
+        # a model must not be the thing that answers "make me a car",
+        # because it will offer to help instead of building one.
+        cli_reply = _blender_reply(request, telemetry)
+    if cli_reply is None:
+        cli_reply = _ludo_reply(request, telemetry, on_status=status,
+                                on_job=on_job)
+    if cli_reply is not None:
+        telemetry.append(_event("short_circuit_before_classifier"))
+        return cli_reply
+
+    # --- 3. Intent.
+    #
+    # The classifier runs here, because detect_intent is one of the two
+    # consumers of its verdict and the other is the planner. Priming
+    # here is what makes them agree: one inference, read twice.
     #
     # It is skipped entirely for anything the vocabulary or the
     # local-scope veto already settled, so an explicit "search the web
@@ -855,15 +1042,7 @@ def orchestrate_turn(
     intent = detect_intent(text, is_multi_turn_followup=is_followup)
     telemetry.append(_event("intent_detected", intent=intent))
 
-    # --- 3. Short-circuits. Any other message ends the weather window.
-    #
-    # A typed command line goes first, ahead of intent detection: it is
-    # not a question about anything, and the model must not see it.
-    cli_reply = _unity_cli_reply(request, telemetry)
-    if cli_reply is None:
-        cli_reply = _cli_program_reply(request, telemetry)
-    if cli_reply is not None:
-        return cli_reply
+    # Any other message ends the weather window.
 
     if intent == INTENT_WORKSPACE_QUERY:
         return _workspace_reply(request, telemetry)

@@ -76,12 +76,25 @@ class ToolSchema:
     parameters: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     permission: str = PERMISSION_SAFE
     timeout_seconds: float = 10.0
+    # Which concurrency pool this tool belongs to when several run at
+    # once. Not a performance knob -- the three families fail in
+    # different ways under fan-out, and the right width for one is the
+    # wrong width for another:
+    #
+    #   search   bounded by network latency        -- wide
+    #   ludo     bounded by MONEY and rate limits  -- narrow, and gated
+    #   cli      bounded by CPU and RAM            -- one Blender is a core
+    #   registry bounded by run_in_sandbox threads -- moderate
+    #
+    # Declared here rather than in a table beside the router, so a new
+    # tool cannot silently land in the widest pool.
+    family: str = "registry"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name, "description": self.description,
             "parameters": self.parameters, "permission": self.permission,
-            "timeout_seconds": self.timeout_seconds,
+            "timeout_seconds": self.timeout_seconds, "family": self.family,
         }
 
 
@@ -215,6 +228,7 @@ def register_builtin_tools() -> None:
             parameters={"location": {"type": "string", "required": True, "description": "City/place name"}},
             permission=PERMISSION_NETWORK,
             timeout_seconds=8.0,
+            family="search",
         ),
         _weather_handler,
     )
@@ -240,6 +254,7 @@ def register_builtin_tools() -> None:
             # ceiling only matters when something is already broken,
             # which is exactly when the fallback tier must still run.
             timeout_seconds=30.0,
+            family="search",
         ),
         _search_handler,
     )
@@ -417,6 +432,7 @@ def register_unity_cli_tools() -> None:
                 parameters=dict(spec["parameters"]),
                 permission=PERMISSION_FILESYSTEM,
                 timeout_seconds=float(engine.DEFAULT_TIMEOUT_SECONDS),
+                family="cli",
             ),
             _make_handler(spec["name"]),
         )
@@ -473,6 +489,7 @@ def register_file_tools() -> None:
             # this outer bound is what stops a hung child from holding the
             # sandbox thread indefinitely.
             timeout_seconds=660.0,
+            family="cli",
         ),
         _run_tests_handler,
     )

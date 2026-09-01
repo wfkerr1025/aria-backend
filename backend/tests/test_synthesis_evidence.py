@@ -207,6 +207,7 @@ def test_a_small_model_answers_from_the_lookup_instead_of_looping():
                 "modelId": "qwen2.5-0.5b-instruct-q4_k_m",
             },
         })
+        await handler.wait_for_turns()
         await asyncio.sleep(0.2)
         return "".join(p.get("token", "") for p in ws.sent
                        if p.get("type") == "stream_token")
