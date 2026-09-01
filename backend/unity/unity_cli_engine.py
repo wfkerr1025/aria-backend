@@ -71,6 +71,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
+from backend.core import cli_runner
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -265,35 +266,6 @@ def _list_args() -> Sequence[str]:
 # Running it
 # ======================================================
 
-def _extract_json(text: str):
-    """The JSON in this output, or None.
-
-    A CLI that prints a banner before its JSON is common enough to be
-    worth handling: this takes the whole thing if it parses, and
-    otherwise the first balanced object or array in it. Anything else
-    is not JSON and says so by returning None rather than by raising --
-    plain text output is a normal answer, not a fault.
-    """
-    body = (text or "").strip()
-    if not body:
-        return None
-
-    try:
-        return json.loads(body)
-    except ValueError:
-        pass
-
-    for opener, closer in (("{", "}"), ("[", "]")):
-        start = body.find(opener)
-        end = body.rfind(closer)
-        if start != -1 and end > start:
-            try:
-                return json.loads(body[start:end + 1])
-            except ValueError:
-                continue
-    return None
-
-
 def editor_has_project_open(project: str) -> bool:
     """Whether a Unity Editor currently holds this project.
 
@@ -321,38 +293,6 @@ def editor_has_project_open(project: str) -> bool:
         return True
     except OSError:
         return False
-
-
-def _kill_tree(process: "subprocess.Popen") -> None:
-    """End the command and everything it started.
-
-    process.kill() ends only the process ARIA started. That is not
-    enough here: a .cmd shim is a cmd.exe that spawns the real tool,
-    and Unity spawns compilers and importers of its own. Those children
-    inherit the stdout pipe, so killing the parent alone leaves the
-    pipe open and the read loop blocked -- the timeout fires, the
-    result is correct, and the call still does not return until the
-    child finishes on its own. Measured: a one-second timeout took
-    twenty-nine seconds to come back.
-
-    So the whole tree goes. taskkill /T on Windows, the process group
-    on POSIX, and process.kill() as the fallback if either fails --
-    ending one process is better than ending none.
-    """
-    try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)],
-                           capture_output=True, timeout=10, check=False)
-        else:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-        return
-    except Exception:
-        logger.debug("could not end the Unity CLI process tree", exc_info=True)
-
-    try:
-        process.kill()
-    except Exception:  # pragma: no cover - it may have just exited
-        logger.debug("could not kill the Unity CLI", exc_info=True)
 
 
 def _invoke(arguments: Sequence[str], *,
@@ -404,120 +344,20 @@ def _invoke(arguments: Sequence[str], *,
     # NO_PAGER is not a preference. A pager on a long listing waits for
     # a keypress that will never come, and the only thing that ends the
     # call is the timeout killing it.
-    environment = dict(os.environ)
-    environment.update({
+    environment = {
         "UNITY_NON_INTERACTIVE": "1",
         "UNITY_NO_PAGER": "1",
         "UNITY_NO_BANNER": "1",
-    })
+    }
     project = _plugin_setting(FIELD_PROJECT)
     if project:
         environment["UNITY_PROJECT_PATH"] = project
 
-    logger.info("unity cli: %s", " ".join(argv))
-
-    lines: List[str] = []
-    try:
-        process = subprocess.Popen(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=cwd or None,
-            env=environment,
-            # shell=False is the default and is load-bearing: argv is a
-            # list, so nothing in an argument can start a second command.
-            shell=False,
-            # Its own process group on POSIX, so _kill_tree can end the
-            # command and its children together. Windows gets the same
-            # effect from taskkill /T and needs no flag here.
-            **({"start_new_session": True} if os.name != "nt" else {}),
-        )
-    except FileNotFoundError:
-        return {"success": False, "code": None, "output": "", "json": None,
-                "error": f"{executable} could not be run."}
-    except OSError as error:
-        return {"success": False, "code": None, "output": "", "json": None,
-                "error": f"Could not start {executable}: {error}"}
-
-    # THE DEADLINE IS A TIMER, NOT A wait(timeout=)
-    #
-    # Reading stdout line by line blocks until the pipe closes, so a
-    # wait(timeout=...) after the read loop is only reached once the
-    # process has already finished -- which is to say never, for the
-    # hung build the timeout exists for. An earlier draft did exactly
-    # that and a test that expected a one-second timeout sat for thirty.
-    #
-    # Killing on a timer ends the process, which closes the pipe, which
-    # ends the read. It works whether the command is producing output
-    # or silently stuck, and those are both things a Unity build does.
-    expired = threading.Event()
-
-    def give_up() -> None:
-        expired.set()
-        _kill_tree(process)
-
-    deadline = threading.Timer(limit, give_up)
-    deadline.daemon = True
-    deadline.start()
-
-    errors = ""
-    try:
-        if process.stdout is not None:
-            for line in process.stdout:
-                line = line.rstrip("\n")
-                lines.append(line)
-                if on_output is not None:
-                    try:
-                        on_output("stdout", line)
-                    except Exception:  # pragma: no cover - a viewer is not the job
-                        logger.debug("an output listener raised", exc_info=True)
-
-        if process.stderr is not None:
-            errors = process.stderr.read() or ""
-
-        process.wait()
-    finally:
-        deadline.cancel()
-        for pipe in (process.stdout, process.stderr):
-            try:
-                if pipe is not None:
-                    pipe.close()
-            except Exception:  # pragma: no cover
-                pass
-
-    if expired.is_set():
-        return {"success": False, "code": None, "json": None,
-                # What it managed to print before it was stopped is kept:
-                # it is the only evidence of where it got stuck.
-                "output": "\n".join(lines),
-                "error": f"The command did not finish within {limit} seconds."}
-
-    for line in (errors or "").splitlines():
-        lines.append(line)
-        if on_output is not None:
-            try:
-                on_output("stderr", line)
-            except Exception:  # pragma: no cover
-                logger.debug("an output listener raised", exc_info=True)
-
-    output = "\n".join(lines)
-    code = process.returncode
-    parsed = _extract_json(output)
-
-    if code != 0:
-        # The output is kept, not thrown away. A failing build's reason
-        # is in the output, and an error message that replaced it with
-        # "exit code 1" would be the least useful thing ARIA could say.
-        return {"success": False, "code": code, "output": output,
-                "json": parsed,
-                "error": (errors.strip().splitlines() or [f"Exited with code {code}."])[0]}
-
-    return {"success": True, "code": code, "output": output,
-            "json": parsed, "error": None}
+    # Everything past this point is running a program, which is not a
+    # Unity problem -- see backend/core/cli_runner.
+    return cli_runner.run(executable, arguments, on_output=on_output,
+                          timeout=limit, cwd=cwd, env_extra=environment,
+                          label="unity cli")
 
 
 # ======================================================
@@ -704,37 +544,12 @@ def discover_commands() -> dict:
 # Running one
 # ======================================================
 
-def split_arguments(text: str) -> List[str]:
-    """Split a typed command line into arguments.
-
-    NOT shlex. shlex.split(posix=True) treats a backslash as an escape,
-    so "D:\\Users\\William" comes back as DUsersWilliam -- and every path
-    on this machine is a Windows path. posix=False keeps the quotes in
-    the tokens instead of removing them.
-
-    So: split on whitespace, respect double quotes, and never touch a
-    backslash. That is the whole grammar a command line needs here, and
-    it is the one that does not corrupt paths.
-    """
-    tokens: List[str] = []
-    current: List[str] = []
-    quoted = False
-
-    for character in str(text or ""):
-        if character == '"':
-            quoted = not quoted
-            continue
-        if character.isspace() and not quoted:
-            if current:
-                tokens.append("".join(current))
-                current = []
-            continue
-        current.append(character)
-
-    if current:
-        tokens.append("".join(current))
-    return tokens
-
+# The shared runner owns these now -- they were never about Unity.
+# Kept under their old names here because this module's callers and
+# tests read better saying what they mean than reaching through to
+# another module for a string split.
+split_arguments = cli_runner.split_arguments
+_extract_json = cli_runner.extract_json
 
 # Words that mean the line is a sentence about Unity rather than a
 # command to Unity. "unity is a game engine" must never be executed.
@@ -779,7 +594,7 @@ def parse_invocation(text: str) -> Optional[dict]:
 
     Returns {"command": ..., "args": [...]} or None.
     """
-    tokens = split_arguments(text)
+    tokens = cli_runner.split_arguments(text)
     if len(tokens) < 2 or tokens[0].strip().lower() != "unity":
         return None
 

@@ -240,6 +240,25 @@ def _context_chars(turn_request) -> int:
     return sum(len(str(m.get("content", ""))) for m in messages if isinstance(m, dict))
 
 
+def _starts_with_a_program(text: str) -> bool:
+    """Whether this line opens with a program ARIA knows how to run.
+
+    Read from the same table the runner uses, so a program that can be
+    run is a program that routes -- adding one cannot leave routing
+    behind.
+    """
+    try:
+        from backend.plugins import cli_programs
+
+        # The PARSER, not just the first word. Routing and execution
+        # then agree by construction: a line that would run is routed
+        # as a tool turn, and "blender is a modelling tool" -- which
+        # the parser rejects as a sentence -- stays ordinary chat.
+        return cli_programs.parse_invocation(text) is not None
+    except Exception:  # pragma: no cover - routing is not worth a crash
+        return False
+
+
 def _mentions_tools(text: str) -> bool:
     lowered = text.lower()
 
@@ -269,6 +288,14 @@ def _mentions_tools(text: str) -> bool:
     # most plainly: the shortest messages here are the ones that most
     # need a model able to act.
     if "unity" in words and (words & set(_UNITY_CLI_WORDS)):
+        return True
+
+    # A line that starts with a program ARIA can run is a tool turn,
+    # however short. "blender --background --python x.py" is nine words
+    # of instruction and complexity_router rated it simple enough for
+    # phi-3-mini, which cannot call tools and answered with invented
+    # bpy operators repeated eleven times.
+    if _starts_with_a_program(text):
         return True
 
     if words & set(_WORKSPACE_VERBS):

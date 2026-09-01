@@ -109,6 +109,10 @@ WORKSPACE_MODEL = "workspace"
 # on a sentence no model wrote.
 UNITY_CLI_MODEL = "unity_cli"
 
+# A turn answered by a plugin's own program -- Blender and whatever
+# joins it. Same convention: not a model id, because no model wrote it.
+CLI_PROGRAM_MODEL = "cli_program"
+
 # Cloud Mode with no key configured anywhere. Shaped like every other
 # safety warning so both transports' existing warning branch renders it
 # without a special case.
@@ -398,6 +402,65 @@ def _unity_cli_reply(request: TurnRequest, telemetry: list):
         session_updates={"last_turn_was_weather": False},
         telemetry=telemetry + [_event("unity_cli_invocation",
                                       command=invocation.get("command"),
+                                      ran=answer.get("ran", False))],
+    )
+
+
+def _cli_program_reply(request: TurnRequest, telemetry: list):
+    """A typed line for a plugin that IS a program -- Blender today.
+
+    The Unity reply above handles Unity, which has a great deal more to
+    say. This is the plainer case and exists for the same reason.
+
+    Measured before it did: typing
+
+        blender --background --python <script>
+
+    reached phi-3-mini, which answered with `def main:` -- not valid
+    Python -- an invented bpy operator, and then the same line eleven
+    times until the stream was cut. Nothing ran. A model asked to run
+    something it cannot run does not decline; it writes what such a
+    command usually produces.
+    """
+    text = (request.latest_user_text or "").strip()
+    if not text:
+        return None
+
+    try:
+        from backend.plugins import cli_programs
+
+        first = text.split(None, 1)[0].lower() if text.split() else ""
+        if first not in cli_programs.PROGRAMS:
+            return None
+
+        invocation = cli_programs.parse_invocation(text)
+        if invocation is None:
+            return None
+
+        answer = cli_programs.answer_invocation(invocation)
+    except Exception:
+        logger.exception("could not answer a CLI program invocation")
+        # Even the failure says nothing happened. Silence here would
+        # hand the turn back to the model, which is the one outcome
+        # this function exists to prevent.
+        return TurnResult(
+            kind=KIND_TEXT,
+            text=("I could not run that command, and nothing happened. "
+                  "Something went wrong on my side."),
+            model_id=CLI_PROGRAM_MODEL,
+            conversation_id=request.conversation_id,
+            session_updates={"last_turn_was_weather": False},
+            telemetry=telemetry + [_event("cli_program_invocation_failed")],
+        )
+
+    return TurnResult(
+        kind=KIND_TEXT,
+        text=answer["text"],
+        model_id=CLI_PROGRAM_MODEL,
+        conversation_id=request.conversation_id,
+        session_updates={"last_turn_was_weather": False},
+        telemetry=telemetry + [_event("cli_program_invocation",
+                                      program=invocation.get("program"),
                                       ran=answer.get("ran", False))],
     )
 
@@ -797,6 +860,8 @@ def orchestrate_turn(
     # A typed command line goes first, ahead of intent detection: it is
     # not a question about anything, and the model must not see it.
     cli_reply = _unity_cli_reply(request, telemetry)
+    if cli_reply is None:
+        cli_reply = _cli_program_reply(request, telemetry)
     if cli_reply is not None:
         return cli_reply
 
