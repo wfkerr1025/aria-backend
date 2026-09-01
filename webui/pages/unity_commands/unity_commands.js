@@ -195,27 +195,34 @@ const UnityCommands = {
     label.textContent = command.label || "";
     tile.appendChild(label);
 
+    // "Approved", not "Enabled". On a plugin, disabled means ARIA will
+    // not use it; on a command it now means only "ask me before running
+    // this", because Run works either way. Two different meanings
+    // deserve two different words -- calling both of them Disabled is
+    // what made the Run button look missing.
     const status = document.createElement("span");
     status.className = "plugin-tile-status" + (enabled ? " is-enabled" : "");
-    status.textContent = enabled ? "Enabled" : "Disabled";
+    status.textContent = enabled ? "Approved" : "Asks first";
     tile.appendChild(status);
 
     const actions = document.createElement("div");
     actions.className = "unity-command-actions";
 
-    if (!enabled) {
-      actions.appendChild(this.button("Enable", () => {
-        bridge.send(IPC.PLUGIN_UPDATE_REQUEST,
-                    { id: command.id, fields: { enabled: true } });
-      }));
-    } else {
-      // Run only appears once a command is on. Discovery lists what an
-      // Editor could do; being listed is not permission to run it, and
-      // the backend refuses a disabled command anyway.
-      actions.appendChild(this.button("Run", () => {
-        UnityTerminal.run(command, []);
-      }, "is-primary"));
-    }
+    // Run is ALWAYS here.
+    //
+    // It used to appear only once a command was enabled, and Enable
+    // took its place until then -- so on a fresh list of 142 disabled
+    // commands there was no Run button anywhere on the page, and no
+    // way to tell that enabling would produce one. The affordance was
+    // invisible, which is a strange thing for the only action that
+    // matters.
+    //
+    // The confirm is what the enable step was protecting: 142 tiles
+    // include delete_gameobject and delete_asset, and a grid you
+    // scroll past is easy to mis-click. Asking once, showing the exact
+    // invocation, is the protection; the flag now just records the
+    // answer so it stops asking.
+    actions.appendChild(this.button("Run", () => this.run(command), "is-primary"));
 
     actions.appendChild(this.button("Edit", () => this.edit(command)));
     actions.appendChild(this.button("Remove", () => {
@@ -226,6 +233,38 @@ const UnityCommands = {
 
     tile.appendChild(actions);
     return tile;
+  },
+
+  /**
+   * Run a command, asking first the one time it has not been approved.
+   *
+   * The question names the exact invocation rather than the command,
+   * because "Run delete_gameobject?" and "Run delete_gameobject on
+   * Player?" are different questions and only one of them can be
+   * answered.
+   */
+  run(command) {
+    if (command.enabled !== true) {
+      const invocation = `unity ${command.command || command.name}`;
+      const ok = window.confirm(
+        `Run ${command.name}?
+
+${invocation}
+
+`
+        + `${command.label || ""}
+
+`
+        + `This also enables it, so it will run without asking next time.`);
+      if (!ok) return;
+
+      // One packet, carrying both the run and the answer to the
+      // question. Two would run the command twice.
+      UnityTerminal.run(command, [], { enable: true });
+      return;
+    }
+
+    UnityTerminal.run(command, []);
   },
 
   button(text, onClick, extra = "") {

@@ -66,7 +66,7 @@ const UnityTerminal = {
    * opened empty and waited would leave the user wondering whether
    * they had pressed the button.
    */
-  run(command, args = []) {
+  run(command, args = [], extra = {}) {
     this.bind();
     this.commandId = command.id;
 
@@ -78,7 +78,12 @@ const UnityTerminal = {
     this.setStatus("running", "Running…");
 
     root.hidden = false;
-    bridge.send(IPC.UNITY_CLI_COMMAND_REQUEST, { id: command.id, args });
+    // `extra` rides along in the same packet -- today that is
+    // {enable: true} from a first-run confirm. An earlier version sent
+    // it as a SECOND request, so the command ran twice: once refused
+    // for not being enabled, once accepted.
+    bridge.send(IPC.UNITY_CLI_COMMAND_REQUEST,
+                { id: command.id, args, ...extra });
   },
 
   onPacket(packet) {

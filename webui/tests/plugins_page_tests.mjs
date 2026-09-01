@@ -581,17 +581,71 @@ test("a command tile is not a button full of buttons", () => {
   assert.ok(!body.includes('createElement("button")'));
 });
 
-test("Run only appears once a command is enabled", () => {
-  // Discovery lists what a CLI could do. Being listed is not permission
-  // to run it, and the backend refuses a disabled command anyway.
+test("Run is always on the tile", () => {
+  // It used to appear only once a command was enabled, with Enable in
+  // its place until then -- so a fresh list of 142 disabled commands
+  // had no Run button anywhere, and nothing said that enabling would
+  // produce one. "Where is the Run button?" was the reasonable
+  // question that followed.
   const js = read("pages", "unity_commands", "unity_commands.js");
   const block = js.slice(js.indexOf("  tile(command) {"));
+  const body = block.slice(0, block.indexOf("\n  /**"));
+
+  assert.ok(body.includes('this.button("Run"'));
+  assert.ok(!body.includes('this.button("Enable"'),
+            "Enable no longer replaces Run");
+});
+
+test("an unapproved command asks before it runs", () => {
+  // The confirm is what the enable step was protecting: the 142
+  // include delete_gameobject and delete_asset, and a grid you scroll
+  // past is easy to mis-click.
+  const js = read("pages", "unity_commands", "unity_commands.js");
+  const block = js.slice(js.indexOf("  run(command) {"));
   const body = block.slice(0, block.indexOf("\n  button("));
 
-  assert.ok(body.includes("if (!enabled) {"));
-  assert.ok(body.indexOf('"Enable"') < body.indexOf('"Run"'),
-            "Enable is the disabled branch and Run the enabled one");
+  assert.ok(body.includes("command.enabled !== true"));
+  assert.ok(body.includes("window.confirm"));
+  // The question names the invocation, not just the command.
+  assert.ok(body.includes("invocation"));
 });
+
+test("running sends exactly one packet", () => {
+  // An earlier version called the terminal (which sends) and then sent
+  // again with the enable flag, so a confirmed command ran twice --
+  // once refused for not being enabled, once accepted.
+  const page = read("pages", "unity_commands", "unity_commands.js");
+  const term = read("pages", "unity_commands", "unity_terminal.js");
+  const block = page.slice(page.indexOf("  run(command) {"));
+  const body = block.slice(0, block.indexOf("\n  button("));
+
+  assert.ok(!body.includes("bridge.send"),
+            "the page runs through the terminal, which sends once");
+  assert.ok(term.includes("...extra"), "the flag rides in that one packet");
+});
+
+test("approval is recorded by the backend, not assumed by the page", () => {
+  const router = fs.readFileSync(
+    path.join(webui, "..", "backend", "ipc_router.py"), "utf8");
+
+  assert.ok(router.includes('payload.get("enable")'));
+  assert.ok(router.includes("enable_plugin(command_id)"));
+  // The gate itself is untouched: this satisfies it rather than
+  // going around it.
+  assert.ok(router.includes("engine.run_command(command_id"));
+});
+
+test("a command that asks first says so, in its own words", () => {
+  // "Disabled" means ARIA will not use a plugin. On a command it now
+  // means only "ask me first", because Run works either way -- and
+  // calling both Disabled is what made Run look missing.
+  const js = read("pages", "unity_commands", "unity_commands.js");
+
+  assert.ok(js.includes('"Approved" : "Asks first"'));
+  assert.ok(read("pages", "unity_commands", "unity_commands.html")
+              .includes("Approved only"));
+});
+
 
 test("every command action exists", () => {
   const js = read("pages", "unity_commands", "unity_commands.js");

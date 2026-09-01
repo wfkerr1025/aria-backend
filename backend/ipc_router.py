@@ -970,8 +970,16 @@ def _handle_unity_cli_command(payload: Dict[str, Any],
     must not land in the transcript.
 
     Nothing about this is reachable by a model. It runs because a
-    person pressed Run on a command they had already enabled.
+    person pressed Run.
+
+    `enable` is that press on a command that was not enabled yet: the
+    page asked first, showing what would run, and this records the
+    answer before running it. The gate in run_command stays exactly as
+    it was -- this satisfies it rather than going around it, so a
+    command still cannot run without somebody having said yes to it
+    once.
     """
+    from backend.plugins import plugin_settings
     from backend.unity import unity_cli_engine as engine
 
     command_id = str(payload.get("id") or "")
@@ -991,6 +999,14 @@ def _handle_unity_cli_command(payload: Dict[str, Any],
             on_progress(fmt.unity_cli_output(command_id, kind, line))
         except Exception:  # pragma: no cover - a viewer is not the job
             logger.debug("could not stream a Unity CLI line", exc_info=True)
+
+    if payload.get("enable"):
+        try:
+            plugin_settings.enable_plugin(command_id)
+        except Exception as error:
+            logger.exception("could not enable %s", command_id)
+            return fmt.error_response(f"Could not enable {command_id}: {error}",
+                                      schema.UNITY_CLI_COMMAND_REQUEST)
 
     try:
         outcome = engine.run_command(command_id, args, on_output=stream)
