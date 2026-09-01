@@ -499,3 +499,111 @@ def test_a_failing_build_leads_with_the_reason(registry):
     first = result.text.splitlines()[0]
     assert first.startswith("Ran `unity boom` and it failed:")
     assert "it broke" in first
+
+
+# ======================================================
+# A build is not a `list`, and a locked project is not a failure
+# ======================================================
+
+def test_a_build_gets_longer_than_two_minutes(registry):
+    """120 seconds is right for `env` and fatal for `build`.
+
+    The timeout kills the whole process tree, so a build that outran it
+    would be destroyed mid-compile and reported as "did not finish" --
+    ARIA breaking the thing it was waiting for.
+    """
+    assert engine._timeout("build") == engine.LONG_RUNNING_SECONDS
+    assert engine._timeout("test") == engine.LONG_RUNNING_SECONDS
+    assert engine._timeout("env") == engine.DEFAULT_TIMEOUT_SECONDS
+    assert engine._timeout("cmd") == engine.DEFAULT_TIMEOUT_SECONDS
+
+
+def test_an_explicit_timeout_still_wins(registry, monkeypatch):
+    """Somebody who sets the variable means it."""
+    monkeypatch.setenv(engine.ENV_TIMEOUT, "45")
+
+    assert engine._timeout("build") == 45
+    assert engine._timeout("env") == 45
+
+
+def test_a_stale_lockfile_does_not_block_a_build(tmp_path):
+    """A lockfile survives a crash.
+
+    Treating its mere presence as "the Editor has this project" would
+    refuse builds on a project nothing has open -- a guard that blocks
+    the working case is worse than no guard. So the test is whether the
+    file can be OPENED, not whether it exists.
+
+    The held case is not simulated here and cannot easily be: Unity
+    holds the file with exclusive sharing, and Python's open() cannot
+    ask for that on Windows, so a fake would only prove the fake. It
+    was verified against the running Editor instead --
+    editor_has_project_open returned True for a project Unity had open
+    and False a moment after it closed.
+    """
+    project = tmp_path / "Game"
+    (project / "Temp").mkdir(parents=True)
+    (project / "Temp" / "UnityLockfile").write_text("")
+
+    assert engine.editor_has_project_open(str(project)) is False
+
+
+def test_no_project_and_no_lockfile_are_not_locked(tmp_path):
+    assert engine.editor_has_project_open("") is False
+    assert engine.editor_has_project_open(str(tmp_path / "nothing")) is False
+
+
+def test_a_locked_project_is_refused_before_unity_starts(registry, tmp_path,
+                                                         monkeypatch):
+    """Unity's refusal is silent -- the log stops after "Successfully
+    changed project path" and it exits 1 saying nothing. A build that
+    fails in one second for no stated reason is the worst kind of
+    failure to hand somebody."""
+    project = tmp_path / "Game"
+    project.mkdir()
+    plugin_settings.update_plugin("unity_cli", {engine.FIELD_PROJECT: str(project)})
+    monkeypatch.setattr(engine, "editor_has_project_open", lambda _p: True)
+
+    import subprocess
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("Unity was started for a project it cannot open")
+
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+
+    result = _reply("unity build --target StandaloneWindows64")
+
+    assert "I did not run" in result.text
+    assert "has this project open" in result.text
+    # It names both ways forward rather than only the problem.
+    assert "Close the Editor" in result.text
+    assert "unity cmd build" in result.text
+
+
+def test_a_refusal_does_not_claim_to_have_run(registry, tmp_path, monkeypatch):
+    """"Ran X and it failed" for a command that never started is the
+    same small untruth as reporting a project created that was not."""
+    project = tmp_path / "Game"
+    project.mkdir()
+    plugin_settings.update_plugin("unity_cli", {engine.FIELD_PROJECT: str(project)})
+    monkeypatch.setattr(engine, "editor_has_project_open", lambda _p: True)
+
+    outcome = engine.run_invocation("build")
+    assert outcome["ran"] is False
+
+    result = _reply("unity build --target StandaloneWindows64")
+    assert not result.text.startswith("Ran ")
+
+
+def test_a_command_that_does_not_spawn_an_editor_is_unaffected(registry, tmp_path,
+                                                               monkeypatch):
+    """`unity cmd build` runs INSIDE the open Editor -- that is the
+    whole point of it, and the guard must not block it."""
+    project = tmp_path / "Game"
+    project.mkdir()
+    plugin_settings.update_plugin("unity_cli", {engine.FIELD_PROJECT: str(project)})
+    monkeypatch.setattr(engine, "editor_has_project_open", lambda _p: True)
+
+    result = _reply("unity cmd build")
+
+    assert "has this project open" not in result.text

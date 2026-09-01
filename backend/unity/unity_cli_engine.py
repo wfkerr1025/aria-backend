@@ -133,6 +133,19 @@ VERSION_PROBES = (("--version",), ("env",))
 
 DEFAULT_TIMEOUT_SECONDS = 120
 
+# Commands that spawn a whole Unity Editor and wait for it.
+#
+# 120 seconds is right for `env` or `list`, which answer in one, and
+# badly wrong for a build: ARIA would kill Unity mid-compile and report
+# a timeout, having destroyed the thing it was waiting for. A build of
+# an empty project takes about a minute; a real one takes many.
+#
+# Half an hour is not a prediction, it is a ceiling -- long enough that
+# reaching it means something is genuinely stuck rather than merely
+# slow.
+LONG_RUNNING_SECONDS = 1800
+BATCHMODE_COMMANDS = frozenset({"build", "test", "run"})
+
 # A version-looking token anywhere in the output of --version.
 #
 # The hyphen is in the class because this CLI reports "1.0.0-beta.5",
@@ -223,14 +236,24 @@ def cli_path() -> Path:
         "No Unity CLI was found. Set its path on the Unity CLI plugin page.")
 
 
-def _timeout() -> int:
-    """How long a command may run before it is given up on."""
+def _timeout(command: str = "") -> int:
+    """How long a command may run before it is given up on.
+
+    Per command, because they are not alike: `env` answers instantly
+    and `build` starts an Editor. An explicit ARIA_UNITY_CLI_TIMEOUT
+    still wins over both -- somebody who sets it means it.
+    """
     raw = os.environ.get(ENV_TIMEOUT)
     try:
         value = int(str(raw))
-        return value if value > 0 else DEFAULT_TIMEOUT_SECONDS
+        if value > 0:
+            return value
     except (TypeError, ValueError):
-        return DEFAULT_TIMEOUT_SECONDS
+        pass
+
+    if str(command or "").strip() in BATCHMODE_COMMANDS:
+        return LONG_RUNNING_SECONDS
+    return DEFAULT_TIMEOUT_SECONDS
 
 
 def _list_args() -> Sequence[str]:
@@ -269,6 +292,35 @@ def _extract_json(text: str):
             except ValueError:
                 continue
     return None
+
+
+def editor_has_project_open(project: str) -> bool:
+    """Whether a Unity Editor currently holds this project.
+
+    Unity refuses to open a project in batchmode while an Editor has
+    it, and the refusal is silent: the log stops after "Successfully
+    changed project path" and the process exits 1 with no message. A
+    build that fails in one second for no stated reason is the worst
+    kind of failure to hand somebody, so this asks first.
+
+    The test is whether Temp/UnityLockfile can be opened for writing,
+    not whether it exists. It survives a crash, so its presence alone
+    would refuse builds on a project nothing has open -- and a guard
+    that blocks the working case is worse than no guard.
+    """
+    if not project:
+        return False
+
+    lockfile = Path(project) / "Temp" / "UnityLockfile"
+    try:
+        if not lockfile.is_file():
+            return False
+        with open(lockfile, "a"):
+            return False        # opened it, so nothing is holding it
+    except PermissionError:
+        return True
+    except OSError:
+        return False
 
 
 def _kill_tree(process: "subprocess.Popen") -> None:
@@ -325,7 +377,25 @@ def _invoke(arguments: Sequence[str], *,
                 "output": "", "json": None}
 
     argv = [str(executable), *[str(part) for part in arguments]]
-    limit = timeout if timeout is not None else _timeout()
+    leading = str(arguments[0]) if arguments else ""
+    limit = timeout if timeout is not None else _timeout(leading)
+
+    # A batchmode command against a project the Editor has open cannot
+    # work, and saying so beats spending a second finding out and then
+    # reporting forty lines of licensing handshake as the explanation.
+    project_setting = _plugin_setting(FIELD_PROJECT)
+    if leading in BATCHMODE_COMMANDS and editor_has_project_open(project_setting):
+        return {
+            # ran=False, because nothing did. "Ran X and it failed" for
+            # a command that never started is the same small untruth as
+            # reporting a project created that was not.
+            "success": False, "ran": False, "code": None,
+            "output": "", "json": None,
+            "error": (f"Unity has this project open, and `{leading}` starts a "
+                      f"second Unity that cannot share it. Close the Editor "
+                      f"and run this again -- or use `unity cmd {leading}`, "
+                      f"which runs inside the Editor already open."),
+        }
 
     # The CLI reads all of these from the environment, which is better
     # than flags here: it applies to every subcommand without ARIA
@@ -816,6 +886,10 @@ def run_invocation(command: str, args: Optional[Sequence[str]] = None,
         "json": result["json"],
         "error": result["error"],
         "code": result.get("code"),
+        # Carried through, not rebuilt away: a refusal that arrives
+        # here as an ordinary failure gets reported as "Ran ... and it
+        # failed", which is the one thing it must not say.
+        "ran": result.get("ran", True),
         "invocation": arguments,
     }
 
@@ -854,6 +928,10 @@ def run_command(command_id: str, args: Optional[Sequence[str]] = None,
         "json": result["json"],
         "error": result["error"],
         "code": result.get("code"),
+        # Carried through, not rebuilt away: a refusal that arrives
+        # here as an ordinary failure gets reported as "Ran ... and it
+        # failed", which is the one thing it must not say.
+        "ran": result.get("ran", True),
         "invocation": arguments,
     }
 
@@ -937,6 +1015,15 @@ def answer_invocation(invocation: dict) -> dict:
 
     reason = outcome.get("error") or "it failed"
     body = _readable_output(outcome["output"])
+
+    # Refused before starting, rather than started and failed. The
+    # difference matters to whoever reads it: one is something to fix
+    # about the command, the other about the machine -- and "Ran X and
+    # it failed" for a command that never started is the same small
+    # untruth as reporting a project created that was not.
+    if outcome.get("ran") is False:
+        return {"ran": False, "text": f"I did not run `{spoken}`.\n\n{reason}"}
+
     return {"ran": True, "text": (
         f"Ran `{spoken}` and it failed: {reason}\n\n"
         + (body if body else "It printed nothing."))}
