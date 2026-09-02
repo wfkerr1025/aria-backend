@@ -45,10 +45,14 @@ __all__ = [
     "DEFAULT_ALIASES",
     "DEFAULT_FOLDER",
     "HUMANOID_IMPORT",
+    "LOOPING_STATES",
+    "ONE_SHOT_STATES",
     "assign_clips",
     "configure_humanoid",
+    "configure_looping",
     "discover",
     "match_states",
+    "set_looping",
 ]
 
 DEFAULT_FOLDER = "Assets/ARIA/Animations/Mixamo"
@@ -77,6 +81,105 @@ DEFAULT_ALIASES: Dict[str, Sequence[str]] = {
     "Land": ("landing", "hard landing"),
     "Crouch": ("crouching idle", "crouch"),
 }
+
+# Which states are cycles and which play once.
+#
+# MEASURED, and it is the thing somebody notices first: every Mixamo
+# clip imports with loopTime FALSE. Walking is 31 frames and Running
+# is 19, so without this they play for about a second and stop dead --
+# reported as "the clips didn't play very long".
+#
+# An attack must NOT loop. A one-shot that repeats is a character
+# swinging a sword forever, and the Attack state leaves on exit time,
+# which never arrives if the clip restarts.
+LOOPING_STATES = ("Idle", "Walk", "Run", "Crouch", "Fall")
+ONE_SHOT_STATES = ("Attack", "Jump", "Land")
+
+# Setting it needs the whole clip list rewritten: clipAnimations starts
+# empty and the importer falls back to defaultClipAnimations, so the
+# defaults are copied in, edited, and assigned back. Assigning a single
+# element of the array does nothing -- it is a struct array and the
+# element is a copy.
+_SET_LOOP = """
+var im = (UnityEditor.ModelImporter)UnityEditor.AssetImporter.GetAtPath("{asset}");
+if (im == null) return "NO_IMPORTER";
+var clips = im.clipAnimations.Length > 0 ? im.clipAnimations
+                                         : im.defaultClipAnimations;
+if (clips.Length == 0) return "NO_CLIPS";
+for (int i = 0; i < clips.Length; i++) clips[i].loopTime = {loop};
+im.clipAnimations = clips;
+UnityEditor.EditorUtility.SetDirty(im);
+im.SaveAndReimport();
+var after = im.clipAnimations;
+return after[0].name + "=" + after[0].loopTime;
+"""
+
+
+def set_looping(asset: str, loop: bool) -> dict:
+    """Turn a clip's loop-time flag on or off, and re-import.
+
+    Unity's loopTime is not Ludo's `loop` and not the clip's own
+    content: it decides whether playback wraps. A cyclic gait needs it
+    and a one-shot must not have it.
+    """
+    if not str(asset or "").strip():
+        return delivery._failure("I need an asset to configure.")
+
+    outcome = delivery._run("eval", {
+        "code": _SET_LOOP.format(asset=str(asset).replace('"', ""),
+                                 loop="true" if loop else "false"),
+        "timeout": 120000,
+    })
+    if not outcome["success"]:
+        return {"success": False, "ran": True, "error": outcome["error"],
+                "asset": asset}
+
+    said = str(((outcome["data"] or {}) or {}).get("result") or "")
+    if said in ("NO_IMPORTER", "NO_CLIPS") or "=" not in said:
+        return {"success": False, "ran": True, "asset": asset,
+                "error": f"could not set looping on {asset}: "
+                         f"{said or 'no answer'}"}
+
+    name, _, value = said.rpartition("=")
+    became = value.strip().lower() == "true"
+    return {"success": became == loop, "ran": True, "asset": asset,
+            "clip": name, "loop": became,
+            "error": None if became == loop else
+                     f"asked for loopTime={loop} and got {became}"}
+
+
+def configure_looping(matched: Dict[str, dict], *,
+                      looping: Sequence[str] = LOOPING_STATES,
+                      one_shot: Sequence[str] = ONE_SHOT_STATES) -> dict:
+    """Loop the cycles, leave the one-shots alone.
+
+    A state named in neither list is left as Unity imported it rather
+    than guessed at: whether an unfamiliar motion should repeat is not
+    something to decide from its name.
+    """
+    looped: Dict[str, bool] = {}
+    skipped: List[str] = []
+    failures: List[str] = []
+
+    for state, entry in sorted(matched.items()):
+        if state in looping:
+            wanted = True
+        elif state in one_shot:
+            wanted = False
+        else:
+            skipped.append(state)
+            continue
+
+        outcome = set_looping(entry["asset"], wanted)
+        if outcome["success"]:
+            looped[state] = wanted
+        else:
+            failures.append(f"{state}: {outcome['error']}")
+
+    return {"success": bool(looped) and not failures, "ran": True,
+            "error": "; ".join(failures[:3]) if failures else None,
+            "looping": looped, "left_alone": skipped, "failures": failures}
+
 
 # The C# that lists what is in the folder. FindAssets rather than a
 # directory walk, so a file Unity has not imported yet is simply not

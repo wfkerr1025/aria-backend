@@ -299,3 +299,96 @@ def test_the_generated_pairs_use_single_braces():
 
     assert '{"%s", "%s"}' in source
     assert '{{"%s", "%s"}}' not in source
+
+
+# ======================================================
+# Looping, which is what "the clips didn't play very long" was
+#
+# Every Mixamo clip imports with loopTime FALSE. Measured on the ones
+# downloaded here: Walking is 31 frames and Running is 19, so they
+# play for about a second and stop dead. An attack must NOT loop -- a
+# one-shot that repeats is a character swinging a sword forever, and
+# the Attack state leaves on exit time, which never arrives if the
+# clip restarts.
+# ======================================================
+
+def test_the_cycles_loop_and_the_one_shots_do_not():
+    assert "Walk" in mixamo.LOOPING_STATES
+    assert "Run" in mixamo.LOOPING_STATES
+    assert "Idle" in mixamo.LOOPING_STATES
+    assert "Attack" in mixamo.ONE_SHOT_STATES
+    assert "Attack" not in mixamo.LOOPING_STATES
+
+
+def test_looping_is_set_per_state(cli):
+    calls, state = cli
+    state["result"] = "Walking=True"
+
+    result = mixamo.configure_looping({"Walk": DOWNLOADED[-1]})
+
+    assert result["looping"] == {"Walk": True}
+    assert "true" in calls[0]["args"]["code"]
+
+
+def test_an_attack_is_turned_off_rather_than_left(cli):
+    """Left alone it would inherit whatever the importer chose, and
+    the importer chooses False -- correct by luck rather than by
+    intent, and luck changes."""
+    calls, state = cli
+    state["result"] = "Slash=False"
+    attack = dict(DOWNLOADED[0], clip="Sword And Shield Slash")
+
+    result = mixamo.configure_looping({"Attack": attack})
+
+    assert result["looping"] == {"Attack": False}
+    assert "false" in calls[0]["args"]["code"]
+
+
+def test_a_state_in_neither_list_is_left_as_imported(cli):
+    """Whether an unfamiliar motion should repeat is not something to
+    decide from its name."""
+    calls, state = cli
+    state["result"] = "X=True"
+
+    result = mixamo.configure_looping({"Cartwheel": DOWNLOADED[0]})
+
+    assert result["left_alone"] == ["Cartwheel"]
+    assert calls == []
+
+
+def test_the_whole_clip_list_is_rewritten_not_one_element(cli):
+    """clipAnimations is a struct array: assigning a single element
+    edits a copy and changes nothing. The defaults are copied in,
+    edited, and assigned back."""
+    calls, state = cli
+    state["result"] = "Walking=True"
+    mixamo.configure_looping({"Walk": DOWNLOADED[-1]})
+
+    code = calls[0]["args"]["code"]
+    assert "defaultClipAnimations" in code
+    assert "SaveAndReimport" in code
+    # The assignment must be LIVE, not commented out. An earlier
+    # version of this assertion passed against "// im.clipAnimations".
+    assert any(line.strip().startswith("im.clipAnimations = clips")
+               for line in code.splitlines()), code
+
+
+def test_a_flag_that_did_not_take_is_reported(cli):
+    """Asking is not the same as it having happened."""
+    calls, state = cli
+    state["result"] = "Walking=False"
+
+    result = mixamo.set_looping("Assets/A.fbx", True)
+
+    assert result["success"] is False
+    assert "got False" in result["error"]
+
+
+def test_a_model_with_no_clips_is_reported(cli):
+    calls, state = cli
+    state["result"] = "NO_CLIPS"
+
+    result = mixamo.set_looping("Assets/A.fbx", True)
+
+    assert result["success"] is False
+    assert "could not set looping" in result["error"]
