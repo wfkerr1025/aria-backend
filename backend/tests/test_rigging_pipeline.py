@@ -131,9 +131,22 @@ def blender(monkeypatch, tmp_path):
     return captured
 
 
+INSTANCE_ID = "GlobalObjectId_V1-2-abc-123-0"
+
+
 @pytest.fixture
 def unity(monkeypatch, tmp_path):
-    """The Unity CLI, recorded, answering the way it does."""
+    """The Unity CLI, modelled on what a live Editor actually sent.
+
+    Three shapes here were wrong in the first version, and each was a
+    bug the tests agreed with until a real Editor disagreed:
+
+      * the AuthoringResult is nested at data["result"];
+      * instantiate_prefab refuses a model, so the prefab is made by
+        eval BEFORE anything is placed;
+      * a model imported as Human already carries an Animator, so
+        add_component for one is refused and that is not a failure.
+    """
     from backend.unity import unity_cli_engine
 
     root = tmp_path / "Project"
@@ -141,18 +154,61 @@ def unity(monkeypatch, tmp_path):
     monkeypatch.setattr(unity_delivery, "unity_project_root", lambda: root)
 
     calls = []
+    components = {}
 
     def fake(command, args=None, **kwargs):
         argv = list(args or [])
         named = {argv[i].lstrip("-"): argv[i + 1]
-                 for i in range(0, len(argv) - 1, 2)}
-        calls.append({"command": command.replace("cmd ", ""), "args": named})
-        data = {"globalId": "GlobalObjectId_V1-2-abc-123-0",
-                "hierarchyPath": "/" + named.get("name", "Object")}
-        if command.endswith("create_prefab"):
-            data = {"assetPath": named.get("path")}
-        return {"success": True, "output": "", "error": None,
-                "json": {"success": True, "data": data, "errors": []}}
+                 for i in range(0, len(argv) - 1, 2) if argv[i].startswith("--")}
+        name = command.replace("cmd ", "")
+        calls.append({"command": name, "args": named})
+
+        def envelope(result):
+            return {"success": True, "output": "", "error": None,
+                    "json": {"success": True, "errors": [],
+                             "data": {"command": name, "parameters": named,
+                                      "result": result, "target": {},
+                                      "success": True}}}
+
+        if name == "eval":
+            written = ""
+            for piece in named.get("code", "").split('"'):
+                if piece.endswith(".prefab"):
+                    written = piece
+                    break
+            return envelope({"success": True, "result": written})
+
+        if name == "set_import_settings":
+            return envelope({"assetPath": named.get("asset"),
+                             "applied": ["animationType", "avatarSetup"],
+                             "unknown": []})
+
+        if name == "get_component_properties":
+            if named.get("type") in components.get(named.get("target"), set()):
+                return envelope({"type": named.get("type")})
+            return {"success": False, "output": "", "json": None,
+                    "error": "not present"}
+
+        if name == "add_component":
+            held = components.setdefault(named.get("target"), set())
+            if named.get("type") in held:
+                return {"success": False, "output": "", "json": None,
+                        "error": f"Failed to add component "
+                                 f"'{named.get('type')}' (it may be "
+                                 "disallowed on this GameObject)."}
+            held.add(named.get("type"))
+            return envelope({"type": named.get("type")})
+
+        if name == "instantiate_prefab":
+            # Imported as Human, so the root already has an Animator.
+            components.setdefault(INSTANCE_ID, set()).add("Animator")
+            return envelope({"globalId": INSTANCE_ID,
+                             "hierarchyPath": "/" + named.get("name", "Object"),
+                             "type": "GameObject"})
+
+        return envelope({"globalId": INSTANCE_ID,
+                         "assetPath": named.get("path"),
+                         "hierarchyPath": "/" + named.get("name", "Object")})
 
     monkeypatch.setattr(unity_cli_engine, "run_invocation", fake)
     return calls
@@ -329,21 +385,41 @@ def test_it_imports_rigged_fbx(ludo, blender, unity, work):
 
 
 def test_it_creates_prefab_from_rigged_asset(ludo, blender, unity, work):
-    """create_prefab takes a SCENE object. Handing it the asset path is
-    the mistake the whole Unity ordering exists to avoid."""
+    """instantiate_prefab refuses anything that is not a .prefab, so
+    the prefab has to exist before the scene is touched. A live Editor
+    answered "is not a prefab asset" to the documented sequence."""
     unity_rigging.rig_to_unity(MODEL_URL, name="Hero", work_folder=work)
 
-    source = args_for(unity, "create_prefab")["source"]
-    assert source == "GlobalObjectId_V1-2-abc-123-0"
-    assert not source.endswith(".fbx")
+    order = commands(unity)
+    assert order.index("eval") < order.index("instantiate_prefab")
+    assert "Assets/ARIA/Prefabs/Hero.prefab" in args_for(unity, "eval")["code"]
 
 
 def test_it_assigns_animator_component(ludo, blender, unity, work):
+    """A humanoid model prefab arrives WITH an Animator, so the honest
+    guarantee is that the instance has one -- not that this pipeline
+    was the thing that added it. Unity refuses a second Animator, and
+    reporting that refusal as a failure would say the character cannot
+    be animated at the moment it can."""
     answer = unity_rigging.rig_to_unity(MODEL_URL, name="Hero",
                                         work_folder=work)
 
     assert answer["animator"] is True
-    assert args_for(unity, "add_component")["type"] == "Animator"
+    assert "unity:already_had:Animator" in answer["steps"]
+
+
+def test_the_importer_is_told_the_model_is_humanoid(
+        ludo, blender, unity, work):
+    """Measured: without this the FBX imports animationType=Generic
+    with ZERO avatars, and an Animator on it has nothing to drive.
+    With it: Human, one avatar, isHuman and isValid both true."""
+    unity_rigging.rig_to_unity(MODEL_URL, name="Hero", work_folder=work)
+
+    settings = args_for(unity, "set_import_settings")["settings"]
+    assert '"animationType":"Human"' in settings
+    order = commands(unity)
+    assert order.index("set_import_settings") < order.index("eval"), \
+        "the prefab would capture a Generic import"
 
 
 def test_it_does_not_create_an_animator_controller(ludo, blender, unity, work):
@@ -361,9 +437,9 @@ def test_it_places_rigged_character_in_scene(ludo, blender, unity, work):
         MODEL_URL, name="Hero", work_folder=work,
         scene_path="Assets/Scenes/Forest.unity")
 
-    assert commands(unity) == ["import_asset", "instantiate_prefab",
-                               "create_prefab", "set_transform",
-                               "add_component"]
+    assert commands(unity) == ["import_asset", "set_import_settings",
+                               "eval", "instantiate_prefab", "set_transform",
+                               "add_component", "get_component_properties"]
     assert args_for(unity, "instantiate_prefab")["scene_path"] == \
         "Assets/Scenes/Forest.unity"
     assert args_for(unity, "set_transform")["position"] == "[0,0,0]"

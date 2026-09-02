@@ -155,7 +155,11 @@ def rig_to_unity(model_url: str, *, name: Optional[str] = None,
         cleaned["output"], name=label, scene_path=scene_path,
         position=position, rotation=rotation, scale=scale,
         collider=collider, rigidbody=rigidbody,
-        components=[ANIMATOR], reuse=reuse)
+        components=[ANIMATOR],
+        # Without this the FBX imports Generic with no Avatar, and the
+        # Animator we are about to add has nothing to drive.
+        import_settings=unity_delivery.HUMANOID_IMPORT,
+        reuse=reuse)
 
     if not placed["success"]:
         return _answer(False, f"Unity failed: {placed['error']}",

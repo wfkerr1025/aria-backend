@@ -1376,7 +1376,12 @@ def test_the_parameter_names_match_the_pipeline_package(unity_project, tmp_path,
 
     pipeline.deliver_to_unity(str(export), place=True, prefab=True)
 
-    flags = {command: [a for a in args if a.startswith("--")]
+    # --json is a CLI-level flag, not a command parameter, and it is on
+    # every call because without it the CLI answers with a table and
+    # every globalId is lost before anything can read it. It is
+    # excluded here so this guard keeps checking the thing it is for:
+    # that no PARAMETER is invented that the package does not have.
+    flags = {command: [a for a in args if a.startswith("--") and a != "--json"]
              for command, args in calls}
     assert set(flags["cmd import_asset"]) <= {"--source", "--path", "--confirm",
                                               "--dry_run"}

@@ -66,14 +66,19 @@ logger = get_logger(__name__)
 
 __all__ = [
     "COLLIDERS",
+    "HUMANOID_IMPORT",
     "add_component",
     "asset_path_for",
+    "ensure_component",
+    "has_component",
     "create_prefab",
     "deliver_to_unity",
+    "model_to_prefab",
     "move_export_to_unity",
     "place_character",
     "place_in_scene",
     "prefab_path_for",
+    "set_import_settings",
     "set_transform",
     "trigger_unity_import",
     "unity_project_root",
@@ -187,6 +192,16 @@ def _run(command: str, arguments: Dict[str, Any], *, timeout: Optional[int] = No
         argv.append("true" if value is True else
                     "false" if value is False else str(value))
 
+    # WITHOUT THIS THE CLI ANSWERS WITH A TABLE.
+    # "Command<tab>Success<tab>Result<tab>Parameters" parses as no JSON
+    # at all, so every globalId and hierarchyPath was dropped before
+    # anything could read it: instantiate_prefab reported success and
+    # handed back an empty instance, and set_transform then said it
+    # needed an object to move. Found the first time a real Editor
+    # answered -- the fakes had always returned parsed JSON, so no test
+    # could have caught it.
+    argv.append("--json")
+
     outcome = unity_cli_engine.run_invocation(f"cmd {command}", argv)
     payload = outcome.get("json")
 
@@ -201,7 +216,8 @@ def _run(command: str, arguments: Dict[str, Any], *, timeout: Optional[int] = No
             return {"success": False, "ran": True, "error": message,
                     "data": None, "output": outcome.get("output") or ""}
         return {"success": True, "ran": True, "error": None,
-                "data": payload.get("data"), "output": outcome.get("output") or ""}
+                "data": _result_of(payload.get("data")),
+                "output": outcome.get("output") or ""}
 
     if outcome.get("success"):
         return {"success": True, "ran": True, "error": None,
@@ -210,6 +226,30 @@ def _run(command: str, arguments: Dict[str, Any], *, timeout: Optional[int] = No
     return {"success": False, "ran": bool(outcome.get("output")),
             "error": outcome.get("error") or "the command failed",
             "data": None, "output": outcome.get("output") or ""}
+
+
+def _result_of(data: Any) -> Any:
+    """The command's own result, out of the server's envelope.
+
+    `unity cmd X --json` answers
+
+        {"success":..., "data": {"command": "X", "parameters": {...},
+                                 "result": {...}, "target": {...}}, ...}
+
+    and the AuthoringResult -- the globalId, the hierarchyPath, the
+    thing every following command needs as its target -- is that inner
+    `result`. Reading `data` itself finds none of them.
+
+    THIS WAS NOT CAUGHT BY THE TESTS, because the fakes were written
+    from the same assumption as the code and put the identity at the
+    level the code looked for it. It surfaced the first time a real
+    Editor answered: instantiate_prefab reported success and handed
+    back an empty instance, and set_transform then said it needed an
+    object to move.
+    """
+    if isinstance(data, dict) and "result" in data and "command" in data:
+        return data["result"]
+    return data
 
 
 def _object_ref(data: Any) -> Optional[str]:
@@ -506,6 +546,161 @@ def add_component(target: str, component: str) -> dict:
             "component": wanted, "data": result["data"]}
 
 
+# C# for the one thing the command set cannot do. Kept whole and
+# readable here rather than joined together at the call site.
+#
+# NO BACKSLASHES. Path.GetDirectoryName returns them on Windows and
+# every layer between here and Roslyn wants to escape them differently
+# -- the first version reached the compiler as Replace("\", "/") and
+# failed with "Newline in constant". The folder is worked out in
+# Python instead, where it is one line, and the C# only ever sees the
+# forward-slashed Assets/ paths Unity uses anyway.
+_MODEL_TO_PREFAB = """
+var model = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.GameObject>("{model}");
+if (model == null) return "NO_MODEL";
+if (!UnityEditor.AssetDatabase.IsValidFolder("{folder}"))
+{{
+    UnityEditor.AssetDatabase.CreateFolder("{parent}", "{leaf}");
+}}
+var instance = (UnityEngine.GameObject)UnityEditor.PrefabUtility.InstantiatePrefab(model);
+if (instance == null) return "INSTANTIATE_FAILED";
+bool ok;
+var saved = UnityEditor.PrefabUtility.SaveAsPrefabAsset(instance, "{prefab}", out ok);
+UnityEngine.Object.DestroyImmediate(instance);
+UnityEditor.AssetDatabase.Refresh();
+return ok && saved != null ? "{prefab}" : "SAVE_FAILED";
+"""
+
+
+def model_to_prefab(asset_path: str, prefab_path: str, *,
+                    timeout_ms: int = 60000) -> dict:
+    """Save an imported model as a real .prefab asset.
+
+    WHY THIS NEEDS eval AND CANNOT USE THE PREFAB COMMANDS.
+    instantiate_prefab refuses anything whose asset path does not end
+    in ".prefab" -- PrefabCommands.ResolvePrefabAsset checks the
+    extension -- so an imported FBX cannot be instantiated. And
+    create_prefab saves a SCENE object, which is the thing we have no
+    way to obtain. Between the two there is no route from a model
+    asset to a scene at all.
+
+    Unity itself is happy to do it: PrefabUtility.InstantiatePrefab
+    accepts a model. The package's validator is stricter than the
+    engine. So `eval`, which is one of the CLI's own commands, runs
+    the four lines the command set is missing.
+
+    Measured against a real Editor, which is the only way this was
+    ever going to be found: the documented sequence fails on its
+    second step with "is not a prefab asset".
+    """
+    source = str(asset_path or "").strip()
+    target = str(prefab_path or "").strip()
+    if not source or not target:
+        return _failure("I need a model and a prefab path.")
+
+    # Assets/-relative, forward slashes, worked out here so the C#
+    # never has to touch a path separator.
+    clean = target.replace(SLASH, "/")
+    folder = clean.rsplit("/", 1)[0] if "/" in clean else "Assets"
+    parent = folder.rsplit("/", 1)[0] if "/" in folder else "Assets"
+    leaf = folder.rsplit("/", 1)[-1]
+
+    code = _MODEL_TO_PREFAB.format(model=source.replace(SLASH, "/"),
+                                   prefab=clean, folder=folder,
+                                   parent=parent, leaf=leaf)
+    result = _run("eval", {"code": code, "timeout": timeout_ms})
+    if not result["success"]:
+        return result
+
+    data = result["data"] or {}
+    answered = data.get("result") if isinstance(data, dict) else None
+
+    if answered != target:
+        return _failure(
+            f"Unity could not make a prefab from {source}: "
+            f"{answered or 'no answer'}", ran=True)
+
+    return {"success": True, "ran": True, "error": None,
+            "prefab": target, "data": data}
+
+
+# What makes Unity build an Avatar from a rigged model.
+#
+# MEASURED, and it is not the default. A rigged FBX with a complete
+# mixamorig: skeleton imports as animationType=Generic with ZERO
+# avatars in the file -- so an Animator on it has nothing to drive and
+# no humanoid animation will retarget onto it. Setting these two makes
+# the same file import as Human with one avatar, isHuman and isValid
+# both true.
+HUMANOID_IMPORT = {"animationType": "Human",
+                   "avatarSetup": "CreateFromThisModel"}
+
+
+def set_import_settings(asset_path: str, settings: Dict[str, Any]) -> dict:
+    """Change an importer's settings and re-import.
+
+    `settings` goes over as a JSON object, which is what the command
+    takes -- not a flat list of flags.
+    """
+    if not str(asset_path or "").strip():
+        return _failure("I need an asset to configure.")
+    if not settings:
+        return _failure("I need at least one setting to apply.")
+
+    result = _run("set_import_settings", {
+        "asset": asset_path,
+        "settings": json.dumps(settings, separators=(",", ":")),
+    })
+    if not result["success"]:
+        return result
+
+    data = result["data"] or {}
+    applied = data.get("applied") or [] if isinstance(data, dict) else []
+    unknown = data.get("unknown") or [] if isinstance(data, dict) else []
+    return {"success": True, "ran": True, "error": None,
+            "applied": applied, "unknown": unknown, "data": data}
+
+
+def has_component(target: str, component: str) -> bool:
+    """Whether the object already carries this component."""
+    if not str(target or "").strip() or not str(component or "").strip():
+        return False
+    wanted = COLLIDERS.get(str(component).strip().lower(), str(component).strip())
+    return bool(_run("get_component_properties",
+                     {"target": target, "type": wanted})["success"])
+
+
+def ensure_component(target: str, component: str) -> dict:
+    """Add a component, unless the object already has one.
+
+    MEASURED, AND IT CHANGES WHAT SUCCESS MEANS. A model imported as
+    Human arrives with an Animator already on its root, carrying the
+    Avatar Unity built. Asking for another gets
+
+        Failed to add component 'Animator' to 'X'
+        (it may be disallowed on this GameObject)
+
+    -- because Unity allows one Animator per GameObject. Reporting that
+    as a failure says the character cannot be animated at exactly the
+    moment it can, which is the wrong answer twice over.
+
+    So a refused add is checked rather than believed: if the component
+    is there, that is a success with `added` false.
+    """
+    outcome = add_component(target, component)
+    if outcome["success"]:
+        outcome["added"] = True
+        return outcome
+
+    wanted = COLLIDERS.get(str(component).strip().lower(), str(component).strip())
+    if has_component(target, wanted):
+        return {"success": True, "ran": True, "error": None,
+                "component": wanted, "added": False, "data": None}
+
+    outcome["added"] = False
+    return outcome
+
+
 def place_character(fbx_path: str, *, name: Optional[str] = None,
                     folder: str = DEFAULT_FOLDER,
                     prefab_folder: str = DEFAULT_PREFAB_FOLDER,
@@ -514,6 +709,7 @@ def place_character(fbx_path: str, *, name: Optional[str] = None,
                     collider: Optional[str] = None,
                     rigidbody: bool = False,
                     components: Optional[Sequence[str]] = None,
+                    import_settings: Optional[Dict[str, Any]] = None,
                     reuse: bool = True,
                     overwrite: bool = False) -> dict:
     """Take a cleaned FBX and stand it up in a Unity scene.
@@ -596,9 +792,36 @@ def place_character(fbx_path: str, *, name: Optional[str] = None,
                     steps=steps)
             steps.append("import_asset")
 
-    # --- 2. Into the scene -------------------------------------------
-    placed = place_in_scene(prefab_path if have_prefab else asset_path,
-                            name=label, scene_path=scene_path)
+    # --- 1b. Tell the importer what it is -----------------------------
+    # Before the prefab is made, never after: the prefab captures the
+    # model as it is imported, so a prefab built from a Generic import
+    # keeps an Animator with no Avatar even once the asset is fixed.
+    if import_settings and not have_prefab:
+        configured = set_import_settings(asset_path, import_settings)
+        if not configured["success"]:
+            return _failure(
+                f"Unity imported {label} but could not apply the import "
+                f"settings: {configured['error']}",
+                ran=True, asset_path=asset_path, steps=steps)
+        if configured.get("unknown"):
+            warnings.append(
+                f"the importer did not recognise: "
+                f"{', '.join(configured['unknown'])}")
+        steps.append("set_import_settings")
+
+    # --- 2. The model becomes a prefab --------------------------------
+    # Not "instantiate then save", which is what the command set looks
+    # like it supports and is not: instantiate_prefab will not touch an
+    # FBX. See model_to_prefab.
+    if not have_prefab:
+        made = model_to_prefab(asset_path, prefab_path)
+        if not made["success"]:
+            return _failure(made["error"], ran=True, asset_path=asset_path,
+                            prefab_path=prefab_path, steps=steps)
+        steps.append("create_prefab")
+
+    # --- 3. Into the scene --------------------------------------------
+    placed = place_in_scene(prefab_path, name=label, scene_path=scene_path)
     if not placed["success"]:
         return _failure(
             f"Unity could not place {label} in the scene: {placed['error']}",
@@ -607,17 +830,6 @@ def place_character(fbx_path: str, *, name: Optional[str] = None,
     steps.append("instantiate_prefab")
 
     instance = placed.get("instance") or placed.get("hierarchy_path") or label
-
-    # --- 3. Save it as a prefab, unless it already was one ------------
-    if not have_prefab:
-        saved = create_prefab(instance, prefab_path)
-        if not saved["success"]:
-            return _failure(
-                f"Unity placed {label} but could not save a prefab: "
-                f"{saved['error']}",
-                ran=True, asset_path=asset_path, prefab_path=prefab_path,
-                instance=instance, steps=steps)
-        steps.append("create_prefab")
 
     # --- 4. Stand it on the floor ------------------------------------
     where = tuple(position) if position is not None else (0.0, 0.0, 0.0)
@@ -643,7 +855,7 @@ def place_character(fbx_path: str, *, name: Optional[str] = None,
 
     added: List[str] = []
     for component in wanted:
-        outcome = add_component(instance, component)
+        outcome = ensure_component(instance, component)
         if not outcome["success"]:
             # Not fatal. The character is in the scene and standing up;
             # a missing collider is a warning, not a reason to report
@@ -651,7 +863,8 @@ def place_character(fbx_path: str, *, name: Optional[str] = None,
             warnings.append(f"could not add {component}: {outcome['error']}")
             continue
         added.append(outcome["component"])
-        steps.append(f"add_component:{outcome['component']}")
+        steps.append(("add_component:" if outcome.get("added", True)
+                      else "already_had:") + outcome["component"])
 
     if not collider:
         warnings.append(
