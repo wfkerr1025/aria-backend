@@ -286,6 +286,13 @@ def generate_environment(prompt: str, *, style: Optional[str] = None,
                           style=style, aspect_ratio="ar_16_9")
 
 
+# What /assets/3d-model/animate accepts for `mode`, from the spec's
+# own enum. rot_only is "rotation + root translation only, for
+# retargeting"; rot_trans is "per-bone rotation+translation, most
+# faithful".
+MOTION_MODES = ("rot_trans", "rot_only")
+
+
 @_guard
 def rig_model(model_url: str, *, rig_type: Optional[str] = None,
               joint_naming: str = "mixamo", run_id: str = "") -> dict:
@@ -305,6 +312,80 @@ def rig_model(model_url: str, *, rig_type: Optional[str] = None,
                                       "joint_naming", "mixamo"),
     }, run_id=run_id)
     return _done("rig", result, ["model_3d_rig"])
+
+
+@_guard
+def generate_motion(model_url: str, prompt: str, *,
+                    mode: str = "rot_only",
+                    variants: int = 1,
+                    loop: bool = False,
+                    augment: bool = True,
+                    run_id: str = "") -> dict:
+    """Motion for a model that already has a skeleton. ONE call.
+
+    Unlike generate_animation, which makes a VIDEO, this returns
+    animation data: one standalone GLB per variant containing curves
+    and no mesh and no skeleton at all. Measured on a real one -- 45
+    node slots named for the rig's bones, 315 curves, 128 of the 180
+    rotation curves carrying movement and only 3 of the 135 location
+    curves, those being the root.
+
+    `mode` defaults to rot_only, which the spec describes as "rotation
+    + root translation only, for retargeting". That is what a clip
+    driving an existing rig wants; rot_trans is more faithful and is
+    for playback of the model it was made from.
+
+    `loop` DEFAULTS TO FALSE ON PURPOSE. Ludo's loop mirrors the motion
+    back to the rest pose, and its own documentation says that "reads
+    oddly for cyclic gaits like walking" -- it is for one-way motions
+    such as a crouch or a wave. It is not Unity's loop-time flag, which
+    is a different setting on the clip.
+
+    The model must already be rigged. Sending an unrigged one spends a
+    credit to be told so.
+    """
+    if not str(model_url or "").strip():
+        return _failed("I need a rigged model to animate.", "motion")
+    if not str(prompt or "").strip():
+        return _failed("I need to know what motion to make.", "motion")
+
+    wanted = int(variants or 1)
+    if wanted < 1:
+        return _failed(f"{wanted} variants is not a number of animations.",
+                       "motion")
+
+    result = client.call("model_3d_animate", {
+        "model": str(model_url).strip(),
+        "prompt": str(prompt).strip(),
+        "mode": client.choice(mode, MOTION_MODES, "mode", "rot_only"),
+        "num_variants": wanted,
+        "loop": bool(loop),
+        "augment_prompt": bool(augment),
+    }, run_id=run_id)
+
+    # The answer is {"animations": [...]}, and each carries glb_url --
+    # a key asset_url() does not know, because no other endpoint uses
+    # it.
+    clips = []
+    if isinstance(result, dict):
+        for entry in result.get("animations") or []:
+            if isinstance(entry, dict) and entry.get("glb_url"):
+                clips.append({
+                    "name": entry.get("clip_name") or prompt,
+                    "url": entry["glb_url"],
+                    "preview": entry.get("preview_url") or "",
+                    "mode": entry.get("mode") or mode,
+                    "fit_rmse": entry.get("fit_rmse"),
+                })
+
+    if not clips:
+        return _failed("Ludo made the motion but did not say where it is.",
+                       "motion", ["model_3d_animate"], ran=True)
+
+    answer = _done("motion", result, ["model_3d_animate"])
+    answer["clips"] = clips
+    answer["url"] = clips[0]["url"]
+    return answer
 
 
 # ======================================================

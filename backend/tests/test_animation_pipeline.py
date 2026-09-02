@@ -40,7 +40,13 @@ from backend.unity import animator_controller_builder as builder
 from backend.unity import unity_delivery as delivery
 
 
-AVATAR_OK = "isHuman=True isValid=True controller=none"
+# What the Editor reports for a Generic import with a real
+# skeleton: no humanoid avatar, 48 transforms, no controller yet.
+GENERIC_OK = ("hasAvatar=False isHuman=False isValid=False bones=48 "
+              "controller=none")
+HUMANOID_OK = ("hasAvatar=True isHuman=True isValid=True bones=48 "
+               "controller=none")
+AVATAR_OK = GENERIC_OK
 
 
 @pytest.fixture
@@ -400,55 +406,112 @@ def test_it_attaches_only_after_the_controller_exists(project, cli):
 # 6. The humanoid gate
 # ======================================================
 
-def test_it_validates_humanoid_avatar(project, cli):
+def test_it_accepts_generic(project, cli):
+    """The correction. A clip of bone-local transform curves sampled
+    against a Humanoid import moved NOTHING; the same clip against the
+    same model imported Generic drives it. Demanding Humanoid would
+    refuse exactly the setup that works."""
     calls, _ = cli
     result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
 
+    assert result.success is True
+    assert result.import_type == pipeline.GENERIC
+    assert "validate_import_type" in result.steps
+
+
+def test_it_accepts_humanoid_too(project, cli):
+    calls, state = cli
+    state["avatar"] = HUMANOID_OK
+
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert result.success is True
+    assert result.import_type == pipeline.HUMANOID
     assert result.avatar_valid is True
-    assert "validate_humanoid_avatar" in result.steps
+
+
+def test_humanoid_is_warned_about_because_it_will_not_play_the_clips(
+        project, cli):
+    """Accepted, not refused -- the controller, states and parameters
+    are all still correct, and a re-import is a one-line fix. But a
+    Humanoid Animator plays muscle curves, so the clips this pipeline
+    writes will not drive it, and that must be said."""
+    calls, state = cli
+    state["avatar"] = HUMANOID_OK
+
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert any("muscle curves" in w for w in result.warnings)
+
+
+def test_the_gate_runs_before_anything_is_built(project, cli):
+    calls, _ = cli
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
     assert commands(calls)[0] == "eval", "it built before it checked"
 
 
-def test_a_generic_import_is_refused_before_anything_is_built(project, cli):
+def test_it_rejects_a_humanoid_with_an_invalid_avatar(project, cli):
     """Measured during the rigging work: a rigged FBX imports Generic
-    with no avatar unless told otherwise, and everything downstream
-    still succeeds while nothing moves."""
+    with zero avatars unless told otherwise, and everything downstream
+    then succeeds while nothing moves."""
     calls, state = cli
-    state["avatar"] = "isHuman=False isValid=False controller=none"
+    state["avatar"] = ("hasAvatar=True isHuman=True isValid=False bones=48 "
+                       "controller=none")
 
     result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
 
     assert result.success is False
-    assert result.avatar_valid is False
-    assert "not a valid humanoid" in result.error
+    assert "Avatar is invalid" in result.error
     assert "create_animator_controller" not in commands(calls)
 
 
-def test_a_missing_avatar_says_which_problem_it_is(project, cli):
+def test_it_rejects_a_model_with_no_skeleton(project, cli):
     calls, state = cli
-    state["avatar"] = "NO_AVATAR"
+    state["avatar"] = ("hasAvatar=False isHuman=False isValid=False bones=0 "
+                       "controller=none")
 
     result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
 
     assert result.success is False
-    assert "imported Generic rather than Humanoid" in result.error
+    assert "no skeleton" in result.error
+    assert "create_animator_controller" not in commands(calls)
 
 
-def test_a_missing_animator_is_a_different_problem(project, cli):
+def test_a_handful_of_transforms_is_not_a_skeleton(project, cli):
+    calls, state = cli
+    state["avatar"] = ("hasAvatar=False isHuman=False isValid=False bones=2 "
+                       "controller=none")
+
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert result.success is False
+    assert "not a skeleton" in result.error
+
+
+def test_the_bone_floor_is_low_enough_for_a_simple_character():
+    """Tuned to the 48-transform rig measured here, it would refuse
+    every simpler character somebody rigs later."""
+    assert pipeline.MINIMUM_BONES <= 8
+
+
+def test_a_missing_animator_is_still_refused(project, cli):
     calls, state = cli
     state["avatar"] = "NO_ANIMATOR"
 
     result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
 
+    assert result.success is False
     assert "no Animator component" in result.error
 
 
-def test_an_object_that_is_not_in_the_scene_is_a_third(project, cli):
+def test_an_object_that_is_not_in_the_scene_is_refused(project, cli):
     calls, state = cli
     state["avatar"] = "NO_OBJECT"
 
     result = pipeline.animate_character("p.prefab", instance="Ghost", name="Ghost")
 
+    assert result.success is False
     assert "no object called 'Ghost'" in result.error
 
 
@@ -495,7 +558,8 @@ def test_reuse_can_be_switched_off(project, cli):
 
 def test_replacing_an_existing_controller_is_reported(project, cli):
     calls, state = cli
-    state["avatar"] = "isHuman=True isValid=True controller=OldController"
+    state["avatar"] = ("hasAvatar=False isHuman=False isValid=False "
+                       "bones=48 controller=OldController")
 
     result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
 
@@ -658,3 +722,120 @@ def test_no_prefab_is_refused_before_anything_runs(project, cli):
     assert result.success is False
     assert result.ran is False
     assert calls == []
+
+
+# ======================================================
+# Motion, curves, and the clips they land in
+#
+# Every number quoted below came off a live run against the real API
+# and the real Editor, not from the specification:
+#
+#   45 bones, 315 curves, 128 of the 180 rotation curves moving and
+#   only 3 of the 135 location curves -- the root, exactly as
+#   `mode: rot_only` documents
+#   183 curves written in 68 seconds, one CLI call each
+# ======================================================
+
+def test_it_generates_animation_glb(project, cli, tmp_path, monkeypatch):
+    from backend.ludo import ludo_actions
+
+    asked = []
+
+    def fake(model, prompt, **kwargs):
+        asked.append({"model": model, "prompt": prompt, **kwargs})
+        return {"success": True, "ran": True, "error": None,
+                "url": "https://cdn/motion.glb", "cost": {"calls": 1},
+                "clips": [{"name": prompt, "url": "https://cdn/motion.glb"}]}
+
+    monkeypatch.setattr(ludo_actions, "generate_motion", fake)
+    monkeypatch.setattr("backend.ludo.ludo_client.download",
+                        lambda url, path, **k: __import__("pathlib").Path(path)
+                        .write_bytes(b"glTF") or {"success": True})
+
+    made = pipeline.motion_for_states("https://cdn/rig.glb", ["Idle", "Walk"],
+                                      folder=str(tmp_path))
+
+    assert sorted(made["motions"]) == ["Idle", "Walk"]
+    assert made["calls"] == 2, "one credit per state"
+    assert asked[0]["mode"] == "rot_only"
+
+
+def test_a_cyclic_gait_is_not_mirrored_back(project, cli, tmp_path,
+                                            monkeypatch):
+    """Ludo's loop mirrors the motion back to the rest pose, and its
+    own documentation says that reads oddly for a walk. It is for
+    one-way motions."""
+    from backend.ludo import ludo_actions
+    asked = {}
+
+    def fake(model, prompt, **kwargs):
+        asked[prompt] = kwargs
+        return {"success": True, "ran": True, "error": None,
+                "url": "https://cdn/m.glb", "cost": {"calls": 1}}
+
+    monkeypatch.setattr(ludo_actions, "generate_motion", fake)
+    monkeypatch.setattr("backend.ludo.ludo_client.download",
+                        lambda url, path, **k: __import__("pathlib").Path(path)
+                        .write_bytes(b"glTF") or {"success": True})
+
+    pipeline.motion_for_states("https://cdn/rig.glb", ["Walk", "Attack"],
+                               folder=str(tmp_path))
+
+    assert asked[pipeline.MOTION_PROMPTS["Walk"]]["loop"] is False
+    assert asked[pipeline.MOTION_PROMPTS["Attack"]]["loop"] is True
+
+
+def test_motion_already_on_disk_costs_nothing(project, cli, tmp_path,
+                                              monkeypatch):
+    """A four-state pipeline re-run days later should not cost four
+    credits. The ledger forgets after twelve hours; the filesystem does
+    not."""
+    from backend.ludo import ludo_actions
+    (tmp_path / "walk_motion.glb").write_bytes(b"glTF already here")
+    monkeypatch.setattr(ludo_actions, "generate_motion",
+                        lambda *a, **k: pytest.fail("it paid again"))
+
+    made = pipeline.motion_for_states("https://cdn/rig.glb", ["Walk"],
+                                      folder=str(tmp_path))
+
+    assert made["calls"] == 0
+    assert "reused_motion:Walk" in made["steps"]
+
+
+def test_a_state_with_no_prompt_is_reported_not_invented(project, cli,
+                                                         tmp_path):
+    made = pipeline.motion_for_states("https://cdn/rig.glb", ["Cartwheel"],
+                                      folder=str(tmp_path))
+
+    assert made["motions"] == {}
+    assert any("no motion prompt" in w for w in made["warnings"])
+
+
+def test_clips_stay_empty_unless_motion_is_asked_for(project, cli):
+    """A credit per state is not something to spend by default, and a
+    controller with empty clips is still a correct controller."""
+    result = pipeline.animate_character("p.prefab", instance="Hero",
+                                        name="Hero")
+
+    assert result.success is True
+    assert any("clips are empty" in w for w in result.warnings)
+
+
+def test_generating_motion_needs_the_rigged_model_url(project, cli):
+    """Ludo animates a model it can reach, not a Unity asset path."""
+    result = pipeline.animate_character("p.prefab", instance="Hero",
+                                        name="Hero", generate_motion=True)
+
+    assert result.success is True
+    assert any("no rigged model URL" in w for w in result.warnings)
+
+
+def test_the_result_carries_the_clips_and_the_import_type(project, cli):
+    result = pipeline.animate_character("p.prefab", instance="Hero",
+                                        name="Hero")
+
+    for field in ("prefab_path", "controller_path", "clips", "states",
+                  "transitions", "parameters", "import_type", "reused",
+                  "steps", "warnings"):
+        assert hasattr(result, field), field
+    assert result.import_type in (pipeline.GENERIC, pipeline.HUMANOID)

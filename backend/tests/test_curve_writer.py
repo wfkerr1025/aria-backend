@@ -42,27 +42,25 @@ import json
 
 import pytest
 
-from backend.unity import animation_curves as curves
+from backend.unity import curve_writer as curves
 from backend.unity import unity_delivery as delivery
 
 
 def dump(bones=("mixamorig:Hips", "mixamorig:LeftUpLeg")):
-    """A curve dump shaped the way the Blender side writes one."""
+    """A curve export shaped the way blender_curve_export writes one.
+
+    Rotations only, as whole quaternions in Blender's w,x,y,z order.
+    Translation never reaches here -- the export drops it, because
+    writing it raw put the feet at 7.7m on a 1.8m character.
+    """
     return {
-        bone: {
-            "rotation_quaternion": {
-                "0": [[0.0, 1.0], [15.0, 0.97]],
-                "1": [[0.0, 0.0], [15.0, -0.22]],
-                "2": [[0.0, 0.0], [15.0, 0.01]],
-                "3": [[0.0, 0.0], [15.0, -0.002]],
-            },
-            "location": {
-                "0": [[0.0, 0.0], [15.0, 0.008]],
-                "1": [[0.0, 0.0], [15.0, 0.067]],
-                "2": [[0.0, 0.0], [15.0, 0.007]],
-            },
-        }
-        for bone in bones
+        "action": "Steady Forward Walk",
+        "bones": [
+            {"bone": bone, "property": "rotation",
+             "keys": [{"frame": 0.0, "wxyz": [1.0, 0.0, 0.0, 0.0]},
+                      {"frame": 15.0, "wxyz": [0.97, -0.22, 0.01, -0.002]}]}
+            for bone in bones
+        ],
     }
 
 
@@ -175,31 +173,37 @@ def test_everything_is_a_transform_curve():
 # Positions, which are the part that went wrong live
 # ======================================================
 
-def test_only_the_root_gets_a_position_curve():
-    """The source translations are in the pre-cleanup scale. Writing
-    them for every bone threw the character metres across the scene."""
-    calls = curves.curves_for_clip(dump(), PATHS,
-                                   root_bone="mixamorig:Hips")
-
-    positions = [c for c in calls if "Position" in c["property"]]
-    assert {c["path"] for c in positions} == \
-        {"skintokens_rig/mixamorig:Hips"}
-
-
-def test_root_position_can_be_left_out_entirely():
-    """In-place locomotion: the engine moves the character and the
-    clip only cycles the legs."""
-    calls = curves.curves_for_clip(dump(), PATHS,
-                                   root_bone="mixamorig:Hips",
-                                   include_root_position=False)
-
-    assert not [c for c in calls if "Position" in c["property"]]
-
-
-def test_no_root_bone_means_no_positions():
+def test_no_position_curve_is_ever_written():
+    """The export drops translation before it reaches here, and there
+    is no option to put it back. The source positions are in the
+    pre-cleanup scale: writing them raw threw the character metres
+    across the scene, feet at 7.7m on a 1.8m character. There is no
+    correct value to substitute without the source scale, so a caller
+    who wants root motion scales it deliberately rather than having
+    this guess."""
     calls = curves.curves_for_clip(dump(), PATHS)
 
     assert not [c for c in calls if "Position" in c["property"]]
+
+
+def test_a_dump_that_still_carries_translation_is_ignored_safely():
+    """An older export, or a hand-made one. The rotations are still
+    written and the translation is simply not looked at."""
+    stale = dump()
+    stale["bones"].append(
+        {"bone": "mixamorig:Hips", "property": "location",
+         "keys": [{"frame": 0.0, "wxyz": [0, 0, 0, 0]}]})
+
+    calls = curves.curves_for_clip(stale, PATHS)
+
+    assert {c["property"] for c in calls} == set(curves.ROTATION_PROPERTIES)
+
+
+def test_the_position_property_names_are_kept_for_stripping_old_clips():
+    """A clip written before the drop still has them, and removing one
+    needs its exact serialized name."""
+    assert curves.POSITION_PROPERTIES == (
+        "m_LocalPosition.x", "m_LocalPosition.y", "m_LocalPosition.z")
 
 
 def test_a_rotation_only_clip_is_four_curves_per_bone():

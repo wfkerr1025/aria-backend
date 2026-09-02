@@ -61,6 +61,9 @@ __all__ = [
 ROTATION_PROPERTIES = ("m_LocalRotation.w", "m_LocalRotation.x",
                        "m_LocalRotation.y", "m_LocalRotation.z")
 
+# Kept for the caller that removes them: writing root motion raw put
+# the feet at 7.7m on a 1.8m character, so the export drops it and
+# these name what to strip if an older clip still has them.
 POSITION_PROPERTIES = ("m_LocalPosition.x", "m_LocalPosition.y",
                        "m_LocalPosition.z")
 
@@ -115,52 +118,48 @@ def bone_paths(target: str) -> Dict[str, str]:
 
 
 def curves_for_clip(dump: Dict[str, Any], paths: Dict[str, str], *,
-                    frame_rate: float = 30.0,
-                    root_bone: str = "",
-                    include_root_position: bool = True) -> List[dict]:
-    """Turn a Blender curve dump into set_animation_curve calls.
+                    frame_rate: float = 30.0) -> List[dict]:
+    """Turn a curve export into set_animation_curve calls.
 
-    `dump` is {bone: {channel: {component index: [[frame, value], ...]}}}
-    as written by the Blender side. Frames become seconds here, because
-    Unity keys are timed in seconds and Blender's are numbered.
+    `dump` is what blender_curve_export writes:
 
-    A bone Unity does not have is skipped rather than guessed at, and
-    counted, so a rig that has drifted from its animation says so
-    instead of silently animating three quarters of itself.
+        {"bones": [{"bone": ..., "property": "rotation",
+                    "keys": [{"frame": f, "wxyz": [w, x, y, z]}]}]}
+
+    Frames become seconds here, because Unity times keys in seconds and
+    Blender numbers them.
+
+    ROTATIONS ONLY. The export drops translation before it gets here,
+    for a measured reason: the animation's node positions are in the
+    source model's scale, and writing them raw threw the character
+    metres across the scene. There is no option to put them back,
+    because there is no correct value to put back without the source
+    scale -- a caller who wants root motion should scale it deliberately
+    rather than have this guess.
+
+    A bone Unity does not have is skipped rather than guessed at, so a
+    rig that has drifted from its animation animates nothing rather
+    than something wrong.
     """
     calls: List[dict] = []
+    entries = dump.get("bones") if isinstance(dump, dict) else None
 
-    for bone, channels in sorted(dump.items()):
+    for entry in entries or []:
+        bone = entry.get("bone")
         path = paths.get(bone)
-        if not path:
+        if not path or entry.get("property") != "rotation":
             continue
 
-        rotation = channels.get("rotation_quaternion") or {}
+        keys = entry.get("keys") or []
         for index, prop in enumerate(ROTATION_PROPERTIES):
-            keys = rotation.get(str(index)) or rotation.get(index)
-            if not keys:
-                continue
             calls.append({
                 "path": path, "type": "Transform", "property": prop,
-                "keys": [{"time": round(float(f) / frame_rate, 5),
-                          "value": float(v)} for f, v in keys],
+                "keys": [{"time": round(float(key["frame"]) / frame_rate, 5),
+                          "value": float(key["wxyz"][index])}
+                         for key in keys if len(key.get("wxyz") or ()) == 4],
             })
 
-        # Only the root travels. Everything else would need the source
-        # model's scale, which the cleaned model no longer has.
-        if include_root_position and root_bone and bone == root_bone:
-            location = channels.get("location") or {}
-            for index, prop in enumerate(POSITION_PROPERTIES):
-                keys = location.get(str(index)) or location.get(index)
-                if not keys:
-                    continue
-                calls.append({
-                    "path": path, "type": "Transform", "property": prop,
-                    "keys": [{"time": round(float(f) / frame_rate, 5),
-                              "value": float(v)} for f, v in keys],
-                })
-
-    return calls
+    return [call for call in calls if call["keys"]]
 
 
 def write_clip_curves(clip_path: str, calls: Sequence[dict], *,
