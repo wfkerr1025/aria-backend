@@ -986,7 +986,87 @@ def origin_to_floor(params: Dict[str, Any]) -> str:
         'round(-_shift.y, 4), round(-_shift.z, 4)))')
 
 
+# ======================================================
+# Rigs
+#
+# A rigged model is not a harder static model, it is a different
+# object, and two things measured on a real one say why.
+#
+# clean_for_unity DOES preserve a rig -- tested against a two-bone
+# armature with automatic weights: bones 2 -> 2, vertex groups 2 -> 2,
+# all 24 weighted vertices still weighted, ARMATURE modifier still
+# bound. That was worth knowing rather than assuming.
+#
+# What it leaves behind is a scaled armature. scale_to_height
+# multiplies object scale, so the root came out at 0.900 instead of
+# 1.0, and a skinned root at a scale other than one is a well known
+# source of trouble when Unity maps a humanoid avatar and retargets
+# animation onto it. Hence apply_transforms.
+# ======================================================
+
+def apply_transforms(params: Dict[str, Any]) -> str:
+    """Bake object scale and rotation into the data.
+
+    For a rigged character this is not tidiness. Unity reads the
+    armature root's transform when it builds an avatar, and a root left
+    at 0.9 makes every retargeted animation subtly wrong in a way that
+    is very hard to trace back to an export step.
+
+    The armature and everything skinned to it are applied together --
+    applying to one and not the other would separate a mesh from the
+    skeleton that deforms it.
+    """
+    return (
+        'bpy.ops.object.mode_set(mode="OBJECT")\n'
+        'bpy.ops.object.select_all(action="DESELECT")\n'
+        '_applied = []\n'
+        'for _o in bpy.data.objects:\n'
+        '    if _o.type in ("MESH", "ARMATURE"):\n'
+        '        _o.select_set(True)\n'
+        '        _applied.append(_o.name)\n'
+        'if _applied:\n'
+        '    bpy.context.view_layer.objects.active = '
+        'bpy.data.objects[_applied[0]]\n'
+        '    bpy.ops.object.transform_apply(location=False, rotation=True, '
+        'scale=True)\n'
+        '_note("apply_transforms", objects=_applied)')
+
+
+def measure_rig(params: Dict[str, Any]) -> str:
+    """Report the skeleton, and how much of the mesh it actually moves.
+
+    Bone COUNT alone is not enough. A rig can survive an export with
+    every bone intact and no weights bound to any of them, and the
+    result looks correct in the outliner and does nothing when
+    animated. So the weighted-vertex count and the modifier binding
+    are measured too -- those are what make a rig a rig.
+    """
+    return (
+        '_rigs = [o for o in bpy.data.objects if o.type == "ARMATURE"]\n'
+        '_skins = [o for o in bpy.data.objects if o.type == "MESH"]\n'
+        '_bones = sum(len(_r.data.bones) for _r in _rigs)\n'
+        '_bone_names = sorted(_b.name for _r in _rigs for _b in _r.data.bones)\n'
+        '_groups = sum(len(_m.vertex_groups) for _m in _skins)\n'
+        '_weighted = sum(1 for _m in _skins for _v in _m.data.vertices '
+        'if _v.groups)\n'
+        '_vertices = sum(len(_m.data.vertices) for _m in _skins)\n'
+        '_bound = [_m.name for _m in _skins for _mod in _m.modifiers\n'
+        '          if _mod.type == "ARMATURE" and _mod.object is not None]\n'
+        '_scales = [round(max(abs(_v) for _v in _r.scale), 4) for _r in _rigs]\n'
+        '_rig = {\n'
+        '    "armatures": len(_rigs), "bones": _bones,\n'
+        '    "bone_names": _bone_names[:40],\n'
+        '    "vertex_groups": _groups, "weighted_vertices": _weighted,\n'
+        '    "vertices": _vertices, "bound_meshes": _bound,\n'
+        '    "root_scales": _scales,\n'
+        '}\n'
+        '_RESULT.setdefault("rigs", []).append(_rig)\n'
+        '_note("measure_rig", **_rig)')
+
+
 TEMPLATES = {
+    "apply_transforms": apply_transforms,
+    "measure_rig": measure_rig,
     "import_model": import_model,
     "measure_mesh": measure_mesh,
     "remove_loose": remove_loose,

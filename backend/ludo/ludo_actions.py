@@ -288,7 +288,7 @@ def generate_environment(prompt: str, *, style: Optional[str] = None,
 
 @_guard
 def rig_model(model_url: str, *, rig_type: Optional[str] = None,
-              joint_naming: str = "mixamo") -> dict:
+              joint_naming: str = "mixamo", run_id: str = "") -> dict:
     """Put a skeleton in a model Ludo already made.
 
     Defaults to mixamo bone names, which is the naming Unity's
@@ -303,7 +303,7 @@ def rig_model(model_url: str, *, rig_type: Optional[str] = None,
         "rig_type": client.choice(rig_type, client.RIG_TYPES, "rig_type"),
         "joint_naming": client.choice(joint_naming, client.JOINT_NAMINGS,
                                       "joint_naming", "mixamo"),
-    })
+    }, run_id=run_id)
     return _done("rig", result, ["model_3d_rig"])
 
 

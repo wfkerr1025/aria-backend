@@ -188,6 +188,10 @@ EVERY_ACTION = [
     ("merge_by_distance", {"distance": 0.0001}),
     ("scale_to_height", {"height": 1.8}),
     ("origin_to_floor", {}),
+
+    # The rigging pipeline. Exercised in test_rigging_pipeline.py.
+    ("apply_transforms", {}),
+    ("measure_rig", {}),
 ]
 
 
