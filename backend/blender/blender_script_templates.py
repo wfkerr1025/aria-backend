@@ -1032,6 +1032,48 @@ def apply_transforms(params: Dict[str, Any]) -> str:
         '_note("apply_transforms", objects=_applied)')
 
 
+def remove_stray_meshes(params: Dict[str, Any]) -> str:
+    """Drop meshes that are in the file but are not the character.
+
+    MEASURED ON A REAL LUDO RIG. Its rigged GLB comes back with a
+    42-vertex Icosphere alongside the character: no vertex groups, no
+    armature modifier, no parent, and 46 users -- one per bone plus
+    one, because it is the custom display shape Blender gives bones.
+    It is a viewport nicety inside Blender and it is real geometry the
+    moment it reaches FBX, so Unity imports it as a stray sphere
+    floating in the prefab.
+
+    THE RULE IS NARROW ON PURPOSE. A mesh is removed only when the file
+    has an armature, at least one OTHER mesh is properly bound to it,
+    and this one has no parent, no vertex groups and no armature
+    modifier. That is "this file is a rigged character and this mesh is
+    not part of it" -- not "delete anything unparented", which would
+    take a separate prop somebody meant to keep.
+
+    Whatever goes is named in the result. A cleanup that silently
+    deletes geometry is one nobody can trust with the geometry they
+    care about.
+    """
+    return (
+        '_rigs = [o for o in bpy.data.objects if o.type == "ARMATURE"]\n'
+        '_meshes = [o for o in bpy.data.objects if o.type == "MESH"]\n'
+        '_bound = [_m for _m in _meshes\n'
+        '          if any(_mod.type == "ARMATURE" and _mod.object\n'
+        '                 for _mod in _m.modifiers)]\n'
+        '_dropped = []\n'
+        'if _rigs and _bound:\n'
+        '    for _m in list(_meshes):\n'
+        '        if _m in _bound:\n'
+        '            continue\n'
+        '        if _m.parent is not None:\n'
+        '            continue\n'
+        '        if len(_m.vertex_groups):\n'
+        '            continue\n'
+        '        _dropped.append(_m.name)\n'
+        '        bpy.data.objects.remove(_m, do_unlink=True)\n'
+        '_note("remove_stray_meshes", removed=_dropped)')
+
+
 def measure_rig(params: Dict[str, Any]) -> str:
     """Report the skeleton, and how much of the mesh it actually moves.
 
@@ -1066,6 +1108,7 @@ def measure_rig(params: Dict[str, Any]) -> str:
 
 TEMPLATES = {
     "apply_transforms": apply_transforms,
+    "remove_stray_meshes": remove_stray_meshes,
     "measure_rig": measure_rig,
     "import_model": import_model,
     "measure_mesh": measure_mesh,

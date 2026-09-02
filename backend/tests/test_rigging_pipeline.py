@@ -586,3 +586,70 @@ def test_measure_rig_counts_weights_not_just_bones():
 
     assert "weighted_vertices" in source
     assert "bound_meshes" in source
+
+
+# ======================================================
+# What a real Ludo rig turned out to carry
+#
+# One rig was bought and inspected. Everything below is a fact from
+# that model, not a guess about it:
+#
+#   45 bones, all 18,442 vertices weighted, modifier bound, root at 1.0
+#   19 bones named mixamorig:Hips / Spine / Spine2 / Neck / Head /
+#      Left+RightShoulder, Arm, ForeArm, Hand, UpLeg, Leg, Foot
+#      -- Unity's complete required humanoid set
+#   26 bones named bone_N, which are fingers and toes Unity leaves
+#      unmapped, and which are NOT a sign the naming failed
+#   1 Icosphere: 42 vertices, no weights, no parent, 46 users
+# ======================================================
+
+def test_a_bone_display_shape_is_not_shipped(blender, work):
+    """Blender gives bones a custom display shape and the glTF importer
+    materialises it as a real object -- 42 vertices, no weights, no
+    parent, one user per bone. Harmless in Blender, and real geometry
+    the moment it reaches FBX, where Unity imports it as a sphere
+    floating in the prefab."""
+    path = work / "hero_rigged.glb"
+    path.write_bytes(b"glTF")
+
+    blender_rigging.clean_rigged_model(str(path))
+
+    assert "remove_stray_meshes" in blender["source"]
+
+
+def test_strays_go_before_the_measurement(blender, work):
+    """Otherwise the counts describe a model that is not the one
+    exported."""
+    path = work / "hero_rigged.glb"
+    path.write_bytes(b"glTF")
+
+    blender_rigging.clean_rigged_model(str(path))
+
+    source = blender["source"]
+    assert source.index("remove_stray_meshes") < source.index("measure_rig")
+
+
+def test_stray_removal_needs_a_rig_and_a_bound_mesh():
+    """The rule is "this file is a rigged character and this mesh is
+    not part of it" -- not "delete anything unparented", which would
+    take a separate prop somebody meant to keep."""
+    source = templates.TEMPLATES["remove_stray_meshes"]({})
+
+    assert "if _rigs and _bound:" in source
+    assert "_m.parent is not None" in source
+    assert "len(_m.vertex_groups)" in source
+
+
+def test_what_was_removed_is_named():
+    """A cleanup that silently deletes geometry is one nobody can trust
+    with the geometry they care about."""
+    source = templates.TEMPLATES["remove_stray_meshes"]({})
+
+    assert "removed=_dropped" in source
+
+
+def test_a_bound_mesh_is_never_a_stray():
+    source = templates.TEMPLATES["remove_stray_meshes"]({})
+
+    assert "if _m in _bound:" in source
+    assert "continue" in source

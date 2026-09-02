@@ -156,6 +156,9 @@ def clean_rigged_model(path: str, *, out: Optional[str] = None,
     steps: List[Dict[str, Any]] = [
         {"action": "clear_scene", "params": {}},
         {"action": "import_model", "params": {"path": source}},
+        # Before anything measures, so the counts describe the model
+        # that will actually be exported.
+        {"action": "remove_stray_meshes", "params": {}},
         {"action": "measure_rig", "params": {}},
         {"action": "measure_mesh", "params": {}},
         {"action": "remove_loose", "params": {}},

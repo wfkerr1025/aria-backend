@@ -192,6 +192,7 @@ EVERY_ACTION = [
     # The rigging pipeline. Exercised in test_rigging_pipeline.py.
     ("apply_transforms", {}),
     ("measure_rig", {}),
+    ("remove_stray_meshes", {}),
 ]
 
 
