@@ -330,6 +330,7 @@ def motion_for_states(model_url: str, states: Sequence[str], *,
 
 def _fill_clips(model_url: str, states: Sequence[str],
                 clip_paths: Sequence[str], *, target: str,
+                prefab_asset: str = "",
                 rigged_model_path: str = "", work_folder: str = "",
                 run_id: str = "") -> dict:
     """Generate motion, retarget it, and write it into the clips.
@@ -356,10 +357,14 @@ def _fill_clips(model_url: str, states: Sequence[str],
         return {"clips": list(clip_paths), "steps": steps,
                 "warnings": warnings}
 
-    paths = curve_writer.bone_paths(target)
+    # bone_rest, not bone_paths: a curve value is a POSE, and the
+    # animation has to be composed onto whatever pose Unity imported.
+    # Writing it absolutely destroyed the +90 degrees on the Hips that
+    # holds the character upright, and laid it on its back.
+    paths = curve_writer.bone_rest(target, asset_path=prefab_asset)
     if not paths:
         warnings.append(
-            "could not read the skeleton's hierarchy, so no curves were "
+            "could not read the skeleton's rest pose, so no curves were "
             "written")
         return {"clips": list(clip_paths), "steps": steps,
                 "warnings": warnings}
@@ -511,7 +516,8 @@ def animate_character(prefab_path: str, *,
     if generate_motion and rigged_model_url:
         filled = _fill_clips(
             rigged_model_url, result.states, built.get("clips") or [],
-            target=target, rigged_model_path=rigged_model_path,
+            target=target, prefab_asset=result.prefab_path,
+            rigged_model_path=rigged_model_path,
             work_folder=work_folder, run_id=run_id or result.instance)
         result.steps += filled["steps"]
         result.warnings += filled["warnings"]

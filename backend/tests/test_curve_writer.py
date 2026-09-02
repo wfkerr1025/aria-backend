@@ -292,3 +292,128 @@ def test_writing_nothing_is_not_a_success(cli):
 
     assert result["success"] is False
     assert result["written"] == 0
+
+
+# ======================================================
+# A curve value is a POSE, not a motion
+#
+# The bug this section exists for, reported as "he's swimming, and
+# he's lying flat on the ground". One cause, both symptoms.
+#
+# Unity's rest has the Hips at +90 degrees about X, which cancels the
+# armature root's -90. The animation's Hips curve is near identity, and
+# an earlier version wrote it ABSOLUTELY -- destroying that
+# compensation. The character rotated 90 degrees onto its back, and
+# every child bone's motion was then applied in a frame rotated by 90
+# degrees, which is exactly what swimming looks like.
+#
+# The claim that no axis conversion was needed came from checking ONE
+# bone whose rest was identity. One sample does not validate a basis.
+# ======================================================
+
+HIPS_REST = (0.7071068, 0.7071068, 0.0, 0.0)      # w,x,y,z: +90 about X
+
+
+def test_frame_zero_reproduces_unitys_rest_pose():
+    """The property the previous version lacked. Whatever pose Unity
+    imported, the first frame must be exactly that -- otherwise the
+    character starts the clip somewhere it was never posed."""
+    known = {"Hips": {"path": "rig/Hips", "rest": HIPS_REST}}
+    calls = curves.curves_for_clip(dump(("Hips",)), known)
+
+    at_zero = {c["property"].rsplit(".", 1)[-1]: c["keys"][0]["value"]
+               for c in calls}
+    for component, expected in zip("wxyz", HIPS_REST):
+        assert abs(at_zero[component] - expected) < 1e-4, component
+
+
+def test_the_motion_survives_the_composition():
+    """Preserving the rest pose is worthless if it flattens the
+    animation into it."""
+    known = {"Hips": {"path": "rig/Hips", "rest": HIPS_REST}}
+    calls = curves.curves_for_clip(dump(("Hips",)), known)
+
+    moved = [c for c in calls
+             if abs(c["keys"][1]["value"] - c["keys"][0]["value"]) > 1e-3]
+    assert moved, "the composition erased the motion"
+
+
+def test_an_identity_rest_leaves_the_delta_alone():
+    """42 of the 45 bones are identity at rest in both engines, which
+    is why they looked plausible while three did not."""
+    known = {"Hips": {"path": "rig/Hips", "rest": (1.0, 0.0, 0.0, 0.0)}}
+    calls = curves.curves_for_clip(dump(("Hips",)), known)
+
+    by_property = {c["property"].rsplit(".", 1)[-1]: c for c in calls}
+    assert abs(by_property["x"]["keys"][1]["value"] - (-0.22)) < 1e-3
+
+
+def test_a_bare_path_still_works_and_composes_onto_identity():
+    """Callers that have no rest data get the old behaviour, which is
+    correct wherever the rest IS identity."""
+    calls = curves.curves_for_clip(dump(("Hips",)), {"Hips": "rig/Hips"})
+
+    assert calls[0]["path"] == "rig/Hips"
+    assert abs(calls[0]["keys"][0]["value"] - 1.0) < 1e-4
+
+
+def test_quaternion_multiply_is_the_hamilton_product():
+    identity = (1.0, 0.0, 0.0, 0.0)
+    turn = (0.7071068, 0.7071068, 0.0, 0.0)
+
+    assert curves.multiply(identity, turn) == pytest.approx(turn, abs=1e-6)
+    # +90 about X twice is 180 about X.
+    doubled = curves.multiply(turn, turn)
+    assert doubled == pytest.approx((0.0, 1.0, 0.0, 0.0), abs=1e-6)
+
+
+def test_inverse_undoes_a_rotation():
+    turn = (0.7071068, 0.7071068, 0.0, 0.0)
+    back = curves.multiply(curves.inverse(turn), turn)
+
+    assert back == pytest.approx((1.0, 0.0, 0.0, 0.0), abs=1e-6)
+
+
+# ======================================================
+# The rest pose has to come from the asset
+# ======================================================
+
+def test_the_rest_pose_is_read_from_the_asset_when_one_is_given(cli):
+    """A scene object's localRotation is its CURRENT pose, and sampling
+    a clip leaves it posed. Reading a posed instance gave 35
+    non-identity rotations where the prefab has 3 -- composing onto
+    those folds one animation's pose into the next one's curves, and
+    the error compounds every run."""
+    calls, _ = cli
+    curves.bone_rest("AriaHero", asset_path="Assets/ARIA/Prefabs/Hero.prefab")
+
+    code = calls[0]["args"]["code"]
+    assert "Assets/ARIA/Prefabs/Hero.prefab" in code
+    # The branch has to be REACHABLE, not merely present: an earlier
+    # version of this test passed against `if (false)`.
+    assert "if (!string.IsNullOrEmpty(assetPath))" in code
+    assert code.index("LoadAssetAtPath") < code.index("GameObject.Find"),         "the scene is consulted before the asset"
+
+
+def test_it_falls_back_to_the_scene_when_no_asset_is_given(cli):
+    calls, _ = cli
+    curves.bone_rest("AriaHero")
+
+    assert "GameObject.Find" in calls[0]["args"]["code"]
+
+
+def test_the_rest_reader_returns_paths_and_quaternions(cli):
+    calls, state = cli
+    state["hierarchy"] = "rig/Hips\t0.707107,0.707107,0.000000,0.000000"
+
+    found = curves.bone_rest("X")
+
+    assert found["Hips"]["path"] == "rig/Hips"
+    assert found["Hips"]["rest"] == pytest.approx(HIPS_REST, abs=1e-5)
+
+
+def test_a_bone_with_no_rotation_column_defaults_to_identity(cli):
+    calls, state = cli
+    state["hierarchy"] = "rig/Hips"
+
+    assert curves.bone_rest("X")["Hips"]["rest"] == (1.0, 0.0, 0.0, 0.0)

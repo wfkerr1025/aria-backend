@@ -15,19 +15,39 @@ no difference. It is a Blender 5.0 FBX exporter problem, not a Ludo or
 Unity one, and rather than keep guessing at exporter flags the curves
 go straight into a .anim asset instead.
 
-WHAT MAPS, AND WHY IT MAPS SO SIMPLY
-------------------------------------
-Measured against the real rig rather than derived. Unity's imported
-hierarchy has
+A ROTATION CURVE IS A POSE, NOT A MOTION, AND THAT MATTERS
+----------------------------------------------------------
+An earlier version of this module wrote the animation's quaternions
+straight into Unity's curves, on the grounds that Unity's hierarchy has
 
     skintokens_rig            rotation (-0.7071, 0, 0, 0.7071)
-    .../mixamorig:Hips        rotation (0.7071, 0, 0, 0.7071)
-    every other bone          rotation (0, 0, 0, 1) -- identity
+    .../mixamorig:Hips        rotation ( 0.7071, 0, 0, 0.7071)
+    every other bone          identity
 
-The whole Z-up to Y-up conversion sits on the root. Every bone below it
-is at identity at rest, in Unity and in the source glTF alike, so a
-bone-local rotation needs no axis conversion at all -- only Blender's
-w,x,y,z quaternion order rewritten as Unity's x,y,z,w.
+so the axis conversion sits on the root and the bones need none. That
+reasoning was checked against ONE bone whose rest was identity, and one
+sample does not validate a basis.
+
+It is wrong for exactly the bone it matters on. Unity's Hips carries
++90 degrees about X, which is what cancels the root's -90. The
+animation's Hips curve is near identity, so writing it absolutely
+DESTROYED that compensation: the character rotated 90 degrees onto its
+back, and every child bone's motion was then applied in a frame rotated
+by 90 degrees -- which read as swimming rather than walking.
+
+So a curve value is composed rather than copied:
+
+    unity(t) = unity_rest * inverse(source_first_frame) * source(t)
+
+The animation contributes only its DEVIATION from its own first frame,
+and that deviation is applied on top of whatever pose Unity imported.
+At t=0 this reproduces Unity's rest exactly, whatever it happens to be,
+which is the property the previous version lacked and the reason the
+character now stands up.
+
+Bones whose rest is identity in both are unaffected, which is why 42 of
+45 looked plausible and the three that did not were the ones holding
+the model upright.
 
 POSITIONS ARE A DIFFERENT MATTER and are deliberately not written for
 ordinary bones. The animation's node translations are in the source
@@ -51,6 +71,9 @@ logger = get_logger(__name__)
 __all__ = [
     "ROTATION_PROPERTIES",
     "bone_paths",
+    "bone_rest",
+    "inverse",
+    "multiply",
     "curves_for_clip",
     "write_clip_curves",
 ]
@@ -68,11 +91,22 @@ POSITION_PROPERTIES = ("m_LocalPosition.x", "m_LocalPosition.y",
                        "m_LocalPosition.z")
 
 # C# that reports every transform under an object, as
-# "path<tab>localPosition<tab>localRotation" lines. The paths are what
-# a curve is addressed by, and guessing them from bone names would get
-# the first fork in the skeleton wrong.
+# "path<tab>localRotation" lines. The paths are what a curve is
+# addressed by, and guessing them from bone names would get the first
+# fork in the skeleton wrong.
+#
+# THE ASSET IS PREFERRED OVER THE SCENE, and that is not a detail. A
+# scene object's localRotation is its CURRENT pose, and sampling a clip
+# against it leaves it posed. Reading the rest pose from a posed
+# instance returned 35 non-identity rotations where the asset has 3 --
+# and composing onto those would bake one animation's pose into the
+# next one's curves.
 _HIERARCHY = """
-var go = UnityEngine.GameObject.Find("{name}");
+UnityEngine.GameObject go = null;
+var assetPath = "{asset}";
+if (!string.IsNullOrEmpty(assetPath))
+    go = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.GameObject>(assetPath);
+if (go == null) go = UnityEngine.GameObject.Find("{name}");
 if (go == null) return "NO_OBJECT";
 var sb = new System.Text.StringBuilder();
 System.Action<UnityEngine.Transform, string> walk = null;
@@ -80,7 +114,11 @@ walk = (t, path) => {{
     for (int i = 0; i < t.childCount; i++) {{
         var c = t.GetChild(i);
         var p = string.IsNullOrEmpty(path) ? c.name : path + "/" + c.name;
-        sb.Append(p).Append("\\n");
+        var r = c.localRotation;
+        sb.Append(p).Append("\\t")
+          .Append(r.w.ToString("F6")).Append(",").Append(r.x.ToString("F6"))
+          .Append(",").Append(r.y.ToString("F6")).Append(",").Append(r.z.ToString("F6"))
+          .Append("\\n");
         walk(c, p);
     }}
 }};
@@ -89,7 +127,31 @@ return sb.ToString();
 """
 
 
-def bone_paths(target: str) -> Dict[str, str]:
+def multiply(left, right):
+    """Hamilton product, both quaternions as (w, x, y, z)."""
+    lw, lx, ly, lz = left
+    rw, rx, ry, rz = right
+    return (
+        lw * rw - lx * rx - ly * ry - lz * rz,
+        lw * rx + lx * rw + ly * rz - lz * ry,
+        lw * ry - lx * rz + ly * rw + lz * rx,
+        lw * rz + lx * ry - ly * rx + lz * rw,
+    )
+
+
+def inverse(quaternion):
+    """The conjugate, which is the inverse for a unit quaternion.
+
+    Normalised first rather than assumed: values that have been through
+    a JSON round trip and a rounding to six places are unit to about
+    six places, and the error compounds across a chain of bones.
+    """
+    w, x, y, z = quaternion
+    norm = (w * w + x * x + y * y + z * z) or 1.0
+    return (w / norm, -x / norm, -y / norm, -z / norm)
+
+
+def bone_paths(target: str, asset_path: str = "") -> Dict[str, str]:
     """{bone name: path relative to the animated root}.
 
     Read from Unity rather than built from the rig, because a curve is
@@ -97,7 +159,9 @@ def bone_paths(target: str) -> Dict[str, str]:
     places in a skeleton. Asking is cheaper than being wrong.
     """
     outcome = delivery._run("eval", {
-        "code": _HIERARCHY.format(name=str(target or "").replace('"', "")),
+        "code": _HIERARCHY.format(
+            name=str(target or "").replace('"', ""),
+            asset=str(asset_path or "").replace('"', "")),
         "timeout": 30000,
     })
     if not outcome["success"]:
@@ -113,8 +177,55 @@ def bone_paths(target: str) -> Dict[str, str]:
         line = line.strip()
         if not line:
             continue
-        paths.setdefault(line.rsplit("/", 1)[-1], line)
+        path = line.split("\t")[0]
+        paths.setdefault(path.rsplit("/", 1)[-1], path)
     return paths
+
+
+def bone_rest(target: str, asset_path: str = "") -> Dict[str, dict]:
+    """{bone: {"path": ..., "rest": (w, x, y, z)}} straight from Unity.
+
+    The rest pose is what the animation is applied ON TOP OF, so it has
+    to come from the model that will play the clip rather than from the
+    file the motion was generated against.
+
+    AND IT HAS TO COME FROM THE ASSET. A scene object's localRotation is
+    whatever pose it is currently in, and sampling a clip leaves it
+    posed -- reading a posed instance gave 35 non-identity rotations
+    where the prefab has 3. Composing onto those would fold one
+    animation's pose into the next one's curves, and the error would
+    compound every time the pipeline ran.
+    """
+    outcome = delivery._run("eval", {
+        "code": _HIERARCHY.format(
+            name=str(target or "").replace('"', ""),
+            asset=str(asset_path or "").replace('"', "")),
+        "timeout": 30000,
+    })
+    if not outcome["success"]:
+        logger.warning("could not read the rest pose: %s", outcome["error"])
+        return {}
+
+    said = str(((outcome["data"] or {}) or {}).get("result") or "")
+    if not said or said == "NO_OBJECT":
+        return {}
+
+    found: Dict[str, dict] = {}
+    for line in said.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("\t")
+        path = parts[0]
+        rest = (1.0, 0.0, 0.0, 0.0)
+        if len(parts) > 1:
+            try:
+                rest = tuple(float(v) for v in parts[1].split(","))
+            except ValueError:              # pragma: no cover - defensive
+                rest = (1.0, 0.0, 0.0, 0.0)
+        found.setdefault(path.rsplit("/", 1)[-1],
+                         {"path": path, "rest": rest})
+    return found
 
 
 def curves_for_clip(dump: Dict[str, Any], paths: Dict[str, str], *,
@@ -146,17 +257,43 @@ def curves_for_clip(dump: Dict[str, Any], paths: Dict[str, str], *,
 
     for entry in entries or []:
         bone = entry.get("bone")
-        path = paths.get(bone)
-        if not path or entry.get("property") != "rotation":
+        known = paths.get(bone)
+        if not known or entry.get("property") != "rotation":
             continue
 
-        keys = entry.get("keys") or []
+        # Accept either a bare path or the {"path", "rest"} that
+        # bone_rest returns, so a caller with no rest data still works
+        # -- it simply composes onto identity, which is the old
+        # behaviour and is correct wherever the rest IS identity.
+        if isinstance(known, dict):
+            path = known.get("path") or ""
+            rest = tuple(known.get("rest") or (1.0, 0.0, 0.0, 0.0))
+        else:
+            path, rest = known, (1.0, 0.0, 0.0, 0.0)
+        if not path:
+            continue
+
+        keys = [key for key in (entry.get("keys") or [])
+                if len(key.get("wxyz") or ()) == 4]
+        if not keys:
+            continue
+
+        # The animation contributes its deviation from its OWN first
+        # frame. At t=0 that is identity, so the output is Unity's rest
+        # exactly -- which is what keeps the character standing up.
+        reference = inverse(tuple(float(v) for v in keys[0]["wxyz"]))
+
+        posed = []
+        for key in keys:
+            source = tuple(float(v) for v in key["wxyz"])
+            value = multiply(rest, multiply(reference, source))
+            posed.append((round(float(key["frame"]) / frame_rate, 5), value))
+
         for index, prop in enumerate(ROTATION_PROPERTIES):
             calls.append({
                 "path": path, "type": "Transform", "property": prop,
-                "keys": [{"time": round(float(key["frame"]) / frame_rate, 5),
-                          "value": float(key["wxyz"][index])}
-                         for key in keys if len(key.get("wxyz") or ()) == 4],
+                "keys": [{"time": time, "value": value[index]}
+                         for time, value in posed],
             })
 
     return [call for call in calls if call["keys"]]
