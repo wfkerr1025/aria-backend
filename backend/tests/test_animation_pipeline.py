@@ -430,18 +430,31 @@ def test_it_accepts_humanoid_too(project, cli):
     assert result.avatar_valid is True
 
 
-def test_humanoid_is_warned_about_because_it_will_not_play_the_clips(
-        project, cli):
-    """Accepted, not refused -- the controller, states and parameters
-    are all still correct, and a re-import is a one-line fix. But a
-    Humanoid Animator plays muscle curves, so the clips this pipeline
-    writes will not drive it, and that must be said."""
+def test_generic_is_warned_about_because_it_will_not_retarget(project, cli):
+    """The warning that used to point the other way. Mixamo clips
+    retarget through the Avatar system, which needs Humanoid on both
+    sides -- so Generic is now the setting that quietly produces a
+    character standing perfectly still.
+
+    Accepted rather than refused: the controller, states, transitions
+    and parameters are all still correct, and a re-import is a
+    one-line fix.
+    """
+    calls, _ = cli
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert result.success is True
+    assert result.import_type == pipeline.GENERIC
+    assert any("Avatar system" in w for w in result.warnings)
+
+
+def test_humanoid_is_not_warned_about(project, cli):
     calls, state = cli
     state["avatar"] = HUMANOID_OK
 
     result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
 
-    assert any("muscle curves" in w for w in result.warnings)
+    assert not any("Re-import" in w for w in result.warnings)
 
 
 def test_the_gate_runs_before_anything_is_built(project, cli):
@@ -725,109 +738,68 @@ def test_no_prefab_is_refused_before_anything_runs(project, cli):
 
 
 # ======================================================
-# Motion, curves, and the clips they land in
+# Where the clips come from
 #
-# Every number quoted below came off a live run against the real API
-# and the real Editor, not from the specification:
-#
-#   45 bones, 315 curves, 128 of the 180 rotation curves moving and
-#   only 3 of the 135 location curves -- the root, exactly as
-#   `mode: rot_only` documents
-#   183 curves written in 68 seconds, one CLI call each
+# A generated-motion path used to live here and was removed. Ludo's
+# walk had both thighs swinging the same way at every frame -- a
+# shuffle, not a walk -- and the Mixamo clip measured the same way
+# gives a 44.3 degree leg split against the generated 6.1. The clips
+# come from mixamo_library now, and this pipeline builds the machine
+# that plays them.
 # ======================================================
 
-def test_it_generates_animation_glb(project, cli, tmp_path, monkeypatch):
-    from backend.ludo import ludo_actions
-
-    asked = []
-
-    def fake(model, prompt, **kwargs):
-        asked.append({"model": model, "prompt": prompt, **kwargs})
-        return {"success": True, "ran": True, "error": None,
-                "url": "https://cdn/motion.glb", "cost": {"calls": 1},
-                "clips": [{"name": prompt, "url": "https://cdn/motion.glb"}]}
-
-    monkeypatch.setattr(ludo_actions, "generate_motion", fake)
-    monkeypatch.setattr("backend.ludo.ludo_client.download",
-                        lambda url, path, **k: __import__("pathlib").Path(path)
-                        .write_bytes(b"glTF") or {"success": True})
-
-    made = pipeline.motion_for_states("https://cdn/rig.glb", ["Idle", "Walk"],
-                                      folder=str(tmp_path))
-
-    assert sorted(made["motions"]) == ["Idle", "Walk"]
-    assert made["calls"] == 2, "one credit per state"
-    assert asked[0]["mode"] == "rot_only"
-
-
-def test_a_cyclic_gait_is_not_mirrored_back(project, cli, tmp_path,
-                                            monkeypatch):
-    """Ludo's loop mirrors the motion back to the rest pose, and its
-    own documentation says that reads oddly for a walk. It is for
-    one-way motions."""
-    from backend.ludo import ludo_actions
-    asked = {}
-
-    def fake(model, prompt, **kwargs):
-        asked[prompt] = kwargs
-        return {"success": True, "ran": True, "error": None,
-                "url": "https://cdn/m.glb", "cost": {"calls": 1}}
-
-    monkeypatch.setattr(ludo_actions, "generate_motion", fake)
-    monkeypatch.setattr("backend.ludo.ludo_client.download",
-                        lambda url, path, **k: __import__("pathlib").Path(path)
-                        .write_bytes(b"glTF") or {"success": True})
-
-    pipeline.motion_for_states("https://cdn/rig.glb", ["Walk", "Attack"],
-                               folder=str(tmp_path))
-
-    assert asked[pipeline.MOTION_PROMPTS["Walk"]]["loop"] is False
-    assert asked[pipeline.MOTION_PROMPTS["Attack"]]["loop"] is True
-
-
-def test_motion_already_on_disk_costs_nothing(project, cli, tmp_path,
-                                              monkeypatch):
-    """A four-state pipeline re-run days later should not cost four
-    credits. The ledger forgets after twelve hours; the filesystem does
-    not."""
-    from backend.ludo import ludo_actions
-    (tmp_path / "walk_motion.glb").write_bytes(b"glTF already here")
-    monkeypatch.setattr(ludo_actions, "generate_motion",
-                        lambda *a, **k: pytest.fail("it paid again"))
-
-    made = pipeline.motion_for_states("https://cdn/rig.glb", ["Walk"],
-                                      folder=str(tmp_path))
-
-    assert made["calls"] == 0
-    assert "reused_motion:Walk" in made["steps"]
-
-
-def test_a_state_with_no_prompt_is_reported_not_invented(project, cli,
-                                                         tmp_path):
-    made = pipeline.motion_for_states("https://cdn/rig.glb", ["Cartwheel"],
-                                      folder=str(tmp_path))
-
-    assert made["motions"] == {}
-    assert any("no motion prompt" in w for w in made["warnings"])
-
-
-def test_clips_stay_empty_unless_motion_is_asked_for(project, cli):
-    """A credit per state is not something to spend by default, and a
-    controller with empty clips is still a correct controller."""
+def test_states_are_empty_unless_clips_are_supplied(project, cli):
+    """A controller with empty states is still a correct controller --
+    the states, transitions and parameters are all real. What an empty
+    state means is that it plays nothing, and that is said."""
     result = pipeline.animate_character("p.prefab", instance="Hero",
                                         name="Hero")
 
     assert result.success is True
-    assert any("clips are empty" in w for w in result.warnings)
+    assert any("plays nothing" in w for w in result.warnings)
+    assert any("mixamo_library" in w for w in result.warnings)
 
 
-def test_generating_motion_needs_the_rigged_model_url(project, cli):
-    """Ludo animates a model it can reach, not a Unity asset path."""
-    result = pipeline.animate_character("p.prefab", instance="Hero",
-                                        name="Hero", generate_motion=True)
+def test_supplied_clips_reach_the_states(project, cli):
+    calls, _ = cli
+    pipeline.animate_character(
+        "p.prefab", instance="Hero", name="Hero",
+        clips={"Idle": "Assets/Mixamo/Idle.fbx",
+               "Walk": "Assets/Mixamo/Walking.fbx"})
 
-    assert result.success is True
-    assert any("no rigged model URL" in w for w in result.warnings)
+    motions = {a["name"]: a.get("motion")
+               for a in every(calls, "add_animator_state")}
+    assert motions["Idle"] == "Assets/Mixamo/Idle.fbx"
+    assert motions["Walk"] == "Assets/Mixamo/Walking.fbx"
+
+
+def test_supplying_clips_removes_the_empty_warning(project, cli):
+    result = pipeline.animate_character(
+        "p.prefab", instance="Hero", name="Hero",
+        clips={"Idle": "Assets/Mixamo/Idle.fbx"})
+
+    assert not any("plays nothing" in w for w in result.warnings)
+
+
+def test_nothing_here_spends_a_credit(project, cli):
+    """The pipeline used to buy a clip per state. It does not any more.
+
+    Checked on the IMPORTS rather than the text: the module docstring
+    explains at length why the Ludo path was removed, and a search for
+    the word would match the explanation.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(pipeline))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+        elif isinstance(node, ast.Import):
+            imported.update(a.name for a in node.names)
+
+    assert not [m for m in imported if "ludo" in m], sorted(imported)
 
 
 def test_the_result_carries_the_clips_and_the_import_type(project, cli):

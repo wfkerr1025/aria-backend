@@ -7,6 +7,23 @@ WHERE THIS SITS
     unity_rigging       imported Humanoid, prefab, Animator, placed
     THIS                an AnimatorController, and the Animator told
                         about it
+    mixamo_library      the clips that fill its states
+
+WHERE THE CLIPS COME FROM, AND WHERE THEY USED TO
+--------------------------------------------------
+A generated-motion path once lived here: ask Ludo for a clip per
+state, retarget it in Blender, write the curves into a .anim. It was
+built, paid for, measured, and removed. The generated walk had BOTH
+THIGHS swinging the same way at every frame -- a shuffle rather than a
+walk -- and a second attempt with a more prescriptive prompt came back
+effectively static. Measured the same way, the Mixamo clip gives a
+44.3 degree leg split against the generated 6.1.
+
+Two modules went with it, curve_writer and blender_curve_export, and
+the work they did is worth remembering rather than repeating: an
+animation-only GLB whose bone-local quaternions had to be composed
+onto Unity's rest pose, written one CLI call per curve. It worked. The
+motion it delivered was not worth delivering.
 
 The rigging pipeline deliberately stopped at an Animator with no
 controller. This is the thing that was being left for.
@@ -55,7 +72,6 @@ from logger import get_logger
 from backend.unity import animation_parameters as params
 from backend.unity import animation_state_graph as graphs
 from backend.unity import animator_controller_builder as builder
-from backend.unity import curve_writer
 from backend.unity import unity_delivery as delivery
 
 logger = get_logger(__name__)
@@ -251,160 +267,6 @@ def attach_controller(target: str, controller_path: str) -> dict:
             "controller": controller_path, "data": outcome["data"]}
 
 
-# What to ask Ludo for, per state. The wording matters more than it
-# looks: the endpoint rewrites these into a motion caption with an LLM
-# when augment_prompt is on, and "walking" alone produces something
-# vaguer than "walking forward at a steady pace".
-MOTION_PROMPTS = {
-    "Idle": "standing still, breathing, weight shifting slightly",
-    "Walk": "walking forward at a steady pace",
-    "Run": "running forward quickly",
-    "Attack": "swinging a sword downward in an overhead attack",
-}
-
-# Ludo's `loop` mirrors a motion back to its rest pose. Its own
-# documentation says that "reads oddly for cyclic gaits like walking",
-# so it is for the one-way motions only. NOT the same thing as Unity's
-# loop-time flag, which is set on the clip.
-MIRROR_BACK = ("Attack",)
-
-
-def motion_for_states(model_url: str, states: Sequence[str], *,
-                      run_id: str = "", folder: str = "",
-                      prompts: Optional[Dict[str, str]] = None,
-                      reuse: bool = True) -> dict:
-    """One animation GLB per state, from Ludo. ONE CREDIT EACH.
-
-    Skips any state whose GLB is already on disk, so a re-run of a
-    four-state pipeline costs nothing rather than four credits. That
-    check is the filesystem, not the ledger: the ledger forgets after
-    twelve hours and a pipeline is re-run days apart.
-    """
-    from pathlib import Path as _Path
-
-    from backend.ludo import ludo_actions as ludo
-
-    wanted = prompts or MOTION_PROMPTS
-    made: Dict[str, str] = {}
-    steps: List[str] = []
-    warnings: List[str] = []
-    spent = 0
-
-    for state in states:
-        prompt = wanted.get(state)
-        if not prompt:
-            warnings.append(f"no motion prompt for {state}, so it has no clip")
-            continue
-
-        target = _Path(folder or ".") / f"{state.lower()}_motion.glb"
-        if reuse and target.is_file() and target.stat().st_size:
-            made[state] = str(target)
-            steps.append(f"reused_motion:{state}")
-            continue
-
-        answer = ludo.generate_motion(
-            model_url, prompt, mode="rot_only", variants=1,
-            loop=state in MIRROR_BACK, run_id=run_id)
-
-        spent += (answer.get("cost") or {}).get("calls", 0)
-        if not answer.get("success"):
-            warnings.append(f"could not make a {state} motion: "
-                            f"{answer.get('error')}")
-            continue
-
-        target.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            from backend.ludo import ludo_client
-            ludo_client.download(answer["url"], str(target))
-        except Exception as error:      # pragma: no cover - network shapes
-            warnings.append(f"{state} was generated but not downloaded: "
-                            f"{error}. It is at {answer['url']}")
-            continue
-
-        made[state] = str(target)
-        steps.append(f"generate_motion:{state}")
-
-    return {"motions": made, "steps": steps, "warnings": warnings,
-            "calls": spent}
-
-
-def _fill_clips(model_url: str, states: Sequence[str],
-                clip_paths: Sequence[str], *, target: str,
-                prefab_asset: str = "",
-                rigged_model_path: str = "", work_folder: str = "",
-                run_id: str = "") -> dict:
-    """Generate motion, retarget it, and write it into the clips.
-
-    The whole reason this is not an FBX import: Unity finds zero takes
-    in a Blender-exported animated FBX. See blender_curve_export.
-    """
-    from pathlib import Path as _Path
-
-    from backend.blender import blender_curve_export as export
-
-    steps: List[str] = []
-    warnings: List[str] = []
-    written: List[str] = []
-
-    folder = work_folder or str(_Path(clip_paths[0]).parent) if clip_paths else "."
-
-    motion = motion_for_states(model_url, states, run_id=run_id,
-                               folder=folder)
-    steps += motion["steps"]
-    warnings += motion["warnings"]
-
-    if not motion["motions"]:
-        return {"clips": list(clip_paths), "steps": steps,
-                "warnings": warnings}
-
-    # bone_rest, not bone_paths: a curve value is a POSE, and the
-    # animation has to be composed onto whatever pose Unity imported.
-    # Writing it absolutely destroyed the +90 degrees on the Hips that
-    # holds the character upright, and laid it on its back.
-    paths = curve_writer.bone_rest(target, asset_path=prefab_asset)
-    if not paths:
-        warnings.append(
-            "could not read the skeleton's rest pose, so no curves were "
-            "written")
-        return {"clips": list(clip_paths), "steps": steps,
-                "warnings": warnings}
-
-    by_state = {_Path(path).stem.rsplit("_", 1)[-1]: path
-                for path in clip_paths}
-
-    for state, glb in motion["motions"].items():
-        clip = by_state.get(state)
-        if not clip:
-            warnings.append(f"{state} has motion but no clip to put it in")
-            continue
-
-        dumped = export.export_curves(
-            glb, str(_Path(glb).with_suffix(".curves.json")),
-            rigged_path=rigged_model_path)
-        if not dumped["success"]:
-            warnings.append(f"could not read {state}'s curves: "
-                            f"{dumped['error']}")
-            continue
-        steps.append(f"export_curves:{state}")
-
-        if dumped.get("unknown_to_rig"):
-            warnings.append(
-                f"{state} names {len(dumped['unknown_to_rig'])} bones the rig "
-                "does not have; those are not animated")
-
-        calls = curve_writer.curves_for_clip(dumped["dump"], paths)
-        outcome = curve_writer.write_clip_curves(clip, calls)
-        if not outcome["success"]:
-            warnings.append(f"{state}: {outcome['error']}")
-            continue
-
-        steps.append(f"write_curves:{state}({outcome['written']})")
-        written.append(clip)
-
-    return {"clips": written or list(clip_paths), "steps": steps,
-            "warnings": warnings}
-
-
 def animate_character(prefab_path: str, *,
                       instance: str = "",
                       name: Optional[str] = None,
@@ -414,11 +276,6 @@ def animate_character(prefab_path: str, *,
                       params.DEFAULT_PARAMETERS,
                       clips: Optional[Dict[str, str]] = None,
                       controller_path: Optional[str] = None,
-                      rigged_model_url: str = "",
-                      rigged_model_path: str = "",
-                      work_folder: str = "",
-                      generate_motion: bool = False,
-                      run_id: str = "",
                       complete_graph: bool = True,
                       reuse: bool = True,
                       overwrite: bool = False) -> AnimationResult:
@@ -433,10 +290,14 @@ def animate_character(prefab_path: str, *,
     perfectly and moves nothing, and that failure is invisible until
     play mode.
 
-    `animation_style` is recorded and does not yet change the graph.
-    It is the seam where generated or authored clip sets will be
-    chosen, and it is carried through rather than dropped so a caller
-    can already say what it wanted.
+    CLIPS COME FROM mixamo_library, NOT FROM HERE. This builds the
+    controller, its states, its transitions and its parameters, and
+    leaves the states empty unless a caller passes `clips`. The
+    generated-motion path that used to fill them was removed.
+
+    `animation_style` is recorded and does not change the graph. It is
+    the seam where a clip set gets chosen, and it is carried through
+    rather than dropped so a caller can already say what it wanted.
     """
     label = str(name or Path(str(prefab_path or "")).stem or "character")
     result = AnimationResult(prefab_path=str(prefab_path or ""),
@@ -466,14 +327,21 @@ def animate_character(prefab_path: str, *,
 
     result.steps.append("validate_import_type")
 
-    # Humanoid is accepted and warned about. It plays muscle curves, so
-    # the transform curves this pipeline writes will not drive it --
-    # measured, and it moved nothing at all.
-    if report["import_type"] == HUMANOID:
+    # Generic is the one worth a word now. Mixamo clips retarget
+    # through the Avatar system, which needs Humanoid on both the clip
+    # and the character -- so Generic is the setting that quietly
+    # produces a character standing still.
+    #
+    # This warning used to say the opposite, and correctly: the removed
+    # generated-curve route wrote bone-local transform curves, which
+    # only a Generic Animator plays. The route is gone and the advice
+    # inverted with it.
+    if report["import_type"] == GENERIC:
         result.warnings.append(
-            "this model is imported Humanoid, which plays muscle curves -- "
-            "generated bone-local clips will not drive it. Re-import as "
-            "Generic to play them.")
+            "this model is imported Generic. Retargeted clips -- Mixamo's "
+            "among them -- go through the Avatar system and need Humanoid "
+            "on both the clip and the character, so they will not drive "
+            "it. Re-import with animationType=Human.")
 
     # --- 2. The graph, decided before Unity is asked anything ---------
     graph = graphs.default_graph(required_states, clips=clips,
@@ -508,35 +376,12 @@ def animate_character(prefab_path: str, *,
     result.parameters = built.get("parameters") or [p.name for p in parameters]
     result.reused = bool(built.get("reused"))
 
-    # --- 3b. Fill the clips with actual motion --------------------------
-    # Only when asked: it costs a credit per state, and a controller
-    # with empty clips is still a correct controller. The states, the
-    # transitions and the parameters are all real either way; what an
-    # empty clip means is that the state plays nothing.
-    if generate_motion and rigged_model_url:
-        filled = _fill_clips(
-            rigged_model_url, result.states, built.get("clips") or [],
-            target=target, prefab_asset=result.prefab_path,
-            rigged_model_path=rigged_model_path,
-            work_folder=work_folder, run_id=run_id or result.instance)
-        result.steps += filled["steps"]
-        result.warnings += filled["warnings"]
-        result.clips = filled["clips"]
-    else:
-        result.clips = list(built.get("clips") or [])
-        if generate_motion:
-            # Asked for and not possible. Saying nothing here would
-            # leave somebody believing they had paid for motion.
-            result.warnings.append(
-                "motion was asked for but no rigged model URL was given, so "
-                "the clips are empty. Ludo animates a model it can reach, "
-                "not a Unity asset path.")
-        else:
-            result.warnings.append(
-                "the clips are empty: the controller is correct and the "
-                "states play nothing. Pass generate_motion=True with a "
-                "rigged model URL to fill them, at one Ludo credit per "
-                "state.")
+    result.clips = list(built.get("clips") or [])
+    if not clips:
+        result.warnings.append(
+            "no clips were supplied, so every state plays nothing. Use "
+            "mixamo_library to discover, match and assign a folder of "
+            "clips.")
 
     # --- 4. Tell the Animator about it ---------------------------------
     attached = attach_controller(target, where)
