@@ -16,6 +16,26 @@ were read out of the Pipeline package's own source in the project:
     Editor/Commands/Prefabs/PrefabCommands.cs
         create_prefab(source, path)
         instantiate_prefab(prefab, scene_path, name)
+    Editor/Commands/GameObjects/GameObjectCommands.cs
+        set_transform(target, position, rotation, scale)  -- LOCAL, and
+        an omitted channel is left unchanged rather than zeroed
+    Editor/Commands/GameObjects/ComponentCommands.cs
+        add_component(target, type)                       -- both required
+
+THE ORDER IS NOT THE OBVIOUS ONE
+--------------------------------
+"Import it, make a prefab, then put the prefab in the scene" is the
+order everybody writes down first, and this CLI cannot do it.
+create_prefab takes `source` as a SCENE object -- it saves something
+already in a scene -- so the real order is import, instantiate the
+imported model, then save THAT as a prefab:
+
+    import_asset -> instantiate_prefab -> create_prefab -> set_transform
+
+Runtime/Models/ObjectRef.cs is what lets the chain cross separate CLI
+launches: it resolves globalId, path, guid, instanceId or
+hierarchyPath, so each command hands back an identity the next one is
+given and nothing has to be held between processes.
 
 and the `--snake_case value` syntax from the package's own documented
 examples (`unity command run_tests --mode editor --filter ...`).
@@ -45,11 +65,16 @@ from logger import get_logger
 logger = get_logger(__name__)
 
 __all__ = [
+    "COLLIDERS",
+    "add_component",
     "asset_path_for",
     "create_prefab",
     "deliver_to_unity",
     "move_export_to_unity",
+    "place_character",
     "place_in_scene",
+    "prefab_path_for",
+    "set_transform",
     "trigger_unity_import",
     "unity_project_root",
 ]
@@ -57,6 +82,10 @@ __all__ = [
 # Where a Blender export lands unless told otherwise. Its own folder,
 # so a person can see at a glance what ARIA put there and delete it
 # without taking anything of theirs with it.
+# A backslash, named. Unity asset paths use forward slashes and a
+# Windows path arriving with backslashes has to be converted.
+SLASH = chr(92)
+
 DEFAULT_FOLDER = "Assets/ARIA"
 
 # Prefabs go beside them rather than in Assets/Prefabs, for the same
@@ -360,3 +389,288 @@ def deliver_to_unity(export: str, *, folder: str = DEFAULT_FOLDER,
     return {"success": True, "steps": steps, "error": None,
             "asset_path": asset_path,
             "summary": f"Imported {asset_path}."}
+
+
+# ======================================================
+# Placement
+#
+# Everything above delivers a file. This puts it in a scene, standing
+# on the floor, with the components it needs. It is the stage after
+# Blender's clean_for_unity and the two are a pair: that one moves the
+# origin to the model's feet so that this one can place at y=0 and have
+# the character stand on the ground instead of half through it.
+# ======================================================
+
+# Colliders worth naming. Anything else can still be asked for through
+# `components`, since add_component takes any type name -- these are
+# the ones a character wants, spelled the way Unity spells them so a
+# typo is caught here rather than inside the Editor.
+COLLIDERS = {
+    "capsule": "CapsuleCollider",
+    "box": "BoxCollider",
+    "sphere": "SphereCollider",
+    "mesh": "MeshCollider",
+}
+
+# A character exported from Blender through FBX already faces the way
+# Unity means by forward, so the default rotation is no rotation.
+FACING_FORWARD = (0.0, 0.0, 0.0)
+
+# Blender's cleanup normalises height, so nothing here rescales.
+UNCHANGED_SCALE = (1.0, 1.0, 1.0)
+
+
+def _vector_arg(values) -> str:
+    """A float[] as this CLI wants to receive it.
+
+    THE ONE THING HERE NOT READ FROM SOURCE. The C# says `float[]` and
+    Runtime/Common/JsonSchemaGenerator.cs emits {"type": "array"} for
+    it, so a JSON array is what the schema describes -- but the binder
+    that turns argv into that JSON lives in the CLI executable, not in
+    the package, and it cannot be asked without a running Editor.
+
+    So it is one function, named once and used everywhere. If the
+    spelling turns out to be `--position 0 0 0` or a repeated flag,
+    this is the only line that changes.
+    """
+    return "[" + ",".join(f"{float(v):g}" for v in values) + "]"
+
+
+def prefab_path_for(name: str, folder: str = DEFAULT_PREFAB_FOLDER) -> str:
+    """Where a prefab of this name belongs, Assets/-relative."""
+    clean = str(folder).replace(SLASH, "/").strip("/")
+    if not clean.lower().startswith("assets"):
+        clean = f"Assets/{clean}"
+    return f"{clean}/{name}.prefab"
+
+
+def _exists_in_project(asset_path: str) -> bool:
+    """Whether an asset is already there, asked of the filesystem.
+
+    The Editor could be asked instead, with find_assets. The filesystem
+    is the better witness here: it answers with Unity closed, it costs
+    no round trip, and an asset path under Assets/ IS a file path.
+    Deciding whether to redo work should not itself need a running
+    Editor.
+    """
+    root = unity_project_root()
+    if root is None:
+        return False
+    relative = str(asset_path).replace(SLASH, "/").strip("/")
+    return (root / relative).is_file()
+
+
+def set_transform(target: str, *, position=None, rotation=None,
+                  scale=None) -> dict:
+    """Position, rotate and scale one object. LOCAL space.
+
+    An omitted channel is left as it is rather than zeroed, which is
+    the command's own behaviour and worth not fighting: "stand it on
+    the floor" should not silently also undo a rotation somebody set.
+    """
+    if not str(target or "").strip():
+        return _failure("I need an object to move.")
+
+    arguments = {"target": target}
+    if position is not None:
+        arguments["position"] = _vector_arg(position)
+    if rotation is not None:
+        arguments["rotation"] = _vector_arg(rotation)
+    if scale is not None:
+        arguments["scale"] = _vector_arg(scale)
+
+    if len(arguments) == 1:
+        return _failure("I need a position, a rotation or a scale to set.")
+
+    result = _run("set_transform", arguments)
+    if not result["success"]:
+        return result
+    return {"success": True, "ran": True, "error": None,
+            "target": target, "data": result["data"]}
+
+
+def add_component(target: str, component: str) -> dict:
+    """Add one component to one object, by Unity type name."""
+    if not str(target or "").strip():
+        return _failure("I need an object to add it to.")
+
+    wanted = str(component or "").strip()
+    if not wanted:
+        return _failure("I need a component type to add.")
+    wanted = COLLIDERS.get(wanted.lower(), wanted)
+
+    result = _run("add_component", {"target": target, "type": wanted})
+    if not result["success"]:
+        return result
+    return {"success": True, "ran": True, "error": None,
+            "component": wanted, "data": result["data"]}
+
+
+def place_character(fbx_path: str, *, name: Optional[str] = None,
+                    folder: str = DEFAULT_FOLDER,
+                    prefab_folder: str = DEFAULT_PREFAB_FOLDER,
+                    scene_path: Optional[str] = None,
+                    position=None, rotation=None, scale=None,
+                    collider: Optional[str] = None,
+                    rigidbody: bool = False,
+                    components: Optional[Sequence[str]] = None,
+                    reuse: bool = True,
+                    overwrite: bool = False) -> dict:
+    """Take a cleaned FBX and stand it up in a Unity scene.
+
+    THE ORDER, AND WHY IT IS NOT THE OBVIOUS ONE
+    --------------------------------------------
+        import_asset -> instantiate_prefab -> create_prefab -> set_transform
+
+    create_prefab saves a SCENE object, so a prefab cannot be made
+    before something has been placed. Reading that off PrefabCommands.cs
+    is the difference between this working and a plausible-looking
+    sequence that fails on its second command.
+
+    WHY y=0 IS ENOUGH TO STAND ON THE FLOOR
+    ---------------------------------------
+    Only because Blender's clean_for_unity moved the origin to the
+    model's feet first. Straight from Ludo the origin sits at the
+    model's centre, and placing THAT at y=0 buries it to the waist. The
+    two stages are a pair and this is the seam between them.
+
+    RUNNING IT TWICE
+    ----------------
+    With `reuse` (the default) an existing prefab is instantiated
+    rather than the model being imported and prefabbed again. So a
+    second call adds a second instance and touches no asset, which is
+    what "place another one" should do. `overwrite` re-imports over the
+    existing asset and is the only thing here that sends confirm=true.
+
+    EVERY COMMAND NEEDS A RUNNING EDITOR
+    ------------------------------------
+    `unity cmd` talks to a live Editor over the Pipeline server. With
+    nothing listening the CLI answers "No Pipeline instance found for
+    project ...", which is carried through as the error rather than
+    being reworded into something vaguer.
+    """
+    if not str(fbx_path or "").strip():
+        return _failure("I need a model file to place.")
+
+    source = Path(str(fbx_path).strip())
+    if not source.is_file():
+        return _failure(f"There is no file at {source}.")
+
+    root = unity_project_root()
+    if root is None:
+        return _failure(
+            "No Unity project is configured -- set one on the Unity CLI "
+            "plugin page before placing anything.")
+
+    label = str(name or source.stem).strip() or source.stem
+    asset_path = asset_path_for(source, folder)
+    prefab_path = prefab_path_for(label, prefab_folder)
+
+    steps: List[str] = []
+    warnings: List[str] = []
+    reused = False
+
+    # --- 1. The asset ------------------------------------------------
+    have_prefab = reuse and not overwrite and _exists_in_project(prefab_path)
+    if have_prefab:
+        reused = True
+        steps.append("reused_prefab")
+    else:
+        already = _exists_in_project(asset_path)
+        if already and not overwrite:
+            steps.append("reused_asset")
+        else:
+            imported = _run("import_asset", {
+                "source": str(source.resolve()),
+                "path": asset_path,
+                # True only when replacing something. The command wants
+                # it for an overwrite and refuses without it, which is a
+                # guard worth keeping rather than defeating by always
+                # sending true.
+                "confirm": True if already else None,
+            })
+            if not imported["success"]:
+                return _failure(
+                    f"Unity could not import {source.name}: {imported['error']}",
+                    ran=imported.get("ran", True), asset_path=asset_path,
+                    steps=steps)
+            steps.append("import_asset")
+
+    # --- 2. Into the scene -------------------------------------------
+    placed = place_in_scene(prefab_path if have_prefab else asset_path,
+                            name=label, scene_path=scene_path)
+    if not placed["success"]:
+        return _failure(
+            f"Unity could not place {label} in the scene: {placed['error']}",
+            ran=placed.get("ran", True), asset_path=asset_path,
+            prefab_path=prefab_path, steps=steps)
+    steps.append("instantiate_prefab")
+
+    instance = placed.get("instance") or placed.get("hierarchy_path") or label
+
+    # --- 3. Save it as a prefab, unless it already was one ------------
+    if not have_prefab:
+        saved = create_prefab(instance, prefab_path)
+        if not saved["success"]:
+            return _failure(
+                f"Unity placed {label} but could not save a prefab: "
+                f"{saved['error']}",
+                ran=True, asset_path=asset_path, prefab_path=prefab_path,
+                instance=instance, steps=steps)
+        steps.append("create_prefab")
+
+    # --- 4. Stand it on the floor ------------------------------------
+    where = tuple(position) if position is not None else (0.0, 0.0, 0.0)
+    facing = tuple(rotation) if rotation is not None else FACING_FORWARD
+    size = tuple(scale) if scale is not None else UNCHANGED_SCALE
+
+    moved = set_transform(instance, position=where, rotation=facing, scale=size)
+    if not moved["success"]:
+        return _failure(
+            f"Unity placed {label} but could not set its transform: "
+            f"{moved['error']}",
+            ran=True, asset_path=asset_path, prefab_path=prefab_path,
+            instance=instance, steps=steps)
+    steps.append("set_transform")
+
+    # --- 5. Components -------------------------------------------------
+    wanted: List[str] = []
+    if collider:
+        wanted.append(str(collider))
+    if rigidbody:
+        wanted.append("Rigidbody")
+    wanted += [str(c) for c in (components or []) if str(c).strip()]
+
+    added: List[str] = []
+    for component in wanted:
+        outcome = add_component(instance, component)
+        if not outcome["success"]:
+            # Not fatal. The character is in the scene and standing up;
+            # a missing collider is a warning, not a reason to report
+            # the whole placement as a failure.
+            warnings.append(f"could not add {component}: {outcome['error']}")
+            continue
+        added.append(outcome["component"])
+        steps.append(f"add_component:{outcome['component']}")
+
+    if not collider:
+        warnings.append(
+            "no collider, so nothing will physically touch this character")
+    if "Animator" not in added:
+        warnings.append(
+            "no Animator -- rigging and animation are a separate step, and a "
+            "model straight from Ludo has no armature to drive one")
+
+    return {
+        "success": True, "ran": True, "error": None,
+        "scene_path": scene_path or "the active scene",
+        "asset_path": asset_path,
+        "prefab_path": prefab_path,
+        "instance": instance,
+        "name": label,
+        "position": where, "rotation": facing, "scale": size,
+        "components": added,
+        "reused": reused,
+        "steps": steps,
+        "warnings": warnings,
+    }
