@@ -80,8 +80,18 @@ def no_real_plugin_registry(tmp_path_factory, monkeypatch):
     real = plugin_settings.PLUGINS_FILE
     before = real.read_bytes() if real.exists() else None
 
+    where = tmp_path_factory.mktemp("plugins")
     monkeypatch.setenv(plugin_settings.ENV_PLUGINS_FILE,
-                       str(tmp_path_factory.mktemp("plugins") / "plugins.json"))
+                       str(where / "plugins.json"))
+
+    # The SHIPPED file is redirected too, at a path that does not
+    # exist. Without this the merge would read the developer's real
+    # aria_config/plugins.json as its base and every test would start
+    # with his Blender path, his output folders and 142 Unity commands
+    # -- the read half of exactly the leak the write half above is
+    # already guarding. A test that wants shipped defaults writes them.
+    monkeypatch.setenv(plugin_settings.ENV_PLUGIN_DEFAULTS,
+                       str(where / "shipped.json"))
 
     yield
 

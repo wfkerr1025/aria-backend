@@ -1,10 +1,28 @@
 """ARIA Lite - the plugins a user has installed, and their settings.
 
-aria_config/plugins.json is the single source of truth for which
-integrations exist, whether they are on, and what each one needs to
-work. Nothing here holds a second copy of that list: the Plugins page,
-the config pages and the backend all read this module, and this module
-reads the file.
+TWO FILES: WHAT SHIPS, AND WHAT THIS MACHINE DID
+------------------------------------------------
+aria_config/plugins.json is the SHIPPED registry -- which integrations
+exist, what they are called, and empty settings. It is committed, and
+nothing here ever writes to it.
+
+aria_config/plugins.local.json is THIS INSTALLATION: the paths you
+typed, the folders you chose, what you turned off, and the 142 commands
+the Unity CLI reported when it was asked. It is gitignored, and every
+write goes there.
+
+They used to be one file, and that file was committed. So it accumulated
+one developer's absolute paths, his Unity project's command list, and --
+until the change before this one -- his Ludo.ai API key, all of it
+sitting in the file every checkout starts from. Splitting the two is the
+same fix as moving the key out, one layer down: a file that is both the
+shipped default and the live state cannot be either one safely.
+
+Reading merges them, defaults first, so a setting this machine has never
+touched comes from what shipped and a new integration added upstream
+appears without anyone re-running anything. The Plugins page, the config
+pages and the backend all read this module, and this module reads both
+files.
 
 TWO THINGS CALLED "PLUGIN", AND THEY ARE NOT THE SAME
 -----------------------------------------------------
@@ -52,6 +70,7 @@ from logger import get_logger
 logger = get_logger(__name__)
 
 __all__ = [
+    "LIVE_PLUGINS_FILE",
     "PLUGINS_FILE",
     "PluginError",
     "configured_path",
@@ -67,6 +86,8 @@ __all__ = [
     "list_plugins",
     "load_plugins",
     "default_output_dir",
+    "defaults_file",
+    "plugins_file",
     "output_dir",
     "has_secret",
     "redact_secrets",
@@ -88,10 +109,21 @@ class PluginError(ValueError):
 # Where the registry lives. Overridable so a test never touches the real
 # one -- every function here writes, and a suite that edited the user's
 # installed plugins would be a suite nobody could run twice.
+#
+# ENV_PLUGINS_FILE moves the LIVE file, which is the one that is read
+# and written; that is what it has always meant. ENV_PLUGIN_DEFAULTS
+# moves the shipped one, which a test wants when it is testing the
+# merge itself and almost never otherwise.
 ENV_PLUGINS_FILE = "ARIA_PLUGINS_FILE"
+ENV_PLUGIN_DEFAULTS = "ARIA_PLUGIN_DEFAULTS_FILE"
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Committed. Read-only, enforced in save_plugins.
 PLUGINS_FILE = _REPO_ROOT / "aria_config" / "plugins.json"
+
+# Gitignored. Everything this installation decided.
+LIVE_PLUGINS_FILE = _REPO_ROOT / "aria_config" / "plugins.local.json"
 
 # Fields every plugin has, whatever it integrates with.
 #
@@ -353,26 +385,26 @@ LUDO_TIMEOUT_SECONDS = 6
 
 
 def plugins_file() -> Path:
-    """The registry's path, honouring the test override."""
+    """The live registry's path -- what gets read and written."""
     configured = os.environ.get(ENV_PLUGINS_FILE)
+    return Path(configured) if configured else LIVE_PLUGINS_FILE
+
+
+def defaults_file() -> Path:
+    """The shipped registry's path -- read, never written."""
+    configured = os.environ.get(ENV_PLUGIN_DEFAULTS)
     return Path(configured) if configured else PLUGINS_FILE
 
 
-# ======================================================
-# Reading and writing
-# ======================================================
-
-def load_plugins() -> dict:
-    """Every installed plugin, keyed by id.
+def _read_registry(path: Path) -> dict:
+    """One registry file, or {} for every way it can fail to be one.
 
     A missing or unreadable file reads as "no plugins" rather than
     raising: the Plugins page should say it is empty, not fail to open.
     """
-    path = plugins_file()
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        logger.info("no plugins registry at %s; treating it as empty", path)
         return {}
     except OSError:
         logger.exception("could not read the plugins registry at %s", path)
@@ -385,13 +417,44 @@ def load_plugins() -> dict:
         return {}
 
     if not isinstance(loaded, dict):
-        logger.warning("the plugins registry is a %s, not an object",
-                       type(loaded).__name__)
+        logger.warning("the plugins registry at %s is a %s, not an object",
+                       path, type(loaded).__name__)
         return {}
 
     # An entry that is not an object cannot be a plugin, and dropping it
     # here means nothing downstream has to wonder.
     return {key: value for key, value in loaded.items() if isinstance(value, dict)}
+
+
+# ======================================================
+# Reading and writing
+# ======================================================
+
+def load_plugins() -> dict:
+    """Every installed plugin, keyed by id: what shipped, as this
+    machine has it.
+
+    Merged field by field rather than record by record, so an
+    integration whose path this machine has set still picks up a
+    renamed label or a new logo from what shipped. A default this
+    machine has never touched comes through untouched, and an id only
+    the live file knows about -- anything discovered, every Unity CLI
+    command -- comes through whole.
+
+    Reading writes nothing. The live file not existing yet is the state
+    a fresh install is in, not a thing to fix on the way past: the
+    Plugins page opens on the shipped defaults, and the first setting
+    anybody changes creates the file.
+    """
+    shipped = _read_registry(defaults_file())
+    live = _read_registry(plugins_file())
+
+    merged = {}
+    for plugin_id in list(shipped) + [k for k in live if k not in shipped]:
+        record = dict(shipped.get(plugin_id) or {})
+        record.update(live.get(plugin_id) or {})
+        merged[plugin_id] = record
+    return merged
 
 
 def save_plugins(plugins: dict) -> None:
@@ -406,6 +469,15 @@ def save_plugins(plugins: dict) -> None:
         raise PluginError("the plugins registry must be an object")
 
     path = plugins_file()
+
+    # The shipped registry is committed. Writing to it is how one
+    # developer's absolute paths, his Unity command list and his API key
+    # ended up in the file every checkout starts from, so it is refused
+    # here rather than documented as a thing not to do.
+    if path.resolve() == defaults_file().resolve():
+        raise PluginError(
+            f"refusing to write the shipped plugin registry at {path}")
+
     path.parent.mkdir(parents=True, exist_ok=True)
 
     body = json.dumps(plugins, indent=2, sort_keys=True) + "\n"
@@ -417,6 +489,7 @@ def save_plugins(plugins: dict) -> None:
             file.write(body)
         shutil.move(temporary, str(path))
         logger.info("wrote %d plugin(s) to %s", len(plugins), path)
+
     except Exception:
         Path(temporary).unlink(missing_ok=True)
         logger.exception("could not write the plugins registry at %s", path)
@@ -873,6 +946,22 @@ def remove_plugin(plugin_id: str) -> bool:
         }
         save_plugins(plugins)
         logger.info("dismissed discovered plugin %s", plugin_id)
+        return True
+
+    # A SHIPPED plugin leaves a tombstone for the same reason a
+    # discovered one does. Deleting it from the live file only deletes
+    # this machine's copy; the shipped file still lists it, so the next
+    # read merges it straight back and the user watches a plugin they
+    # removed return on the next page load.
+    if plugin_id in _read_registry(defaults_file()):
+        plugins[plugin_id] = {
+            "id": plugin_id,
+            "name": plugin.get("name", plugin_id),
+            "enabled": False,
+            "dismissed": True,
+        }
+        save_plugins(plugins)
+        logger.info("dismissed shipped plugin %s", plugin_id)
         return True
 
     plugins.pop(plugin_id)

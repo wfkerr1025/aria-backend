@@ -59,3 +59,8 @@ AriaLauncher/**/*.csproj.user
 
 # ARIA's staging area: proposed edits, not project files.
 .aria_staging/
+
+# This installation's plugin state: the paths you typed, the folders
+# you chose, and whatever the Unity CLI reported it can do. The shipped
+# registry beside it (aria_config/plugins.json) is the committed one.
+aria_config/plugins.local.json
