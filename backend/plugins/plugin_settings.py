@@ -20,15 +20,22 @@ deliberate and one-way: unity_ops asks this module where Unity is, so
 the path a user types on the Unity config page is the path ARIA actually
 runs.
 
-WHY A SECRET LIVES HERE AT ALL
-------------------------------
-Ludo.ai's api_key is written to plugins.json in plain text, and that is
-worth stating rather than hiding. key_manager exists for secrets and
-puts them in OS secure storage; this file is a plugin REGISTRY that the
-UI reads wholesale. Moving the key into key_manager is the right end
-state and is a change to the schema this task specified, so the field is
-here, the risk is written down, and redact_secrets() exists so nothing
-logs it by accident.
+SECRETS ARE NOT KEPT HERE
+-------------------------
+They used to be. Ludo.ai's api_key was written to plugins.json in plain
+text, and this docstring said so and called moving it to key_manager
+"the right end state". What made that end state urgent was a routine
+`git add -A`: the key was one command away from a commit, because this
+file is BOTH the shipped default registry and the live one.
+
+So the value now lives in key_manager -- Fernet-encrypted on disk with
+the master key in OS secure storage -- and plugins.json keeps an empty
+string in its place. Everything reads through secret_for() and writes
+through set_secret(); nothing else should touch the field.
+
+An existing installation is migrated on first read: the key is copied
+into key_manager, blanked here, and the file saved. That happens once,
+without anyone being asked to re-enter anything.
 """
 
 from __future__ import annotations
@@ -61,7 +68,10 @@ __all__ = [
     "load_plugins",
     "default_output_dir",
     "output_dir",
+    "has_secret",
     "redact_secrets",
+    "secret_for",
+    "set_secret",
     "with_declared_fields",
     "remove_plugin",
     "save_plugins",
@@ -159,8 +169,102 @@ _FIELD_RULES = {
     },
 }
 
-# Fields that must never reach a log line or a packet meant for one.
+# Fields that never live in this file and never reach a log line.
 _SECRET_FIELDS = frozenset({"api_key"})
+
+# Plugin secrets share key_manager's module store, so they are
+# namespaced. Without the prefix a plugin called "ludo" and a module
+# called "ludo" would be the same entry, and module_manager's
+# list_modules() would show plugin secrets as if they were modules.
+PLUGIN_KEY_PREFIX = "plugin:"
+
+
+def _key_name(plugin_id: str) -> str:
+    return f"{PLUGIN_KEY_PREFIX}{str(plugin_id or '').strip()}"
+
+
+def secret_for(plugin_id: str, field: str = "api_key") -> str:
+    """The plugin's secret, from wherever it currently lives.
+
+    key_manager first. Falling back to plugins.json is the MIGRATION
+    path, not a supported location: a value found there is moved into
+    key_manager and blanked in the file before it is returned, so the
+    fallback fires once per installation and never again.
+    """
+    if field not in _SECRET_FIELDS:
+        raise PluginError(f"{field!r} is not a secret field")
+
+    name = _key_name(plugin_id)
+    try:
+        from backend.core import key_manager
+
+        stored = key_manager.get_module_key(name)
+        if stored:
+            return str(stored)
+    except Exception:
+        logger.exception("could not read %s from key_manager", name)
+
+    # Legacy: still in the registry file. Move it.
+    try:
+        plugin = load_plugins().get(str(plugin_id or "")) or {}
+    except Exception:  # pragma: no cover - a read fault is not a key
+        return ""
+
+    legacy = str(plugin.get(field) or "").strip()
+    if not legacy:
+        return ""
+
+    logger.warning("migrating %s's %s out of plugins.json", plugin_id, field)
+    if set_secret(plugin_id, legacy, field):
+        return legacy
+
+    # Could not store it. Returning it anyway keeps the plugin working
+    # -- refusing here would break a Ludo turn to make a filing point.
+    return legacy
+
+
+def set_secret(plugin_id: str, value: str, field: str = "api_key") -> bool:
+    """Store a plugin secret, and make sure the file does not keep one.
+
+    The blanking is not tidiness. plugins.json is committed, so a
+    value left behind here is a value one `git add -A` away from a
+    repository -- which is exactly how this came to be moved.
+    """
+    if field not in _SECRET_FIELDS:
+        raise PluginError(f"{field!r} is not a secret field")
+
+    text = str(value or "").strip()
+    name = _key_name(plugin_id)
+    stored = False
+
+    try:
+        from backend.core import key_manager
+
+        if text:
+            stored = bool(key_manager.set_module_key(name, text))
+        else:
+            key_manager.delete_module_key(name)
+            stored = True
+    except Exception:
+        logger.exception("could not write %s to key_manager", name)
+        stored = False
+
+    if stored:
+        try:
+            plugins = load_plugins()
+            plugin = plugins.get(str(plugin_id or ""))
+            if plugin is not None and str(plugin.get(field) or ""):
+                plugin[field] = ""
+                save_plugins(plugins)
+        except Exception:  # pragma: no cover - the key is stored either way
+            logger.exception("stored the key but could not blank %s", field)
+
+    return stored
+
+
+def has_secret(plugin_id: str, field: str = "api_key") -> bool:
+    """Whether a secret is set, without reading its value."""
+    return bool(secret_for(plugin_id, field))
 
 # What a plugin's dropdown fields may be set to.
 #
@@ -389,8 +493,16 @@ def redact_secrets(plugin: dict) -> dict:
     """
     safe = dict(plugin or {})
     for field in _SECRET_FIELDS:
-        if field in safe:
-            safe[field] = "configured" if str(safe[field] or "").strip() else ""
+        if field not in safe:
+            continue
+        # Asked of the STORE, not of this file. The file's copy is
+        # always empty now, so reading it would report every
+        # configured plugin as unconfigured.
+        try:
+            configured = has_secret(safe.get("id") or "", field)
+        except Exception:  # pragma: no cover - never fail a render
+            configured = bool(str(safe[field] or "").strip())
+        safe[field] = "configured" if configured else ""
     return safe
 
 
@@ -686,6 +798,15 @@ def update_plugin(plugin_id: str, fields: dict) -> dict:
     problems = validate_plugin(plugin_id, changes)
     if problems:
         raise PluginError("; ".join(problems))
+
+    # Secrets never reach the file. Taken out of `changes` before the
+    # update so plugin.update() cannot put one back, and stored only
+    # after validation so a form with two bad fields still saves
+    # nothing at all.
+    for field in list(changes):
+        if field in _SECRET_FIELDS:
+            set_secret(plugin_id, changes.pop(field), field)
+            changes[field] = ""
 
     plugin.update(changes)
     plugins[plugin_id] = plugin
@@ -1161,7 +1282,7 @@ def _test_ludo(plugin: dict) -> dict:
     fault, and saying "your key was rejected" there would send someone
     off to regenerate a key that was fine.
     """
-    key = str(plugin.get("api_key") or "").strip()
+    key = secret_for(str(plugin.get("id") or "ludo")).strip()
     if not key:
         return {"ok": False, "message": "No API key is set."}
     if len(key) < 8:

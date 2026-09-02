@@ -172,11 +172,18 @@ def test_an_unset_key_reads_as_unset_rather_than_configured(registry):
     assert listed["ludo"]["api_key"] == ""
 
 
-def test_the_key_is_still_on_disk_for_the_code_that_needs_it(registry):
-    """Redaction is for the page, not for storage."""
+def test_the_key_is_still_readable_by_the_code_that_needs_it(registry):
+    """Redaction is for the page, not for storage.
+
+    This used to read get_plugin()["api_key"] and assert the value was
+    still sitting in the file. It is not there any more -- that is the
+    whole point of the move -- but the property it was guarding still
+    holds: hiding a key from the UI must not hide it from Ludo.
+    """
     plugin_settings.update_plugin("ludo", {"api_key": "sk-a-real-looking-key"})
 
-    assert plugin_settings.get_plugin("ludo")["api_key"] == "sk-a-real-looking-key"
+    assert plugin_settings.secret_for("ludo") == "sk-a-real-looking-key"
+    assert plugin_settings.get_plugin("ludo")["api_key"] == "", "back in the file"
 
 
 # ======================================================

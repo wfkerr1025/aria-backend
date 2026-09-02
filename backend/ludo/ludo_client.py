@@ -250,7 +250,9 @@ def api_key() -> str:
             "The Ludo.ai plugin is installed but switched off. Enable it on "
             "its page under Plugins first.")
 
-    key = str(plugin.get(FIELD_KEY) or "").strip()
+    # From key_manager, not from the registry file -- plugins.json no
+    # longer holds it. See plugin_settings.secret_for.
+    key = plugin_settings.secret_for(PLUGIN_ID, FIELD_KEY).strip()
     if not key:
         raise LudoUnavailable(
             "No Ludo.ai API key is set. Add one on its page under Plugins.")

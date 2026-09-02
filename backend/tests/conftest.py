@@ -148,3 +148,61 @@ def quiet_safety_gate(monkeypatch):
         )
 
     monkeypatch.setattr(turn_orchestrator, "evaluate_safety", _safe)
+
+
+@pytest.fixture(autouse=True)
+def no_real_key_store(monkeypatch, tmp_path):
+    """No test reads, writes, or deletes the machine's actual key store.
+
+    THIS ONE ALREADY WENT WRONG.
+    Plugin secrets moved out of plugins.json and into key_manager, and
+    key_manager is one real encrypted file shared by every test on this
+    machine. The next full run wrote test_plugin_settings.py's fixture
+    string "sk-a-real-looking-key" straight over the developer's live
+    Ludo API key, and three tests that build a temp registry with NO key
+    in it started passing for the wrong reason -- including "without a
+    key, nothing leaves the machine", which was reading a real key from
+    the store behind the temp file. Nothing did leave, but the only
+    thing stopping it was a stubbed http_fetch.
+
+    The tests in routing_and_keys_tests.py are worse: they os.remove()
+    _MODULE_KEYS_PATH by name. That is the user's file.
+
+    So the PATH moves, not the functions. key_manager's own tests still
+    exercise real Fernet encryption, the real legacy-format migration,
+    and real deletion -- against a file in tmp_path that nobody cares
+    about. The master key is generated per-test too, so no test touches
+    OS secure storage either.
+    """
+    from cryptography.fernet import Fernet
+
+    from backend.core import key_manager
+
+    monkeypatch.setattr(key_manager, "_MODULE_KEYS_PATH",
+                        str(tmp_path / "module_keys.enc.json"))
+    master = Fernet.generate_key()
+    monkeypatch.setattr(key_manager, "_get_or_create_master_key", lambda: master)
+
+    class Store:
+        """Dictionary ergonomics over the real encrypted store."""
+
+        def __getitem__(self, name):
+            value = key_manager.get_module_key(name)
+            if value is None:
+                raise KeyError(name)
+            return value
+
+        def __setitem__(self, name, value):
+            key_manager.set_module_key(name, value)
+
+        def __contains__(self, name):
+            return bool(key_manager.get_module_key(name))
+
+        def get(self, name, default=None):
+            return key_manager.get_module_key(name) or default
+
+        def clear(self):
+            for name in list(key_manager.list_module_keys()):
+                key_manager.delete_module_key(name)
+
+    return Store()

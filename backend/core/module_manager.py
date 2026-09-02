@@ -55,6 +55,13 @@ def list_modules() -> list[dict]:
 
     configured = set(key_manager.list_module_keys())
     names = key_manager.list_module_entries()
+
+    # The key store is shared. Plugin secrets live there too, under a
+    # "plugin:" prefix (see plugin_settings.PLUGIN_KEY_PREFIX), and
+    # listing them here would put "plugin:ludo" on the Modules page as
+    # though somebody had installed a module by that name.
+    names = [name for name in names if ":" not in str(name)]
+
     return [{"name": name, "configured": name in configured} for name in names]
 
 
