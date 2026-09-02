@@ -1,0 +1,660 @@
+"""Giving a rigged character something to play.
+
+WHAT THE SPECIFICATION ASKED FOR AND WHAT THE PACKAGE HAS
+---------------------------------------------------------
+Six commands were named. One exists:
+
+    create_animator_controller   exists
+    add_state                    is add_animator_state
+    add_transition               is add_animator_transition
+    add_parameter                is add_animator_parameter
+    assign_animator_controller   does not exist -- the Animator's
+                                 m_Controller property is written
+    validate_humanoid_avatar     does not exist -- isHuman and isValid
+                                 are Avatar properties, read with eval
+
+MOST OF THIS SUITE NEEDS NO UNITY AT ALL. The graph and its parameters
+are ordinary Python, and every mistake worth catching about them -- a
+transition to a state nobody declared, a Trigger compared against a
+number, two default states, a state nothing leaves -- is decided
+before the Editor is asked anything. That is deliberate: those same
+mistakes reach Unity as parameter-validation failures with no
+indication of which of eleven commands caused them.
+
+The Unity half is faked, and the fakes were written from the shapes a
+live Editor actually returned -- including that get_animator_controller
+answers with parameters, layers, states and transitions nested under
+data.result.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from backend.unity import animation_parameters as params
+from backend.unity import animation_pipeline as pipeline
+from backend.unity import animation_state_graph as graphs
+from backend.unity import animator_controller_builder as builder
+from backend.unity import unity_delivery as delivery
+
+
+AVATAR_OK = "isHuman=True isValid=True controller=none"
+
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    root = tmp_path / "Project"
+    (root / "Assets").mkdir(parents=True)
+    monkeypatch.setattr(delivery, "unity_project_root", lambda: root)
+    return root
+
+
+@pytest.fixture
+def cli(monkeypatch):
+    """The Unity CLI, answering the way a live Editor did."""
+    calls = []
+    state = {"avatar": AVATAR_OK}
+
+    def fake(command, args=None, **kwargs):
+        argv = list(args or [])
+        named = {argv[i].lstrip("-"): argv[i + 1]
+                 for i in range(0, len(argv) - 1, 2) if argv[i].startswith("--")}
+        name = command.replace("cmd ", "")
+        calls.append({"command": name, "args": named})
+
+        def envelope(result):
+            return {"success": True, "output": "", "error": None,
+                    "json": {"success": True, "errors": [],
+                             "data": {"command": name, "parameters": named,
+                                      "result": result, "target": {},
+                                      "success": True}}}
+
+        if name == "eval":
+            return envelope({"success": True, "result": state["avatar"]})
+        if name == "set_component_properties":
+            return envelope({"type": "Animator", "properties": {}})
+        return envelope({"assetPath": named.get("path"), "name": named.get("name")})
+
+    from backend.unity import unity_cli_engine
+    monkeypatch.setattr(unity_cli_engine, "run_invocation", fake)
+    return calls, state
+
+
+def commands(calls):
+    return [c["command"] for c in calls]
+
+
+def every(calls, command):
+    return [c["args"] for c in calls if c["command"] == command]
+
+
+# ======================================================
+# The graph, which needs no Unity
+# ======================================================
+
+def test_the_default_graph_is_the_specified_one():
+    graph = graphs.default_graph()
+
+    assert [s.name for s in graph.states] == ["Idle", "Walk", "Run", "Attack"]
+    assert graph.default_state.name == "Idle"
+
+    edges = {(t.source, t.target) for t in graph.transitions}
+    assert ("Idle", "Walk") in edges
+    assert ("Walk", "Run") in edges
+    assert ("Run", "Idle") in edges
+    assert (graphs.ANY_STATE, "Attack") in edges
+
+
+def test_the_thresholds_are_the_specified_ones():
+    graph = graphs.default_graph()
+    by_edge = {(t.source, t.target): t for t in graph.transitions}
+
+    assert by_edge[("Idle", "Walk")].conditions[0].threshold == 0.1
+    assert by_edge[("Walk", "Run")].conditions[0].threshold == 2.0
+    assert by_edge[("Run", "Idle")].conditions[0].mode == "Less"
+    assert by_edge[(graphs.ANY_STATE, "Attack")].conditions[0].mode == "If"
+
+
+def test_the_four_specified_transitions_leave_attack_a_trap():
+    """Following the specification exactly produces a character that
+    enters Attack and never leaves, and a Walk that can only reach
+    Idle by first speeding up into Run. Both are invisible until
+    somebody plays it."""
+    graph = graphs.default_graph(complete=False)
+
+    # Advice, not an error: Unity accepts it and the caller asked for
+    # it. Refusing would substitute our judgement for theirs; saying
+    # nothing would ship a character stuck in its attack.
+    assert graphs.validate_graph(graph, params.DEFAULT_PARAMETERS) == []
+    assert any("nothing leaves 'Attack'" in a
+               for a in graphs.graph_advice(graph))
+
+
+def test_the_completed_graph_is_clean():
+    graph = graphs.default_graph()
+
+    assert graphs.validate_graph(graph, params.DEFAULT_PARAMETERS) == []
+
+
+def test_the_completed_graph_adds_the_way_back():
+    graph = graphs.default_graph()
+    edges = {(t.source, t.target) for t in graph.transitions}
+
+    assert ("Walk", "Idle") in edges
+    assert ("Run", "Walk") in edges
+    assert ("Attack", "Idle") in edges
+
+
+def test_attack_leaves_on_exit_time_not_a_condition():
+    """An attack ends when its clip has played, not when a parameter
+    says so."""
+    graph = graphs.default_graph()
+    leaving = [t for t in graph.transitions
+               if t.source == "Attack" and t.target == "Idle"][0]
+
+    assert leaving.has_exit_time is True
+    assert leaving.conditions == ()
+
+
+def test_a_transition_to_a_state_nobody_declared_is_caught():
+    graph = graphs.Graph(
+        states=[graphs.State("Idle", is_default=True)],
+        transitions=[graphs.Transition("Idle", "Fly",
+                                       (graphs.Condition("speed", "Greater", 1),))])
+
+    problems = graphs.validate_graph(graph, params.DEFAULT_PARAMETERS)
+    assert any("no state called 'Fly'" in p for p in problems)
+
+
+def test_a_condition_on_an_undeclared_parameter_is_caught():
+    graph = graphs.Graph(
+        states=[graphs.State("Idle", is_default=True), graphs.State("Walk")],
+        transitions=[graphs.Transition("Idle", "Walk",
+                                       (graphs.Condition("velocity", "Greater", 1),)),
+                     graphs.Transition("Walk", "Idle",
+                                       (graphs.Condition("speed", "Less", 1),))])
+
+    problems = graphs.validate_graph(graph, params.DEFAULT_PARAMETERS)
+    assert any("no parameter called 'velocity'" in p for p in problems)
+
+
+def test_comparing_a_trigger_against_a_number_is_caught():
+    """Greater/Less compare against a threshold, and a Trigger has no
+    value to compare."""
+    graph = graphs.Graph(
+        states=[graphs.State("Idle", is_default=True), graphs.State("Attack")],
+        transitions=[graphs.Transition("Idle", "Attack",
+                                       (graphs.Condition("attack", "Greater", 1),)),
+                     graphs.Transition("Attack", "Idle", has_exit_time=True)])
+
+    problems = graphs.validate_graph(graph, params.DEFAULT_PARAMETERS)
+    assert any("is a Trigger and Greater compares" in p for p in problems)
+
+
+def test_two_default_states_are_caught():
+    graph = graphs.Graph(
+        states=[graphs.State("Idle", is_default=True),
+                graphs.State("Walk", is_default=True)],
+        transitions=[graphs.Transition("Idle", "Walk",
+                                       (graphs.Condition("speed", "Greater", 1),)),
+                     graphs.Transition("Walk", "Idle",
+                                       (graphs.Condition("speed", "Less", 1),))])
+
+    problems = graphs.validate_graph(graph, params.DEFAULT_PARAMETERS)
+    assert any("2 states are marked default" in p for p in problems)
+
+
+def test_a_transition_with_no_condition_and_no_exit_time_is_caught():
+    """It fires immediately, so the state it leaves is unreachable."""
+    graph = graphs.Graph(
+        states=[graphs.State("Idle", is_default=True), graphs.State("Walk")],
+        transitions=[graphs.Transition("Idle", "Walk"),
+                     graphs.Transition("Walk", "Idle", has_exit_time=True)])
+
+    assert any("fires immediately" in a for a in graphs.graph_advice(graph))
+
+
+# ======================================================
+# Parameters
+# ======================================================
+
+def test_the_specified_parameters_are_a_float_and_a_trigger():
+    assert params.SPEED.type == "Float"
+    assert params.ATTACK.type == "Trigger"
+    assert params.validate_parameters(params.DEFAULT_PARAMETERS) == []
+
+
+def test_a_type_unity_does_not_have_is_caught():
+    problems = params.validate_parameters([params.Parameter("speed", "Double")])
+
+    assert any("not one of" in p for p in problems)
+
+
+def test_a_duplicate_parameter_is_caught():
+    problems = params.validate_parameters(
+        [params.Parameter("speed"), params.Parameter("speed")])
+
+    assert any("declared twice" in p for p in problems)
+
+
+def test_a_trigger_carries_no_default_value():
+    """The command documents defaultValue as ignored for a Trigger, so
+    sending one is a small lie about what was configured."""
+    assert "defaultValue" not in params.ATTACK.payload()
+    assert params.SPEED.payload()["defaultValue"] == 0.0
+
+
+# ======================================================
+# 1-4. Building the controller
+# ======================================================
+
+def test_it_creates_animator_controller(project, cli):
+    calls, _ = cli
+    result = pipeline.animate_character("Assets/ARIA/Prefabs/Hero.prefab",
+                                        instance="Hero", name="Hero")
+
+    assert result.success is True
+    assert "create_animator_controller" in commands(calls)
+    assert result.controller_path == "Assets/ARIA/Animators/Hero.controller"
+
+
+def test_it_adds_states(project, cli):
+    calls, _ = cli
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    added = [a["name"] for a in every(calls, "add_animator_state")]
+    assert added == ["Idle", "Walk", "Run", "Attack"]
+    assert result.states == ["Idle", "Walk", "Run", "Attack"]
+
+
+def test_the_first_state_is_the_default_one(project, cli):
+    calls, _ = cli
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    idle = [a for a in every(calls, "add_animator_state")
+            if a["name"] == "Idle"][0]
+    assert idle.get("isDefault") == "true"
+
+
+def test_every_state_gets_a_clip(project, cli):
+    """A state with no motion is legal and plays nothing, so a
+    controller full of them looks right in the inspector and does
+    nothing in play mode."""
+    calls, _ = cli
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    for state in every(calls, "add_animator_state"):
+        assert state.get("motion", "").endswith(".anim"), state["name"]
+
+
+def test_locomotion_clips_loop_and_an_attack_does_not(project, cli):
+    calls, _ = cli
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    made = {a["path"].rsplit("_", 1)[-1]: a for a in
+            every(calls, "create_animation_clip")}
+    assert made["Idle.anim"]["loop"] == "true"
+    assert made["Attack.anim"]["loop"] == "false"
+
+
+def test_it_adds_transitions(project, cli):
+    calls, _ = cli
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    edges = {(a["fromState"], a["toState"])
+             for a in every(calls, "add_animator_transition")}
+    assert ("Idle", "Walk") in edges
+    assert ("AnyState", "Attack") in edges
+    assert len(result.transitions) == 7
+
+
+def test_the_conditions_go_over_as_json(project, cli):
+    calls, _ = cli
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    walk = [a for a in every(calls, "add_animator_transition")
+            if a["fromState"] == "Idle"][0]
+    conditions = json.loads(walk["conditions"])
+    assert conditions == [{"parameter": "speed", "mode": "Greater",
+                           "threshold": 0.1}]
+
+
+def test_it_adds_parameters(project, cli):
+    calls, _ = cli
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    added = {a["name"]: a["type"] for a in every(calls, "add_animator_parameter")}
+    assert added == {"speed": "Float", "attack": "Trigger"}
+    assert result.parameters == ["speed", "attack"]
+
+
+def test_parameters_are_added_before_transitions(project, cli):
+    """A condition names a parameter and the command checks it exists.
+    The other order builds a controller and then refuses every
+    transition."""
+    calls, _ = cli
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    order = commands(calls)
+    assert order.index("add_animator_parameter") < \
+        order.index("add_animator_transition")
+
+
+def test_states_are_added_before_transitions(project, cli):
+    calls, _ = cli
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    order = commands(calls)
+    assert order.index("add_animator_state") < \
+        order.index("add_animator_transition")
+
+
+def test_clips_are_made_before_the_states_that_reference_them(project, cli):
+    calls, _ = cli
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    order = commands(calls)
+    assert order.index("create_animation_clip") < \
+        order.index("add_animator_state")
+
+
+# ======================================================
+# 5. Attaching it
+# ======================================================
+
+def test_it_attaches_controller_to_prefab(project, cli):
+    calls, _ = cli
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    attached = every(calls, "set_component_properties")
+    assert attached, "the controller was never attached"
+    assert attached[0]["type"] == "Animator"
+    properties = json.loads(attached[0]["properties"])
+    assert properties["m_Controller"] == {
+        "path": "Assets/ARIA/Animators/Hero.controller"}
+    assert "attach_controller" in result.steps
+
+
+def test_the_controller_is_attached_by_object_reference_not_a_string():
+    """set_component_properties assigns an object reference from a
+    handle-shaped value. A bare string is not one."""
+    import inspect
+    source = inspect.getsource(pipeline.attach_controller)
+
+    assert '{"path": controller_path}' in source or \
+        "{CONTROLLER_PROPERTY: {\"path\": controller_path}}" in source
+
+
+def test_it_attaches_only_after_the_controller_exists(project, cli):
+    calls, _ = cli
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    order = commands(calls)
+    assert order.index("create_animator_controller") < \
+        order.index("set_component_properties")
+
+
+# ======================================================
+# 6. The humanoid gate
+# ======================================================
+
+def test_it_validates_humanoid_avatar(project, cli):
+    calls, _ = cli
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert result.avatar_valid is True
+    assert "validate_humanoid_avatar" in result.steps
+    assert commands(calls)[0] == "eval", "it built before it checked"
+
+
+def test_a_generic_import_is_refused_before_anything_is_built(project, cli):
+    """Measured during the rigging work: a rigged FBX imports Generic
+    with no avatar unless told otherwise, and everything downstream
+    still succeeds while nothing moves."""
+    calls, state = cli
+    state["avatar"] = "isHuman=False isValid=False controller=none"
+
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert result.success is False
+    assert result.avatar_valid is False
+    assert "not a valid humanoid" in result.error
+    assert "create_animator_controller" not in commands(calls)
+
+
+def test_a_missing_avatar_says_which_problem_it_is(project, cli):
+    calls, state = cli
+    state["avatar"] = "NO_AVATAR"
+
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert result.success is False
+    assert "imported Generic rather than Humanoid" in result.error
+
+
+def test_a_missing_animator_is_a_different_problem(project, cli):
+    calls, state = cli
+    state["avatar"] = "NO_ANIMATOR"
+
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert "no Animator component" in result.error
+
+
+def test_an_object_that_is_not_in_the_scene_is_a_third(project, cli):
+    calls, state = cli
+    state["avatar"] = "NO_OBJECT"
+
+    result = pipeline.animate_character("p.prefab", instance="Ghost", name="Ghost")
+
+    assert "no object called 'Ghost'" in result.error
+
+
+# ======================================================
+# 7. Reuse
+# ======================================================
+
+def test_it_reuses_animation_pipeline(project, cli):
+    calls, _ = cli
+    controller = project / "Assets" / "ARIA" / "Animators"
+    controller.mkdir(parents=True)
+    (controller / "Hero.controller").write_text("already built")
+
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert result.success is True
+    assert result.reused is True
+    assert "create_animator_controller" not in commands(calls)
+
+
+def test_a_reused_controller_is_still_attached(project, cli):
+    """The controller existing does not mean this character has it."""
+    calls, _ = cli
+    controller = project / "Assets" / "ARIA" / "Animators"
+    controller.mkdir(parents=True)
+    (controller / "Hero.controller").write_text("already built")
+
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert "set_component_properties" in commands(calls)
+
+
+def test_reuse_can_be_switched_off(project, cli):
+    calls, _ = cli
+    controller = project / "Assets" / "ARIA" / "Animators"
+    controller.mkdir(parents=True)
+    (controller / "Hero.controller").write_text("already built")
+
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero",
+                               reuse=False)
+
+    assert "create_animator_controller" in commands(calls)
+
+
+def test_replacing_an_existing_controller_is_reported(project, cli):
+    calls, state = cli
+    state["avatar"] = "isHuman=True isValid=True controller=OldController"
+
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert any("OldController" in w for w in result.warnings)
+
+
+# ======================================================
+# 8. Ceilings
+# ======================================================
+
+def test_it_respects_animation_ceilings(project, cli):
+    """Nothing here spends money -- the clips come from Unity, not
+    from Ludo -- so the ceiling that matters is the graph's own size.
+    A loop that adds states adds them to somebody's project."""
+    calls, _ = cli
+    too_many = [f"State{index}" for index in range(graphs.MAX_STATES + 1)]
+
+    result = pipeline.animate_character("p.prefab", instance="Hero",
+                                        name="Hero", required_states=too_many)
+
+    assert result.success is False
+    assert "more than the" in result.error
+    assert "create_animator_controller" not in commands(calls)
+
+
+def test_the_transition_ceiling_is_checked_too():
+    graph = graphs.Graph(
+        states=[graphs.State("Idle", is_default=True)],
+        transitions=[graphs.Transition("Idle", "Idle", has_exit_time=True)]
+        * (graphs.MAX_TRANSITIONS + 1))
+
+    problems = graphs.validate_graph(graph, params.DEFAULT_PARAMETERS)
+    assert any("transitions is more than" in p for p in problems)
+
+
+def test_the_ceiling_is_checked_before_unity_is_asked_anything(project, cli):
+    calls, _ = cli
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero",
+                               required_states=[f"S{i}" for i in range(40)])
+
+    assert "add_animator_state" not in commands(calls)
+
+
+# ======================================================
+# 9. Failure surfaces
+# ======================================================
+
+def _fails(monkeypatch, failing, message, avatar=AVATAR_OK):
+    from backend.unity import unity_cli_engine
+    calls = []
+
+    def fake(command, args=None, **kwargs):
+        argv = list(args or [])
+        named = {argv[i].lstrip("-"): argv[i + 1]
+                 for i in range(0, len(argv) - 1, 2) if argv[i].startswith("--")}
+        name = command.replace("cmd ", "")
+        calls.append({"command": name, "args": named})
+        if name == failing:
+            return {"success": False, "output": "", "json": None,
+                    "error": message}
+        result = {"success": True, "result": avatar} if name == "eval" else \
+            {"assetPath": named.get("path")}
+        return {"success": True, "output": "", "error": None,
+                "json": {"success": True, "errors": [],
+                         "data": {"command": name, "parameters": named,
+                                  "result": result, "target": {},
+                                  "success": True}}}
+
+    monkeypatch.setattr(unity_cli_engine, "run_invocation", fake)
+    return calls
+
+
+def test_failure_surface_animation(project, monkeypatch):
+    calls = _fails(monkeypatch, "create_animator_controller", "disk full")
+
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert result.success is False
+    assert "could not create the controller" in result.error
+    assert "disk full" in result.error
+    assert "set_component_properties" not in commands(calls)
+
+
+def test_a_refused_parameter_stops_before_the_transitions(project, monkeypatch):
+    calls = _fails(monkeypatch, "add_animator_parameter", "bad type")
+
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert result.success is False
+    assert "refused the parameter" in result.error
+    assert "add_animator_transition" not in commands(calls)
+
+
+def test_a_refused_state_says_which_state(project, monkeypatch):
+    _fails(monkeypatch, "add_animator_state", "name already used")
+
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert "refused the state 'Idle'" in result.error
+
+
+def test_a_refused_transition_says_which_edge(project, monkeypatch):
+    _fails(monkeypatch, "add_animator_transition", "no such parameter")
+
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert "refused the transition Idle->Walk" in result.error
+
+
+def test_a_controller_that_cannot_be_attached_is_not_reported_as_working(
+        project, monkeypatch):
+    """It was built. Saying the character is animated when nothing
+    points at the controller is the one thing this must not do."""
+    _fails(monkeypatch, "set_component_properties", "component is missing")
+
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert result.success is False
+    assert "could not be attached" in result.error
+    assert result.controller_path
+
+
+def test_a_clip_that_will_not_be_made_is_a_warning_not_a_failure(
+        project, monkeypatch):
+    """The controller and its graph are still worth having; the state
+    simply plays nothing, and that is said rather than hidden."""
+    _fails(monkeypatch, "create_animation_clip", "folder is read-only")
+
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    assert result.success is True
+    assert any("could not make a clip" in w for w in result.warnings)
+
+
+# ======================================================
+# The answer
+# ======================================================
+
+def test_the_result_has_every_field_the_specification_asks_for(project, cli):
+    result = pipeline.animate_character("p.prefab", instance="Hero", name="Hero")
+
+    for field in ("prefab_path", "controller_path", "states", "transitions",
+                  "parameters", "avatar_valid", "reused", "steps", "warnings"):
+        assert hasattr(result, field), field
+
+
+def test_an_incomplete_graph_is_asked_for_explicitly_and_warned_about(
+        project, cli):
+    result = pipeline.animate_character("p.prefab", instance="Hero",
+                                        name="Hero", complete_graph=False)
+
+    assert result.success is True
+    assert any("nothing leaves 'Attack'" in w for w in result.warnings)
+
+
+def test_no_prefab_is_refused_before_anything_runs(project, cli):
+    calls, _ = cli
+    result = pipeline.animate_character("")
+
+    assert result.success is False
+    assert result.ran is False
+    assert calls == []
