@@ -64,3 +64,7 @@ AriaLauncher/**/*.csproj.user
 # you chose, and whatever the Unity CLI reported it can do. The shipped
 # registry beside it (aria_config/plugins.json) is the committed one.
 aria_config/plugins.local.json
+
+# What Ludo.ai has been asked for and what it cost. Machine state, and
+# it doubles as the reuse cache.
+aria_config/ludo_spend.jsonl

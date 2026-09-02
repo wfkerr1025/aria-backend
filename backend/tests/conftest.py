@@ -216,3 +216,22 @@ def no_real_key_store(monkeypatch, tmp_path):
                 key_manager.delete_module_key(name)
 
     return Store()
+
+
+@pytest.fixture(autouse=True)
+def no_real_spend_ledger(monkeypatch, tmp_path):
+    """The spend ledger is this test's own, and reuse starts empty.
+
+    Two reasons, and the second is the one that bites. It is machine
+    state under aria_config, so a suite writing the developer's copy
+    would be the third leak of that shape after the key store and the
+    plugin registry. And it is also the REUSE CACHE: a shared one would
+    let a Ludo test hand a cached result to an unrelated test that
+    expected a fresh POST, which is a failure that only appears when
+    the two run in the same session and in that order.
+    """
+    from backend.ludo import ludo_spend
+
+    monkeypatch.setenv(ludo_spend.ENV_LEDGER, str(tmp_path / "spend.jsonl"))
+    ludo_spend.start_tally()
+    return tmp_path / "spend.jsonl"

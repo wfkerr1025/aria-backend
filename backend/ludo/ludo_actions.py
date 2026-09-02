@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from backend.ludo import ludo_client as client
+from backend.ludo import ludo_spend as spend
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -101,12 +102,17 @@ def output_dir() -> Path:
 def _failed(error: str, kind: str = "", steps: Optional[List] = None,
             ran: bool = False) -> dict:
     return {"success": False, "ran": ran, "error": str(error), "kind": kind,
-            "url": None, "result": None, "steps": steps or []}
+            "url": None, "result": None, "steps": steps or [],
+            "cost": spend.tally()}
 
 
 def _done(kind: str, result: dict, steps: List[str]) -> dict:
+    # `cost` is not decoration. A reused result looks exactly like a
+    # fresh one, and a user who cannot tell the difference cannot ask
+    # for a different one.
     return {"success": True, "ran": True, "error": None, "kind": kind,
-            "url": client.asset_url(result), "result": result, "steps": steps}
+            "url": client.asset_url(result), "result": result, "steps": steps,
+            "cost": spend.tally()}
 
 
 def _guard(function):
@@ -117,6 +123,9 @@ def _guard(function):
     outcome this whole layer exists to prevent.
     """
     def wrapped(*args, **kwargs):
+        # One action, one tally. Reset here rather than in each verb so
+        # a new verb cannot forget to and inherit the last one's total.
+        spend.start_tally()
         try:
             return function(*args, **kwargs)
         except client.LudoUnavailable as error:
@@ -174,16 +183,27 @@ def generate_model(prompt: str, *, style: Optional[str] = None,
                    polycount: Optional[int] = None,
                    texture_size: Optional[int] = None,
                    texture_type: Optional[str] = None,
-                   image_type: str = "3d") -> dict:
+                   image_type: str = "3d",
+                   image: Optional[str] = None) -> dict:
     """A 3D model from a description. TWO calls, and two lots of credits.
 
     Ludo has no text-to-3D endpoint: an image is generated first and
     then converted. Both steps are named in `steps` so the cost is
     visible rather than implied.
 
+    `image` SKIPS THE FIRST CALL AND HALVES THE PRICE
+    -------------------------------------------------
+    Pass a concept URL -- one from an earlier generate_image, or the
+    `concept_url` this function returns -- and the picture is not
+    bought again. That is what makes "show me the concept, then build
+    it if I like it" possible: without it the approval step would
+    generate one image to look at and a second, different one to
+    convert, paying twice and converting the picture nobody approved.
+
     `polycount` is the spec's word for the API's `target_num_faces`.
     """
-    if not str(prompt or "").strip():
+    supplied = str(image or "").strip()
+    if not supplied and not str(prompt or "").strip():
         return _failed("I need something to make. Say what it should be.",
                        "model")
 
@@ -202,15 +222,21 @@ def generate_model(prompt: str, *, style: Optional[str] = None,
     size = client.choice(texture_size, client.TEXTURE_SIZES, "texture_size")
     surface = client.choice(texture_type, client.TEXTURE_TYPES, "texture_type")
 
-    concept = client.call("image", {
-        "image_type": kind,
-        "prompt": str(prompt).strip(),
-        "art_style": art,
-    })
-    picture = client.asset_url(concept)
-    if not picture:
-        return _failed("Ludo made a concept image but did not say where it is.",
-                       "model", ["image"], ran=True)
+    if supplied:
+        picture = supplied
+        steps = ["model_3d"]
+    else:
+        concept = client.call("image", {
+            "image_type": kind,
+            "prompt": str(prompt).strip(),
+            "art_style": art,
+        })
+        picture = client.asset_url(concept)
+        if not picture:
+            return _failed(
+                "Ludo made a concept image but did not say where it is.",
+                "model", ["image"], ran=True)
+        steps = ["image", "model_3d"]
 
     model = client.call("model_3d", {
         "image": picture,
@@ -219,7 +245,7 @@ def generate_model(prompt: str, *, style: Optional[str] = None,
         "texture_type": surface,
     })
 
-    answer = _done("model", model, ["image", "model_3d"])
+    answer = _done("model", model, steps)
     answer["concept_url"] = picture
     return answer
 

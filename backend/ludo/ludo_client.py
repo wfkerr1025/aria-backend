@@ -55,6 +55,8 @@ import requests
 
 from logger import get_logger
 
+from backend.ludo import ludo_spend as spend
+
 logger = get_logger(__name__)
 
 __all__ = [
@@ -378,7 +380,9 @@ def call(endpoint: str, payload: Dict[str, Any], *,
          timeout: int = REQUEST_TIMEOUT_SECONDS,
          wait: bool = True,
          total_seconds: Optional[int] = None,
-         on_progress: Optional[Any] = None) -> dict:
+         on_progress: Optional[Any] = None,
+         run_id: str = "",
+         fresh: bool = False) -> dict:
     """One generation call, and its answer.
 
     `endpoint` is a key of ENDPOINTS, never a raw URL: a caller cannot
@@ -387,6 +391,25 @@ def call(endpoint: str, payload: Dict[str, Any], *,
     A 200 carries the asset. A 202 means it was queued, and the job is
     polled to completion unless `wait` is False -- in which case the
     job record is handed back so a caller can poll itself.
+
+    THIS IS THE ONLY FUNCTION IN ARIA THAT SPENDS MONEY
+    ---------------------------------------------------
+    So the money rules live here rather than in the nine verbs that
+    call it, and no future verb can forget them. In order:
+
+      * an identical earlier request is handed back instead of bought
+        again, unless `fresh` says the caller wants a new variation;
+      * the per-run and per-day ceilings are checked BEFORE the POST,
+        and a refusal is LudoUnavailable, which means "did not try";
+      * request_id is derived from what is being asked for rather than
+        being a fresh uuid4, so Ludo's own idempotency can recognise a
+        retry and decline to charge for it -- with a random id per call
+        that mechanism could never once have fired;
+      * every outcome is written to the ledger, including the ones
+        where it is not certain whether money moved.
+
+    `run_id` groups the calls of one pipeline so a ceiling can apply to
+    the whole job rather than to each step of it.
     """
     path = ENDPOINTS.get(str(endpoint))
     if path is None:
@@ -396,10 +419,36 @@ def call(endpoint: str, payload: Dict[str, Any], *,
     body = {name: value for name, value in (payload or {}).items()
             if value is not None}
 
+    billable = spend.is_billable(endpoint)
+    ask = spend.request_key(endpoint, body) if billable else ""
+
+    if billable and not fresh:
+        earlier = spend.lookup(ask)
+        if earlier is not None:
+            logger.info("ludo: reusing an earlier %s, spending nothing",
+                        endpoint)
+            spend.record(endpoint, key=ask, outcome="reused", run_id=run_id,
+                         calls=0, url=earlier.get("url") or "")
+            spend.note("reused", 0)
+            return earlier["result"]
+
+    if billable:
+        try:
+            spend.check(endpoint, run_id=run_id)
+        except spend.BudgetExceeded as stop:
+            spend.record(endpoint, key=ask, outcome="refused", run_id=run_id,
+                         calls=0, note=str(stop))
+            # LudoUnavailable, not LudoError: nothing was sent, so the
+            # answer must say nothing was spent.
+            raise LudoUnavailable(str(stop)) from stop
+
     # The API uses request_id to recognise a repeat and not charge for
-    # it twice. Sending one on every call is the difference between a
-    # retry that is free and a retry that is not.
-    body.setdefault("request_id", uuid.uuid4().hex)
+    # it twice. Derived from the request for billable calls so a retry
+    # is free; random when the caller explicitly wants a new result.
+    if billable and not fresh:
+        body.setdefault("request_id", ask)
+    else:
+        body.setdefault("request_id", uuid.uuid4().hex)
 
     url = f"{api_base()}{path}"
     logger.info("ludo: POST %s", path)
@@ -408,6 +457,14 @@ def call(endpoint: str, payload: Dict[str, Any], *,
         response = requests.post(url, json=body, headers=_headers(token),
                                  timeout=timeout)
     except requests.RequestException as error:
+        # The request may have arrived and been charged before the
+        # connection broke. Recorded as "maybe" and counted against the
+        # ceiling, because assuming it was free is the assumption that
+        # empties an account.
+        if billable:
+            spend.record(endpoint, key=ask, outcome="maybe", run_id=run_id,
+                         calls=spend.weight(endpoint), note=str(error))
+            spend.note("maybe", spend.weight(endpoint))
         raise LudoError(f"Could not reach Ludo.ai: {error}") from error
 
     if response.status_code >= 400:
@@ -417,6 +474,13 @@ def call(endpoint: str, payload: Dict[str, Any], *,
             detail = str(problem.get("message") or problem.get("error") or "")
         except ValueError:
             detail = response.text[:200]
+        # A 4xx before generation is usually free and a 5xx usually is
+        # not, but "usually" is not something to bet an account on.
+        if billable:
+            spend.record(endpoint, key=ask, outcome="maybe", run_id=run_id,
+                         calls=spend.weight(endpoint),
+                         note=f"HTTP {response.status_code} {detail}"[:200])
+            spend.note("maybe", spend.weight(endpoint))
         raise LudoError(f"Ludo.ai refused: HTTP {response.status_code}"
                         + (f" -- {detail}" if detail else ""))
 
@@ -429,11 +493,34 @@ def call(endpoint: str, payload: Dict[str, Any], *,
         job_id = str(answer.get("id") or "") if isinstance(answer, dict) else ""
         if job_id and wait:
             logger.info("ludo: queued as job %s", job_id)
-            return poll_job(job_id, key=token, total_seconds=total_seconds,
-                            on_progress=on_progress)
+            finished = poll_job(job_id, key=token, total_seconds=total_seconds,
+                                on_progress=on_progress)
+            _bought(endpoint, ask, run_id, finished, billable)
+            return finished
+
+        # Handed back unpolled. It is queued and charged for, so it is
+        # recorded -- but not cached, because there is no asset yet and
+        # a reuse hit that returns a job id is not a reuse hit.
+        if billable:
+            spend.record(endpoint, key=ask, outcome="spent", run_id=run_id,
+                         calls=spend.weight(endpoint), note="not polled")
+            spend.note("spent", spend.weight(endpoint))
         return answer if isinstance(answer, dict) else {}
 
-    return _result_of(answer)
+    outcome = _result_of(answer)
+    _bought(endpoint, ask, run_id, outcome, billable)
+    return outcome
+
+
+def _bought(endpoint: str, ask: str, run_id: str, result: Any,
+            billable: bool) -> None:
+    """Write down what was just paid for, and keep it for next time."""
+    if not billable:
+        return
+    spend.record(endpoint, key=ask, outcome="spent", run_id=run_id,
+                 calls=spend.weight(endpoint),
+                 url=asset_url(result) or "", result=result)
+    spend.note("spent", spend.weight(endpoint))
 
 
 # The keys an asset URL can arrive under, by result type. Read from
