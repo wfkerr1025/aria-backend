@@ -692,3 +692,144 @@ def answer_request(text: str, *,
         f"({', '.join(made[:6])}{' and more' if len(made) > 6 else ''}).\n\n"
         f"{files}\n\n"
         f"Steps: {plan['summary']}.")}
+
+
+# ======================================================
+# The cleanup stage
+#
+# Everything above is one action. This is a STAGE: the fixed sequence
+# that turns something a generator produced into something Unity can
+# take, in ONE Blender launch.
+#
+# One launch matters. Blender starts cold every time -- --background
+# --factory-startup, no add-ons, no startup file -- and that start is
+# seconds. A stage built as eight calls would pay it eight times and
+# would also lose the scene between them, since nothing persists
+# across processes.
+# ======================================================
+
+# What a person is, in metres, when Unity says one unit is one metre.
+DEFAULT_HEIGHT = 1.8
+
+EXPORT_ACTIONS = {"fbx": "export_fbx", "glb": "export_glb", "obj": "export_obj"}
+
+
+def _warnings_about(after: dict, before: dict) -> list:
+    """What is still wrong after the cleanup, in words.
+
+    This is the gate a pipeline reads. Every entry is something that
+    will cost real time later -- a rig that fails, a texture that never
+    arrives, a mesh Unity renders inside out -- and finding it here is
+    the difference between a bad asset and a bad afternoon.
+    """
+    problems = []
+    if not after.get("meshes"):
+        problems.append("there is no mesh in the file")
+    if after.get("broken_edges"):
+        problems.append(
+            f"{after['broken_edges']} edges have three or more faces, which "
+            "will fail an automatic rig and confuse a mesh collider")
+    if not after.get("uv_layers"):
+        problems.append("no UV map, so nothing can be textured")
+    if not after.get("materials"):
+        problems.append("no material")
+    if not after.get("images"):
+        problems.append("no texture image -- the model will import grey")
+    if after.get("ngons"):
+        problems.append(f"{after['ngons']} faces have more than four sides")
+    if before.get("triangles") and after.get("triangles"):
+        if after["triangles"] > before["triangles"]:
+            problems.append("the cleanup added geometry, which it should not")
+    return problems
+
+
+def clean_for_unity(path: str, *, out: Optional[str] = None,
+                    height: float = DEFAULT_HEIGHT,
+                    merge: bool = False,
+                    merge_distance: float = 0.0001,
+                    export: str = "fbx",
+                    timeout: Optional[int] = None,
+                    on_output: Optional[Callable[[str, str], None]] = None) -> dict:
+    """Take a generated model and hand back one Unity can use.
+
+    WHAT THIS FIXES, AND WHY IT IS THESE THINGS
+    -------------------------------------------
+    Measured on a real Ludo character rather than guessed at:
+
+      * it arrived 0.994 units tall, so every model needs the same
+        rescale -- Unity reads one unit as one metre and a person is
+        not one metre;
+      * its origin sat at the model's centre, feet at Z -0.496, so
+        placing it on the ground buries it to the waist;
+      * it had no loose geometry and no inverted faces, but both are
+        cheap to check and expensive to meet later, so both are done.
+
+    MERGING IS OFF BY DEFAULT AND THAT IS DELIBERATE
+    ------------------------------------------------
+    glTF stores attributes per vertex, so it splits vertices at every
+    UV seam: the probe model had 18,442 vertices where 9,790 would do,
+    and 13,542 edges that read as boundaries because of it. Merging
+    them looks like an obvious win.
+
+    It is not. On that same model the merge created 727 edges with
+    three or more faces where there had been none, by welding surfaces
+    that only touch. Unity does not care about the duplicates -- it
+    splits vertices on import anyway -- so the default is to leave
+    them, and `merge=True` is for when clean topology is actually
+    needed, such as before decimating or rigging. Even then each mesh
+    is checked and a merge that damages one is discarded.
+
+    Returns the usual answer dict plus `before`, `after`, `warnings`
+    and `output`.
+    """
+    source = str(path or "").strip()
+    if not source:
+        return {"success": False, "ran": False,
+                "error": "I need a model file to clean.",
+                "output": "", "result": None, "script": None}
+
+    if not Path(source).exists():
+        return {"success": False, "ran": False,
+                "error": f"There is no file at {source}.",
+                "output": "", "result": None, "script": None}
+
+    kind = str(export or "fbx").strip().lower()
+    if kind not in EXPORT_ACTIONS:
+        return {"success": False, "ran": False,
+                "error": f"I can export fbx, glb or obj, not {export!r}.",
+                "output": "", "result": None, "script": None}
+
+    destination = str(out or "").strip()
+    if not destination:
+        destination = str(Path(source).with_name(
+            Path(source).stem + f"_clean.{kind}"))
+
+    steps = [
+        {"action": "clear_scene", "params": {}},
+        {"action": "import_model", "params": {"path": source}},
+        {"action": "measure_mesh", "params": {}},
+        {"action": "remove_loose", "params": {}},
+        {"action": "recalculate_normals", "params": {}},
+    ]
+    if merge:
+        steps.append({"action": "merge_by_distance",
+                      "params": {"distance": merge_distance}})
+    steps += [
+        {"action": "scale_to_height", "params": {"height": height}},
+        {"action": "origin_to_floor", "params": {}},
+        {"action": "measure_mesh", "params": {}},
+        {"action": EXPORT_ACTIONS[kind], "params": {"path": destination}},
+    ]
+
+    answer = run_actions(steps, timeout=timeout, on_output=on_output)
+
+    result = answer.get("result") or {}
+    measurements = result.get("measurements") or []
+    before = measurements[0] if measurements else {}
+    after = measurements[-1] if len(measurements) > 1 else {}
+
+    answer["before"] = before
+    answer["after"] = after
+    answer["output"] = destination if answer.get("success") else ""
+    answer["warnings"] = _warnings_about(after, before) if answer.get("success") else []
+    return answer

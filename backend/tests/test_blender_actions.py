@@ -178,6 +178,16 @@ EVERY_ACTION = [
     ("export_glb", {"path": "C:/tmp/a.glb", "object": None}),
     ("export_obj", {"path": "C:/tmp/a.obj", "object": None}),
     ("save_file", {"path": "C:/tmp/a.blend"}),
+
+    # The cleanup stage. Exercised properly in test_blender_cleanup.py;
+    # listed here so the coverage guard above stays honest.
+    ("import_model", {"path": "C:/tmp/a.glb"}),
+    ("measure_mesh", {}),
+    ("remove_loose", {}),
+    ("recalculate_normals", {}),
+    ("merge_by_distance", {"distance": 0.0001}),
+    ("scale_to_height", {"height": 1.8}),
+    ("origin_to_floor", {}),
 ]
 
 

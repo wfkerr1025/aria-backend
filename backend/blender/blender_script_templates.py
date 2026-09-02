@@ -732,7 +732,268 @@ def save_file(params: Dict[str, Any]) -> str:
             f'_note("save_file", path=_path)')
 
 
+# ======================================================
+# Cleaning up what a generator handed us
+#
+# Written against a measured example rather than a guess: one Ludo
+# character, imported and inspected. What that showed, and what each
+# of these exists to fix --
+#
+#   * it arrives 0.994 units tall. Unity wants about 1.7 for a person,
+#     so every model needs the same rescale;
+#   * its origin is at the model's centre, feet at Z -0.496. Unity
+#     places things by their origin, so a character imported as-is
+#     stands with its knees through the floor;
+#   * 13,542 of its edges look non-manifold and are not. glTF splits
+#     vertices at UV seams because the format stores attributes per
+#     vertex, so a seam becomes two coincident vertices and every edge
+#     along it reads as a boundary. ZERO edges had three or more faces,
+#     which is the measure that means real damage;
+#   * merging those duplicates halves the vertex count -- 18,442 to
+#     9,790 -- and CREATES 727 edges with three or more faces where
+#     there were none, because a blanket merge welds surfaces that only
+#     happen to touch. So merging is opt-in and it is checked.
+# ======================================================
+
+_IMPORT_FORMATS = frozenset({"glb", "gltf", "fbx", "obj", "blend"})
+
+
+def import_model(params: Dict[str, Any]) -> str:
+    """Bring a file in. The format comes from the extension.
+
+    Ludo returns .glb, Unity wants .fbx and a person may hand over
+    either, so the caller should not have to say which it is.
+    """
+    return (f'_path = {_text(params.get("path"))}\n'
+            f'_before = set(bpy.data.objects)\n'
+            f'_kind = _path.rsplit(".", 1)[-1].lower() if "." in _path else ""\n'
+            f'if _kind in ("glb", "gltf"):\n'
+            f'    bpy.ops.import_scene.gltf(filepath=_path)\n'
+            f'elif _kind == "fbx":\n'
+            f'    bpy.ops.import_scene.fbx(filepath=_path)\n'
+            f'elif _kind == "obj":\n'
+            f'    bpy.ops.wm.obj_import(filepath=_path)\n'
+            f'else:\n'
+            f'    raise RuntimeError("I do not know how to import %r -- I read "\n'
+            f'                       "glb, gltf, fbx and obj." % _path)\n'
+            f'_added = [o.name for o in bpy.data.objects if o not in _before]\n'
+            f'_RESULT["created"].extend(_added)\n'
+            f'_note("import_model", path=_path, objects=_added)')
+
+
+def measure_mesh(params: Dict[str, Any]) -> str:
+    """Report what is there. Changes nothing.
+
+    This is the gate between pipeline stages: a number here is what
+    lets a later step refuse to spend minutes on something already
+    broken. It is also the only honest way to say what a cleanup did,
+    since the same call runs before and after.
+    """
+    return (
+        'import bmesh\n'
+        'from mathutils import Vector\n'
+        '_meshes = [o for o in bpy.data.objects if o.type == "MESH"]\n'
+        'if not _meshes:\n'
+        '    raise RuntimeError("there is no mesh in the scene to measure")\n'
+        '_verts = _faces = _tris = _ngons = 0\n'
+        '_boundary = _broken = _loose = 0\n'
+        '_uv_layers = 0\n'
+        'for _m in _meshes:\n'
+        '    _data = _m.data\n'
+        '    _verts += len(_data.vertices)\n'
+        '    _faces += len(_data.polygons)\n'
+        '    _tris += sum(len(_p.vertices) - 2 for _p in _data.polygons)\n'
+        '    _ngons += sum(1 for _p in _data.polygons if len(_p.vertices) > 4)\n'
+        '    _uv_layers = max(_uv_layers, len(_data.uv_layers))\n'
+        '    _bm = bmesh.new()\n'
+        '    _bm.from_mesh(_data)\n'
+        '    _boundary += sum(1 for _e in _bm.edges if len(_e.link_faces) == 1)\n'
+        '    _broken += sum(1 for _e in _bm.edges if len(_e.link_faces) > 2)\n'
+        '    _loose += sum(1 for _v in _bm.verts if not _v.link_edges)\n'
+        '    _bm.free()\n'
+        '_lo = Vector((1e18, 1e18, 1e18))\n'
+        '_hi = Vector((-1e18, -1e18, -1e18))\n'
+        'for _m in _meshes:\n'
+        '    for _corner in _m.bound_box:\n'
+        '        _w = _m.matrix_world @ Vector(_corner)\n'
+        '        for _a in range(3):\n'
+        '            _lo[_a] = min(_lo[_a], _w[_a])\n'
+        '            _hi[_a] = max(_hi[_a], _w[_a])\n'
+        '_size = _hi - _lo\n'
+        '_measurement = {\n'
+        '    "meshes": len(_meshes),\n'
+        '    "armatures": len([o for o in bpy.data.objects if o.type == "ARMATURE"]),\n'
+        '    "vertices": _verts, "faces": _faces, "triangles": _tris,\n'
+        '    "ngons": _ngons, "uv_layers": _uv_layers,\n'
+        '    "boundary_edges": _boundary, "broken_edges": _broken,\n'
+        '    "loose_vertices": _loose,\n'
+        '    "materials": len([m for m in bpy.data.materials]),\n'
+        '    "images": len([i for i in bpy.data.images if i.name != "Render Result"]),\n'
+        '    "width": round(_size.x, 4), "depth": round(_size.y, 4),\n'
+        '    "height": round(_size.z, 4),\n'
+        '    "floor": round(_lo.z, 4),\n'
+        '}\n'
+        '_RESULT.setdefault("measurements", []).append(_measurement)\n'
+        '_note("measure_mesh", **_measurement)')
+
+
+def remove_loose(params: Dict[str, Any]) -> str:
+    """Vertices and edges attached to no face.
+
+    They export, they take up room, and they are invisible -- so they
+    are found by a person only when something downstream trips on them.
+    """
+    return (
+        'import bmesh\n'
+        '_removed = 0\n'
+        'for _m in [o for o in bpy.data.objects if o.type == "MESH"]:\n'
+        '    _bm = bmesh.new()\n'
+        '    _bm.from_mesh(_m.data)\n'
+        '    _junk = [_v for _v in _bm.verts if not _v.link_faces]\n'
+        '    _removed += len(_junk)\n'
+        '    for _v in _junk:\n'
+        '        _bm.verts.remove(_v)\n'
+        '    _bm.to_mesh(_m.data)\n'
+        '    _bm.free()\n'
+        '    _m.data.update()\n'
+        '_note("remove_loose", removed=_removed)')
+
+
+def recalculate_normals(params: Dict[str, Any]) -> str:
+    """Point every face outwards.
+
+    A generated mesh with inward faces renders as holes in Unity and
+    looks like missing geometry rather than a normals problem, which
+    is a bad afternoon for whoever has to work it out.
+    """
+    return (
+        'import bmesh\n'
+        'for _m in [o for o in bpy.data.objects if o.type == "MESH"]:\n'
+        '    _bm = bmesh.new()\n'
+        '    _bm.from_mesh(_m.data)\n'
+        '    bmesh.ops.recalc_face_normals(_bm, faces=_bm.faces)\n'
+        '    _bm.to_mesh(_m.data)\n'
+        '    _bm.free()\n'
+        '    _m.data.update()\n'
+        '_note("recalculate_normals", meshes=len([o for o in bpy.data.objects '
+        'if o.type == "MESH"]))')
+
+
+def merge_by_distance(params: Dict[str, Any]) -> str:
+    """Weld coincident vertices -- and put it back if that broke the mesh.
+
+    MEASURED, NOT ASSUMED. On the probe model this halves the vertex
+    count, 18,442 to 9,790, which is a real saving. It also creates 727
+    edges with three or more faces where there were none, because a
+    blanket weld joins surfaces that merely touch.
+
+    So the merge is done on a copy of the mesh data, the damage is
+    counted, and a merge that makes the mesh worse is discarded and
+    reported rather than kept and hidden. A cleanup step that quietly
+    breaks the thing it cleaned is worse than no cleanup step.
+    """
+    return (
+        f'import bmesh\n'
+        f'_distance = {_num(params.get("distance"), 0.0001)}\n'
+        f'_allow_damage = bool({params.get("allow_damage", False)!r})\n'
+        f'_merged = _kept = _reverted = 0\n'
+        f'for _m in [o for o in bpy.data.objects if o.type == "MESH"]:\n'
+        f'    _bm = bmesh.new()\n'
+        f'    _bm.from_mesh(_m.data)\n'
+        f'    _was_broken = sum(1 for _e in _bm.edges if len(_e.link_faces) > 2)\n'
+        f'    _was_verts = len(_bm.verts)\n'
+        f'    bmesh.ops.remove_doubles(_bm, verts=list(_bm.verts), dist=_distance)\n'
+        f'    _now_broken = sum(1 for _e in _bm.edges if len(_e.link_faces) > 2)\n'
+        f'    if _now_broken > _was_broken and not _allow_damage:\n'
+        f'        _reverted += _now_broken - _was_broken\n'
+        f'        _bm.free()\n'
+        f'        continue\n'
+        f'    _merged += _was_verts - len(_bm.verts)\n'
+        f'    _kept += 1\n'
+        f'    _bm.to_mesh(_m.data)\n'
+        f'    _bm.free()\n'
+        f'    _m.data.update()\n'
+        f'_note("merge_by_distance", merged=_merged, meshes_changed=_kept, '
+        f'reverted_edges=_reverted, distance=_distance)')
+
+
+def scale_to_height(params: Dict[str, Any]) -> str:
+    """Resize everything together so the tallest point reaches a height.
+
+    Ludo normalises its models to about one unit whatever they are, so
+    a character arrives half the size of a person. Unity treats one
+    unit as one metre, so without this every import is hand-resized to
+    the same number every time.
+
+    Scaled about the world origin as one group, so a model made of
+    several objects keeps its proportions and its parts stay together.
+    """
+    return (
+        f'from mathutils import Vector\n'
+        f'_target = {_num(params.get("height"), 1.8)}\n'
+        f'if _target <= 0:\n'
+        f'    raise RuntimeError("a target height of %s is not a height" % _target)\n'
+        f'_movable = [o for o in bpy.data.objects if o.parent is None]\n'
+        f'_meshes = [o for o in bpy.data.objects if o.type == "MESH"]\n'
+        f'if not _meshes:\n'
+        f'    raise RuntimeError("there is no mesh in the scene to scale")\n'
+        f'_lo = Vector((1e18, 1e18, 1e18))\n'
+        f'_hi = Vector((-1e18, -1e18, -1e18))\n'
+        f'for _m in _meshes:\n'
+        f'    for _corner in _m.bound_box:\n'
+        f'        _w = _m.matrix_world @ Vector(_corner)\n'
+        f'        for _a in range(3):\n'
+        f'            _lo[_a] = min(_lo[_a], _w[_a])\n'
+        f'            _hi[_a] = max(_hi[_a], _w[_a])\n'
+        f'_was = (_hi - _lo).z\n'
+        f'if _was <= 0.000001:\n'
+        f'    raise RuntimeError("the model has no height to scale")\n'
+        f'_factor = _target / _was\n'
+        f'for _o in _movable:\n'
+        f'    _o.scale = tuple(_v * _factor for _v in _o.scale)\n'
+        f'    _o.location = tuple(_v * _factor for _v in _o.location)\n'
+        f'bpy.context.view_layer.update()\n'
+        f'_note("scale_to_height", was=round(_was, 4), now=round(_target, 4), '
+        f'factor=round(_factor, 4))')
+
+
+def origin_to_floor(params: Dict[str, Any]) -> str:
+    """Put the origin under the model's feet, centred.
+
+    Unity places an object by its origin. Ludo's sits at the centre of
+    the model, so dropping one into a scene at ground level buries it
+    to the waist -- and the fix, done by hand, is the same offset every
+    single time.
+    """
+    return (
+        'from mathutils import Vector\n'
+        '_meshes = [o for o in bpy.data.objects if o.type == "MESH"]\n'
+        'if not _meshes:\n'
+        '    raise RuntimeError("there is no mesh in the scene to re-origin")\n'
+        '_lo = Vector((1e18, 1e18, 1e18))\n'
+        '_hi = Vector((-1e18, -1e18, -1e18))\n'
+        'for _m in _meshes:\n'
+        '    for _corner in _m.bound_box:\n'
+        '        _w = _m.matrix_world @ Vector(_corner)\n'
+        '        for _a in range(3):\n'
+        '            _lo[_a] = min(_lo[_a], _w[_a])\n'
+        '            _hi[_a] = max(_hi[_a], _w[_a])\n'
+        '_shift = Vector(((_lo.x + _hi.x) / 2.0, (_lo.y + _hi.y) / 2.0, _lo.z))\n'
+        'for _o in [o for o in bpy.data.objects if o.parent is None]:\n'
+        '    _o.location = _o.location - _shift\n'
+        'bpy.context.view_layer.update()\n'
+        '_note("origin_to_floor", moved=(round(-_shift.x, 4), '
+        'round(-_shift.y, 4), round(-_shift.z, 4)))')
+
+
 TEMPLATES = {
+    "import_model": import_model,
+    "measure_mesh": measure_mesh,
+    "remove_loose": remove_loose,
+    "recalculate_normals": recalculate_normals,
+    "merge_by_distance": merge_by_distance,
+    "scale_to_height": scale_to_height,
+    "origin_to_floor": origin_to_floor,
     # modelling
     "add_cube": add_cube,
     "add_sphere": add_sphere,
