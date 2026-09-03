@@ -354,3 +354,79 @@ def test_delivering_reports_a_stale_assembly_rather_than_success(
     assert result["success"] is False
     assert "older build" in result["error"]
     assert result["written"] is True, "the file was still written"
+
+
+# ======================================================
+# Root motion, which moves the character by the clip
+# ======================================================
+
+@pytest.fixture
+def root_motion_cli(monkeypatch):
+    """A CLI whose eval answers the way stop_root_motion's C# does."""
+    seen = []
+
+    def fake(command, args=None, **kwargs):
+        argv = list(args or [])
+        named = {argv[i].lstrip("-"): argv[i + 1]
+                 for i in range(0, len(argv) - 1, 2) if argv[i].startswith("--")}
+        code = named.get("code", "")
+        seen.append(code)
+
+        said = "ok"
+        if "applyRootMotion" in code:
+            said = "was=True now=False prefabWas=True"
+        elif "GetFields" in code:
+            said = ",".join(controller.declared_fields()) + ","
+
+        return {"success": True, "output": "", "error": None,
+                "json": {"success": True, "errors": [],
+                         "data": {"command": command.replace("cmd ", ""),
+                                  "parameters": named,
+                                  "result": {"success": True, "result": said},
+                                  "target": {}, "success": True}}}
+
+    from backend.unity import unity_cli_engine
+    monkeypatch.setattr(unity_cli_engine, "run_invocation", fake)
+    return seen
+
+
+def test_root_motion_is_turned_off_on_the_prefab_too(root_motion_cli):
+    """Turning it off on the scene object alone is undone the next time
+    the character is placed -- the same bug arriving again, looking new."""
+    result = controller.stop_root_motion("AriaHero")
+
+    assert result["success"] is True
+    assert result["prefab_was_on"] is True
+
+    code = [c for c in root_motion_cli if "applyRootMotion" in c][0]
+    assert "GetCorrespondingObjectFromSource" in code, (
+        "nothing reaches the prefab behind the instance")
+    assert "AssetDatabase.SaveAssets" in code, "the prefab edit is not written"
+
+
+def test_attaching_the_script_turns_root_motion_off(monkeypatch,
+                                                    root_motion_cli):
+    """Attaching this script IS the statement that physics drives the
+    character, so it cannot be a separate step a caller can forget.
+    With both moving him, the measured symptom was a jump that landed,
+    fell into the air, landed again in mid-air and then dropped."""
+    added = controller.attach("AriaHero")
+
+    assert added["success"] is True
+    assert added["root_motion_off"] is True
+    assert "warning" not in added
+    assert any("applyRootMotion = false" in c for c in root_motion_cli)
+
+
+def test_attaching_says_so_when_root_motion_could_not_be_turned_off(
+        monkeypatch, cli):
+    """The script being on the object is not the same as the character
+    being drivable, and reporting plain success hides the difference."""
+    monkeypatch.setattr(controller, "stop_root_motion",
+                        lambda target: {"success": False, "ran": True,
+                                        "error": "the Editor was not reachable"})
+
+    added = controller.attach("AriaHero")
+
+    assert added["root_motion_off"] is False
+    assert "fight the" in added["warning"]

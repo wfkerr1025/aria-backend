@@ -960,3 +960,53 @@ def test_no_placeholder_clips_are_made_when_real_ones_are_supplied(
         clips={"Idle": "Assets/Mixamo/X Bot@Standing Idle.fbx"})
 
     assert "create_animation_clip" not in commands(calls)
+
+
+# ======================================================
+# Leaving the jump
+# ======================================================
+
+def test_leaving_the_jump_asks_where_the_character_actually_is():
+    """MEASURED: the Jump clip is 1.00s and a 1.2m jump at gravity
+    -19.62 is about 0.70s of airtime, so the character is back on the
+    floor with the clip still running. An exit-time-only Jump -> Fall
+    therefore fired while he was standing there and Fall -> Land
+    followed at once, reported from play as "he jumps, lands, then
+    falls into the air, lands in the air standing, then drops"."""
+    graph = graphs.default_graph(graphs.ALL_STATES)
+    leaving = [t for t in graph.transitions if t.source == "Jump"]
+
+    to_fall = [t for t in leaving if t.target == "Fall"]
+    assert to_fall, "a jump that is still airborne has to reach the fall"
+    assert [(c.parameter, c.mode) for c in to_fall[0].conditions] == [
+        ("grounded", "IfNot")], "falling out of a jump means still in the air"
+
+    to_land = [t for t in leaving if t.target == "Land"]
+    assert to_land, "a jump that has already touched down has to land"
+    assert [(c.parameter, c.mode) for c in to_land[0].conditions] == [
+        ("grounded", "If")]
+    assert to_land[0].exit_time < to_fall[0].exit_time, (
+        "the landing edge has to be reachable before the falling one, or "
+        "a short jump leaves through Fall anyway")
+
+
+def test_no_edge_out_of_the_jump_runs_on_exit_time_alone():
+    graph = graphs.default_graph(graphs.ALL_STATES)
+
+    unconditional = [t for t in graph.transitions
+                     if t.source == "Jump" and not t.conditions]
+    assert not unconditional, (
+        "an edge out of Jump with no condition fires whether or not the "
+        f"character has landed: {[t.target for t in unconditional]}")
+
+
+def test_a_jump_with_only_a_land_state_still_ends():
+    """The two-state fallback used to check for Fall alone, so a graph
+    with Land but no Fall got BOTH the Land edge and a bare exit-time
+    Jump -> Idle racing it."""
+    graph = graphs.default_graph(("Idle", "Jump", "Land"))
+    out = [(t.source, t.target) for t in graph.transitions]
+
+    assert ("Jump", "Land") in out
+    assert ("Jump", "Idle") not in out, "the fallback raced the real edge"
+    assert not any("Jump" in a for a in graphs.graph_advice(graph))

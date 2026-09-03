@@ -52,6 +52,7 @@ __all__ = [
     "declared_fields",
     "deliver",
     "script_path",
+    "stop_root_motion",
     "verify_compiled",
 ]
 
@@ -515,6 +516,74 @@ def verify_compiled(class_name: str = CLASS_NAME) -> dict:
             "missing": missing, "reason": report.get("reason", "")}
 
 
+# Root motion moves the character BY THE CLIP. With a
+# CharacterController also moving him, the two fight: measured on this
+# character as a jump that lands, falls into the air, lands again in
+# mid-air and then drops. Mixamo's clips carry real vertical root
+# motion and import with keepOriginalPositionY true, so this is not
+# optional -- it is the difference between the script driving the
+# character and the animation driving him.
+_NO_ROOT_MOTION = """
+var go = UnityEngine.GameObject.Find("NAME");
+if (go == null) return "NO_OBJECT";
+var an = go.GetComponent<UnityEngine.Animator>();
+if (an == null) return "NO_ANIMATOR";
+var was = an.applyRootMotion;
+an.applyRootMotion = false;
+UnityEditor.EditorUtility.SetDirty(go);
+
+// AND THE PREFAB HE CAME FROM. Fixing only the instance in the scene
+// is undone the next time the character is placed, which is the same
+// bug arriving a second time and looking new.
+var source = UnityEditor.PrefabUtility.GetCorrespondingObjectFromSource(go);
+var asset = source != null ? source : null;
+var prefabWas = "none";
+if (asset != null)
+{
+    var pa = asset.GetComponent<UnityEngine.Animator>();
+    if (pa != null)
+    {
+        prefabWas = pa.applyRootMotion.ToString();
+        pa.applyRootMotion = false;
+        UnityEditor.EditorUtility.SetDirty(asset);
+        UnityEditor.AssetDatabase.SaveAssets();
+    }
+}
+return "was=" + was + " now=" + an.applyRootMotion + " prefabWas=" + prefabWas;
+"""
+
+
+def stop_root_motion(target: str) -> dict:
+    """Turn root motion off, because the CharacterController moves him.
+
+    Both on the object in the scene AND on the prefab behind it: root
+    motion moves the character by the clip, and with a
+    CharacterController also moving him the two fight. Measured on this
+    character as a jump that lands, falls into the air, lands again in
+    mid-air and then drops.
+
+    Returns success, whether it had been on, and whether the prefab
+    needed the same fix.
+    """
+    outcome = delivery._run("eval", {
+        "code": _NO_ROOT_MOTION.replace(
+            "NAME", str(target or "").replace('"', "")),
+        "timeout": 60000,
+    })
+    if not outcome["success"]:
+        return {"success": False, "ran": True, "error": outcome["error"]}
+
+    said = str(((outcome["data"] or {}) or {}).get("result") or "")
+    if said in ("NO_OBJECT", "NO_ANIMATOR") or "now=" not in said:
+        return {"success": False, "ran": True,
+                "error": f"could not reach the Animator on {target}: "
+                         f"{said or 'no answer'}"}
+
+    return {"success": "now=False" in said, "ran": True, "error": None,
+            "was_on": "was=True" in said,
+            "prefab_was_on": "prefabWas=True" in said}
+
+
 def attach(target: str) -> dict:
     """Put the script on an object, once Unity has compiled it.
 
@@ -522,4 +591,17 @@ def attach(target: str) -> dict:
     and add_component says so rather than silently doing nothing --
     which is why this reports the Editor's own words.
     """
-    return delivery.ensure_component(target, CLASS_NAME)
+    added = delivery.ensure_component(target, CLASS_NAME)
+    if not added["success"]:
+        return added
+
+    # Not a separate step a caller can forget: attaching this script
+    # IS the statement that physics drives the character.
+    motion = stop_root_motion(target)
+    added["root_motion_off"] = motion["success"]
+    if not motion["success"]:
+        added["warning"] = (
+            "the script is attached but root motion could not be turned "
+            f"off: {motion['error']}. The clips will fight the "
+            "CharacterController for control of the character.")
+    return added

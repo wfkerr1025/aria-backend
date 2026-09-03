@@ -216,14 +216,27 @@ def default_graph(state_names: Sequence[str] = ("Idle", "Walk", "Run", "Attack")
     # walking off a ledge actually happens, and a jump reaches it
     # through Jump -> Fall on exit time instead.
     edge(ANY_STATE, "Jump", Condition("jump", "If"))
-    edge("Jump", "Fall", has_exit_time=True, exit_time=0.8)
+
+    # THE JUMP CLIP OUTLIVES THE JUMP. A 1.2m jump is about 0.70s of
+    # airtime and Mixamo's Jump clip is 1.00s, so the character is back
+    # on the floor with the clip still playing. An exit-time-only edge
+    # then sent him to Fall while standing there, and Fall -> Land
+    # followed immediately -- reported as "he lands, then falls into the
+    # air, then lands in the air standing".
+    #
+    # So leaving the jump asks where he actually is: still airborne
+    # goes to Fall, already down goes to Land.
+    edge("Jump", "Fall", Condition("grounded", "IfNot"),
+         has_exit_time=True, exit_time=0.8)
+    edge("Jump", "Land", Condition("grounded", "If"),
+         has_exit_time=True, exit_time=0.5)
     for grounded_state in ("Idle", "Walk", "Run", "Crouch", "CrouchWalk"):
         edge(grounded_state, "Fall", Condition("grounded", "IfNot"))
     edge("Fall", "Land", Condition("grounded", "If"))
     edge("Land", "Idle", has_exit_time=True, exit_time=0.8)
 
     # A jump with no Fall state to go to still has to end somewhere.
-    if "Fall" not in present:
+    if "Fall" not in present and "Land" not in present:
         edge("Jump", "Idle", has_exit_time=True, exit_time=0.9)
     if "Land" not in present:
         edge("Fall", "Idle", Condition("grounded", "If"))
