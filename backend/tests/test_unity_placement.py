@@ -703,3 +703,170 @@ def test_the_prefab_folder_is_worked_out_in_python(project, fbx, cli):
     code = args_of(cli, "eval")["code"]
     assert '"Assets/ARIA/Prefabs"' in code
     assert '"Assets/ARIA", "Prefabs"' in code
+
+
+# ======================================================
+# One component, not a pile of them
+# ======================================================
+
+@pytest.fixture
+def permissive_cli(monkeypatch):
+    """A CLI that lets a type be added twice, BECAUSE UNITY DOES.
+
+    The main `cli` fixture refuses a repeat add, which is true of the
+    Animator and false of every MonoBehaviour. That fake agreed with
+    the code's assumption, so ensure_component adding a second copy of
+    a script was invisible here and visible only in play, as a
+    character with two of them both calling Move.
+    """
+    held = []
+    calls = []
+
+    def fake(command, args=None, **kwargs):
+        argv = list(args or [])
+        named = {argv[i].lstrip("-"): argv[i + 1]
+                 for i in range(0, len(argv) - 1, 2) if argv[i].startswith("--")}
+        name = command.replace("cmd ", "")
+        calls.append(name)
+
+        def envelope(result):
+            return {"success": True, "output": "", "error": None,
+                    "json": {"success": True, "errors": [],
+                             "data": {"command": name, "parameters": named,
+                                      "result": result, "target": {},
+                                      "success": True}}}
+
+        if name == "get_component_properties":
+            if named.get("type") in held:
+                return envelope({"type": named.get("type"), "properties": {}})
+            return {"success": False, "output": "", "json": None,
+                    "error": "not present"}
+
+        if name == "add_component":
+            held.append(named.get("type"))
+            return envelope({"type": named.get("type"), "globalId": INSTANCE_ID})
+
+        if name == "eval":
+            code = named.get("code", "")
+            if "DestroyImmediate" in code:
+                was = len(held)
+                while len(held) > 1:
+                    held.pop()
+                return envelope({"success": True, "error": None,
+                                 "result": f"found={was} removed={was - 1}"})
+            return envelope({"success": True, "result": "", "error": None})
+
+        return envelope({"globalId": INSTANCE_ID})
+
+    from backend.unity import unity_cli_engine
+    monkeypatch.setattr(unity_cli_engine, "run_invocation", fake)
+    return {"held": held, "calls": calls}
+
+
+def test_ensuring_a_script_twice_leaves_one_of_it(permissive_cli):
+    delivery.ensure_component("AriaHero", "AriaCharacterController")
+    second = delivery.ensure_component("AriaHero", "AriaCharacterController")
+
+    assert permissive_cli["held"] == ["AriaCharacterController"], (
+        "two of the same script both drive the character every frame")
+    assert second["success"] is True
+    assert second["added"] is False
+
+
+def test_ensuring_asks_before_it_adds(permissive_cli):
+    """The check used to run only after the add, so it never ran for
+    anything Unity was willing to add twice."""
+    delivery.ensure_component("AriaHero", "AriaCharacterController")
+    permissive_cli["calls"].clear()
+
+    delivery.ensure_component("AriaHero", "AriaCharacterController")
+
+    assert "add_component" not in permissive_cli["calls"]
+    assert "get_component_properties" in permissive_cli["calls"]
+
+
+def test_a_component_unity_refuses_twice_is_still_a_success(monkeypatch):
+    """The Animator lesson, which the reordering must not lose.
+
+    A model imported as Human arrives with an Animator, and asking for
+    another is REFUSED, not ignored. Here the component appears between
+    the check and the add -- the only way the add can now fail on
+    something already present -- and a refused add must still not be
+    reported as a character that cannot be animated.
+    """
+    seen = {"checks": 0}
+
+    def fake(command, args=None, **kwargs):
+        argv = list(args or [])
+        named = {argv[i].lstrip("-"): argv[i + 1]
+                 for i in range(0, len(argv) - 1, 2) if argv[i].startswith("--")}
+        name = command.replace("cmd ", "")
+
+        if name == "get_component_properties":
+            seen["checks"] += 1
+            if seen["checks"] == 1:
+                return {"success": False, "output": "", "json": None,
+                        "error": "not present"}
+            return {"success": True, "output": "", "error": None,
+                    "json": {"success": True, "errors": [],
+                             "data": {"command": name, "parameters": named,
+                                      "result": {"type": "Animator"},
+                                      "target": {}, "success": True}}}
+
+        return {"success": False, "output": "", "json": None,
+                "error": "Failed to add component 'Animator' to 'AriaHero' "
+                         "(it may be disallowed on this GameObject)."}
+
+    from backend.unity import unity_cli_engine
+    monkeypatch.setattr(unity_cli_engine, "run_invocation", fake)
+
+    outcome = delivery.ensure_component("AriaHero", "Animator")
+
+    assert outcome["success"] is True, (
+        "a refused add on a component that IS there says the character "
+        "cannot be animated at the moment it can")
+    assert outcome["added"] is False
+
+
+def test_an_animator_already_there_is_not_asked_for_again(permissive_cli):
+    delivery.add_component("AriaHero", "Animator")
+    permissive_cli["calls"].clear()
+
+    outcome = delivery.ensure_component("AriaHero", "Animator")
+
+    assert outcome["added"] is False
+    assert "add_component" not in permissive_cli["calls"]
+
+
+def test_extra_components_are_removed_and_one_is_kept(permissive_cli):
+    """Scenes built before the fix still carry the duplicates."""
+    delivery.add_component("AriaHero", "AriaCharacterController")
+    delivery.add_component("AriaHero", "AriaCharacterController")
+    delivery.add_component("AriaHero", "AriaCharacterController")
+
+    result = delivery.remove_extra_components(
+        "AriaHero", "AriaCharacterController")
+
+    assert result["success"] is True
+    assert result["found"] == 3
+    assert result["removed"] == 2
+    assert permissive_cli["held"] == ["AriaCharacterController"]
+
+
+def test_the_sweep_stops_at_the_first_component():
+    """The loop bound is the whole difference between keeping one and
+    keeping none, and no Python fake can prove it -- a fake that
+    reports what the sweep was supposed to do agrees with the code by
+    construction, which is how the duplicate got past the tests in the
+    first place. So this pins the bound in the C# itself, and the
+    behaviour is measured against a live Editor.
+    """
+    statements = [line.split("//")[0].strip()
+                  for line in delivery._REMOVE_EXTRA.splitlines()]
+    loops = [line for line in statements if line.startswith("for (")]
+
+    assert loops, "the sweep has no loop"
+    assert "i >= 1" in loops[0], (
+        f"the sweep must stop above index 0 and keep one: {loops[0]}")
+    assert "found.Count - 1" in loops[0], "it must start from the last"
+    assert any("DestroyImmediate(found[i])" in line for line in statements)

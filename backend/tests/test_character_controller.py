@@ -375,6 +375,8 @@ def root_motion_cli(monkeypatch):
         said = "ok"
         if "applyRootMotion" in code:
             said = "was=True now=False prefabWas=True"
+        elif "DestroyImmediate" in code:
+            said = "found=2 removed=1"
         elif "GetFields" in code:
             said = ",".join(controller.declared_fields()) + ","
 
@@ -430,3 +432,16 @@ def test_attaching_says_so_when_root_motion_could_not_be_turned_off(
 
     assert added["root_motion_off"] is False
     assert "fight the" in added["warning"]
+
+
+def test_attaching_takes_off_the_copies_an_earlier_attach_left(
+        root_motion_cli):
+    """ensure_component used to add before it checked, and Unity allows
+    many MonoBehaviours of one type, so every attach added another copy
+    -- each one calling CharacterController.Move every frame."""
+    added = controller.attach("AriaHero")
+
+    assert added["success"] is True
+    assert added["duplicates_removed"] == 1
+    assert any("DestroyImmediate" in c for c in root_motion_cli), (
+        "nothing sweeps the duplicates an earlier attach left behind")

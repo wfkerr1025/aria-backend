@@ -595,6 +595,11 @@ def attach(target: str) -> dict:
     if not added["success"]:
         return added
 
+    # A character built before ensure_component asked first is carrying
+    # more than one of these, and every one of them calls Move.
+    extra = delivery.remove_extra_components(target, CLASS_NAME)
+    added["duplicates_removed"] = extra.get("removed", 0)
+
     # Not a separate step a caller can forget: attaching this script
     # IS the statement that physics drives the character.
     motion = stop_root_motion(target)

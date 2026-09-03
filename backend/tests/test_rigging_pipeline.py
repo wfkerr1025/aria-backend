@@ -437,9 +437,15 @@ def test_it_places_rigged_character_in_scene(ludo, blender, unity, work):
         MODEL_URL, name="Hero", work_folder=work,
         scene_path="Assets/Scenes/Forest.unity")
 
+    # NO add_component. A model imported as Human arrives with its
+    # Animator, ensure_component asks before it adds, and the doomed
+    # add that used to sit here is simply not made. The old order --
+    # add, then check whether the failure mattered -- is also what let
+    # two copies of a script onto one character, since Unity accepts a
+    # second MonoBehaviour without complaint.
     assert commands(unity) == ["import_asset", "set_import_settings",
                                "eval", "instantiate_prefab", "set_transform",
-                               "add_component", "get_component_properties"]
+                               "get_component_properties"]
     assert args_for(unity, "instantiate_prefab")["scene_path"] == \
         "Assets/Scenes/Forest.unity"
     assert args_for(unity, "set_transform")["position"] == "[0,0,0]"

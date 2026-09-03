@@ -71,6 +71,7 @@ __all__ = [
     "asset_path_for",
     "ensure_component",
     "has_component",
+    "remove_extra_components",
     "create_prefab",
     "deliver_to_unity",
     "model_to_prefab",
@@ -686,19 +687,81 @@ def ensure_component(target: str, component: str) -> dict:
 
     So a refused add is checked rather than believed: if the component
     is there, that is a success with `added` false.
+
+    AND IT ASKS BEFORE IT ADDS, which this did not do. Unity permits
+    MANY MonoBehaviours of the same type on one object, so an add of a
+    script always succeeds and the check after it never ran. Attaching
+    twice left two copies of the character controller on the character,
+    both calling CharacterController.Move every frame -- measured as a
+    character who lands, is pushed up out of the floor, hangs, and
+    drops. Only components Unity itself restricts to one, like the
+    Animator, were ever deduplicated by the old order.
     """
+    wanted = COLLIDERS.get(str(component).strip().lower(), str(component).strip())
+    if has_component(target, wanted):
+        return {"success": True, "ran": True, "error": None,
+                "component": wanted, "added": False, "data": None}
+
     outcome = add_component(target, component)
     if outcome["success"]:
         outcome["added"] = True
         return outcome
 
-    wanted = COLLIDERS.get(str(component).strip().lower(), str(component).strip())
     if has_component(target, wanted):
         return {"success": True, "ran": True, "error": None,
                 "component": wanted, "added": False, "data": None}
 
     outcome["added"] = False
     return outcome
+
+
+# Scenes built before the fix above still carry the duplicates, and the
+# character in them stays broken until something takes them off.
+_REMOVE_EXTRA = """
+var go = UnityEngine.GameObject.Find("NAME");
+if (go == null) return "NO_OBJECT";
+var found = new System.Collections.Generic.List<UnityEngine.Component>();
+foreach (var c in go.GetComponents<UnityEngine.Component>())
+    if (c != null && c.GetType().Name == "TYPE") found.Add(c);
+var removed = 0;
+for (var i = found.Count - 1; i >= 1; i--)
+{
+    UnityEngine.Object.DestroyImmediate(found[i]);
+    removed++;
+}
+if (removed > 0) UnityEditor.EditorUtility.SetDirty(go);
+return "found=" + found.Count + " removed=" + removed;
+"""
+
+
+def remove_extra_components(target: str, component: str) -> dict:
+    """Leave one of this component on the object and take off the rest.
+
+    The FIRST is kept, because it is the one whose values a person may
+    have edited in the Inspector. Returns how many were there and how
+    many went.
+    """
+    name = str(component or "").strip()
+    outcome = _run("eval", {
+        "code": _REMOVE_EXTRA.replace("NAME", str(target or "").replace('"', ""))
+                             .replace("TYPE", name.replace('"', "")),
+        "timeout": 60000,
+    })
+    if not outcome["success"]:
+        return {"success": False, "ran": True, "error": outcome["error"],
+                "found": 0, "removed": 0}
+
+    said = str(((outcome["data"] or {}) or {}).get("result") or "")
+    if "removed=" not in said:
+        return {"success": False, "ran": True,
+                "error": f"could not read the components on {target}: "
+                         f"{said or 'no answer'}",
+                "found": 0, "removed": 0}
+
+    numbers = dict(part.split("=") for part in said.split() if "=" in part)
+    return {"success": True, "ran": True, "error": None,
+            "found": int(numbers.get("found", 0)),
+            "removed": int(numbers.get("removed", 0))}
 
 
 def place_character(fbx_path: str, *, name: Optional[str] = None,
