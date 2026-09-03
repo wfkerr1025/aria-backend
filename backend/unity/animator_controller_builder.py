@@ -46,6 +46,8 @@ logger = get_logger(__name__)
 
 __all__ = [
     "DEFAULT_CLIP_FOLDER",
+    "DIRECT_MOTION_SUFFIXES",
+    "is_direct_motion",
     "build_controller",
     "clip_path_for",
     "controller_path_for",
@@ -69,6 +71,25 @@ def clip_path_for(state: str, character: str,
     if not clean.lower().startswith("assets"):
         clean = f"Assets/{clean}"
     return f"{clean}/{character}_{state}.anim"
+
+
+# What add_animator_state will accept as a `motion`.
+#
+# MEASURED. Handing it an FBX gets
+#
+#   Motion reference '...X Bot@Standing Idle.fbx' resolved to a
+#   GameObject, not an AnimationClip or BlendTree
+#
+# because an ObjectRef resolves a model path to the model, and the
+# clip is a SUB-asset with no path syntax of its own. A .anim is a
+# clip in its own right and resolves fine. Anything else is left for
+# mixamo_library.assign_clips, which finds the sub-asset the way the
+# Editor does.
+DIRECT_MOTION_SUFFIXES = (".anim",)
+
+
+def is_direct_motion(path: str) -> bool:
+    return str(path or "").lower().endswith(DIRECT_MOTION_SUFFIXES)
 
 
 def _exists(asset_path: str) -> bool:
@@ -142,14 +163,22 @@ def build_controller(graph: graphs.Graph,
     # Before the states, because a state's motion has to exist to be
     # referenced.
     clips: Dict[str, str] = {}
+    deferred: List[str] = []
     for state in graph.states:
         if state.clip:
-            clips[state.name] = state.clip
+            if is_direct_motion(state.clip):
+                clips[state.name] = state.clip
+            else:
+                # A model file. The state is created without a motion
+                # and something else assigns the sub-asset; passing it
+                # here fails the whole build on the first state.
+                deferred.append(state.name)
             continue
         if not make_missing_clips:
             warnings.append(
                 f"{state.name} has no clip, so that state will play nothing")
             continue
+
 
         path = clip_path_for(state.name, character, clip_folder)
         if _exists(path):
@@ -168,6 +197,12 @@ def build_controller(graph: graphs.Graph,
         steps.append(f"create_animation_clip:{state.name}")
 
     answer["clips"] = sorted(clips.values())
+    if deferred:
+        warnings.append(
+            f"{len(deferred)} states were given a model file rather than a "
+            ".anim, so their motion is not set here: "
+            f"{', '.join(sorted(deferred))}. Use "
+            "mixamo_library.assign_clips to attach the clips inside them.")
 
     # --- the parameters -------------------------------------------------
     # Before the transitions: a condition names a parameter and the

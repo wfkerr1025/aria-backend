@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from backend.unity import animation_parameters as params
 
 __all__ = [
+    "ALL_STATES",
     "ANY_STATE",
     "ENTRY",
     "EXIT",
@@ -134,6 +135,13 @@ class Graph:
         return None
 
 
+# Every state this module knows how to wire, in the order a character
+# uses them. Passing a subset is normal -- an edge whose endpoints are
+# not both present is simply not built.
+ALL_STATES = ("Idle", "Walk", "Run", "Attack", "Crouch", "CrouchWalk",
+              "Jump", "Fall", "Land", "DodgeLeft", "DodgeRight")
+
+
 def default_graph(state_names: Sequence[str] = ("Idle", "Walk", "Run", "Attack"),
                   *, clips: Optional[Dict[str, str]] = None,
                   complete: bool = True) -> Graph:
@@ -176,6 +184,38 @@ def default_graph(state_names: Sequence[str] = ("Idle", "Walk", "Run", "Attack")
         edge("Run", "Walk", Condition("speed", "Less", 2.0))
         # No condition: it leaves when the clip has played.
         edge("Attack", "Idle", has_exit_time=True, exit_time=0.9)
+
+    # --- crouching ---------------------------------------------------
+    edge("Idle", "Crouch", Condition("crouch", "If"))
+    edge("Crouch", "Idle", Condition("crouch", "IfNot"))
+    edge("Crouch", "CrouchWalk", Condition("speed", "Greater", 0.1))
+    edge("CrouchWalk", "Crouch", Condition("speed", "Less", 0.1))
+    # Standing up while moving goes to Walk, not to Idle: a character
+    # that stops dead because it stood up is a bug somebody spends an
+    # afternoon on.
+    edge("CrouchWalk", "Walk", Condition("crouch", "IfNot"))
+
+    # --- the air -----------------------------------------------------
+    # Jump is a trigger from anywhere; falling is a STATE OF THE WORLD
+    # and is driven by `grounded` rather than by an event, because a
+    # character can leave the ground without jumping.
+    edge(ANY_STATE, "Jump", Condition("jump", "If"))
+    edge("Jump", "Fall", has_exit_time=True, exit_time=0.8)
+    edge(ANY_STATE, "Fall", Condition("grounded", "IfNot"))
+    edge("Fall", "Land", Condition("grounded", "If"))
+    edge("Land", "Idle", has_exit_time=True, exit_time=0.8)
+
+    # A jump with no Fall state to go to still has to end somewhere.
+    if "Fall" not in present:
+        edge("Jump", "Idle", has_exit_time=True, exit_time=0.9)
+    if "Land" not in present:
+        edge("Fall", "Idle", Condition("grounded", "If"))
+
+    # --- dodges ------------------------------------------------------
+    edge(ANY_STATE, "DodgeLeft", Condition("dodgeLeft", "If"))
+    edge("DodgeLeft", "Idle", has_exit_time=True, exit_time=0.9)
+    edge(ANY_STATE, "DodgeRight", Condition("dodgeRight", "If"))
+    edge("DodgeRight", "Idle", has_exit_time=True, exit_time=0.9)
 
     return Graph(states=states, transitions=transitions)
 

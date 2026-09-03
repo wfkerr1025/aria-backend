@@ -272,8 +272,7 @@ def animate_character(prefab_path: str, *,
                       name: Optional[str] = None,
                       animation_style: str = "stylized",
                       required_states: Sequence[str] = REQUIRED_STATES,
-                      parameters: Sequence[params.Parameter] =
-                      params.DEFAULT_PARAMETERS,
+                      parameters: Optional[Sequence[params.Parameter]] = None,
                       clips: Optional[Dict[str, str]] = None,
                       controller_path: Optional[str] = None,
                       complete_graph: bool = True,
@@ -344,6 +343,12 @@ def animate_character(prefab_path: str, *,
             "it. Re-import with animationType=Human.")
 
     # --- 2. The graph, decided before Unity is asked anything ---------
+    # Parameters follow the STATES unless a caller names them. A graph
+    # is refused for naming a parameter nobody declared, so asking a
+    # caller to keep a second list in step with the first is asking
+    # them to get it wrong.
+    if parameters is None:
+        parameters = params.parameters_for(required_states) or             params.DEFAULT_PARAMETERS
     graph = graphs.default_graph(required_states, clips=clips,
                                  complete=complete_graph)
     problems = (params.validate_parameters(parameters)
@@ -359,8 +364,12 @@ def animate_character(prefab_path: str, *,
 
     # --- 3. Build it ---------------------------------------------------
     where = controller_path or builder.controller_path_for(label)
+    # Placeholder .anim files are only worth making when nothing else
+    # is going to fill the states. With clips on their way in there is
+    # no point littering the project with empty ones.
     built = builder.build_controller(
         graph, parameters, where, character=label,
+        make_missing_clips=not clips,
         reuse=reuse, overwrite=overwrite)
 
     result.controller_path = where

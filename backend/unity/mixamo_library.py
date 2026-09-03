@@ -80,6 +80,9 @@ DEFAULT_ALIASES: Dict[str, Sequence[str]] = {
     "Fall": ("falling idle", "falling"),
     "Land": ("landing", "hard landing"),
     "Crouch": ("crouching idle", "crouch"),
+    "CrouchWalk": ("crouched walking", "crouch walk", "sneak"),
+    "DodgeLeft": ("standing dodge left", "dodge left", "roll left"),
+    "DodgeRight": ("standing dodge right", "dodge right", "roll right"),
 }
 
 # Which states are cycles and which play once.
@@ -92,8 +95,8 @@ DEFAULT_ALIASES: Dict[str, Sequence[str]] = {
 # An attack must NOT loop. A one-shot that repeats is a character
 # swinging a sword forever, and the Attack state leaves on exit time,
 # which never arrives if the clip restarts.
-LOOPING_STATES = ("Idle", "Walk", "Run", "Crouch", "Fall")
-ONE_SHOT_STATES = ("Attack", "Jump", "Land")
+LOOPING_STATES = ("Idle", "Walk", "Run", "Crouch", "CrouchWalk", "Fall")
+ONE_SHOT_STATES = ("Attack", "Jump", "Land", "DodgeLeft", "DodgeRight")
 
 # Setting it needs the whole clip list rewritten: clipAnimations starts
 # empty and the importer falls back to defaultClipAnimations, so the

@@ -764,13 +764,13 @@ def test_supplied_clips_reach_the_states(project, cli):
     calls, _ = cli
     pipeline.animate_character(
         "p.prefab", instance="Hero", name="Hero",
-        clips={"Idle": "Assets/Mixamo/Idle.fbx",
-               "Walk": "Assets/Mixamo/Walking.fbx"})
+        clips={"Idle": "Assets/ARIA/Idle.anim",
+               "Walk": "Assets/ARIA/Walking.anim"})
 
     motions = {a["name"]: a.get("motion")
                for a in every(calls, "add_animator_state")}
-    assert motions["Idle"] == "Assets/Mixamo/Idle.fbx"
-    assert motions["Walk"] == "Assets/Mixamo/Walking.fbx"
+    assert motions["Idle"] == "Assets/ARIA/Idle.anim"
+    assert motions["Walk"] == "Assets/ARIA/Walking.anim"
 
 
 def test_supplying_clips_removes_the_empty_warning(project, cli):
@@ -811,3 +811,129 @@ def test_the_result_carries_the_clips_and_the_import_type(project, cli):
                   "steps", "warnings"):
         assert hasattr(result, field), field
     assert result.import_type in (pipeline.GENERIC, pipeline.HUMANOID)
+
+
+# ======================================================
+# The states beyond the first four
+#
+# Eleven in all, built live and verified in the Editor: default Idle,
+# 21 transitions, 5 of them from AnyState, every state carrying a
+# humanoid clip and none without an exit.
+# ======================================================
+
+def test_every_known_state_is_wired():
+    graph = graphs.default_graph(graphs.ALL_STATES)
+    parameters = params.parameters_for(graphs.ALL_STATES)
+
+    assert len(graph.states) == 11
+    assert graphs.validate_graph(graph, parameters) == []
+    assert graphs.graph_advice(graph) == [], "a state with no way out"
+
+
+def test_a_subset_builds_only_the_edges_it_can():
+    """Passing fewer states is normal. An edge whose endpoints are not
+    both present is simply not built, so the four-state graph is
+    exactly what it always was."""
+    four = graphs.default_graph(("Idle", "Walk", "Run", "Attack"))
+
+    assert len(four.states) == 4
+    assert len(four.transitions) == 7
+    assert graphs.validate_graph(four, params.DEFAULT_PARAMETERS) == []
+
+
+def test_parameters_follow_the_states():
+    """A graph is refused for naming a parameter nobody declared, so
+    asking a caller to keep a second list in step is asking them to
+    get it wrong."""
+    assert [p.name for p in params.parameters_for(("Idle", "Walk"))] == ["speed"]
+    assert [p.name for p in params.parameters_for(graphs.ALL_STATES)] == [
+        "speed", "attack", "crouch", "jump", "grounded",
+        "dodgeLeft", "dodgeRight"]
+
+
+def test_grounded_starts_true():
+    """A Bool starts false, so a character whose graph has a Fall state
+    would begin the game falling -- from Idle, on the first frame,
+    before anything set it."""
+    assert params.GROUNDED.type == "Bool"
+    assert params.GROUNDED.default is True
+
+
+def test_falling_is_a_state_of_the_world_not_an_event():
+    """A character can leave the ground without jumping, so Fall is
+    entered from AnyState on `grounded` being false rather than by a
+    trigger somebody has to remember to fire."""
+    graph = graphs.default_graph(graphs.ALL_STATES)
+    into_fall = [t for t in graph.transitions if t.target == "Fall"]
+
+    from_any = [t for t in into_fall if t.source == graphs.ANY_STATE]
+    assert from_any, "nothing enters Fall from AnyState"
+    assert from_any[0].conditions[0].parameter == "grounded"
+    assert from_any[0].conditions[0].mode == "IfNot"
+
+
+def test_standing_up_while_moving_goes_to_walk_not_idle():
+    """A character that stops dead because it stood up is a bug
+    somebody spends an afternoon on."""
+    graph = graphs.default_graph(graphs.ALL_STATES)
+    out = {(t.source, t.target) for t in graph.transitions}
+
+    assert ("CrouchWalk", "Walk") in out
+
+
+def test_a_jump_still_ends_when_there_is_no_fall_state():
+    """Jump leaves on exit time into Fall. Without a Fall state that
+    edge cannot be built, and a jump with nowhere to go is a character
+    stuck in the air."""
+    graph = graphs.default_graph(("Idle", "Jump"))
+    out = {(t.source, t.target) for t in graph.transitions}
+
+    assert ("Jump", "Idle") in out
+    # Idle has nowhere to go in a two-state graph, which is true and
+    # not what this test is about.
+    assert not any("Jump" in a for a in graphs.graph_advice(graph))
+
+
+def test_falling_still_ends_when_there_is_no_land_state():
+    graph = graphs.default_graph(("Idle", "Fall"))
+
+    assert ("Fall", "Idle") in {(t.source, t.target) for t in graph.transitions}
+    assert not any("Fall" in a for a in graphs.graph_advice(graph))
+
+
+def test_a_model_file_is_not_offered_as_a_motion(project, cli):
+    """add_animator_state resolves an FBX path to the model, not to the
+    clip inside it, and fails the whole build on the first state:
+    "resolved to a GameObject, not an AnimationClip". The state is
+    created bare and assign_clips attaches the sub-asset."""
+    calls, _ = cli
+    result = pipeline.animate_character(
+        "p.prefab", instance="Hero", name="Hero",
+        clips={"Idle": "Assets/Mixamo/X Bot@Standing Idle.fbx"})
+
+    idle = [a for a in every(calls, "add_animator_state")
+            if a["name"] == "Idle"][0]
+    assert "motion" not in idle
+    assert any("assign_clips" in w for w in result.warnings)
+
+
+def test_a_real_anim_asset_is_offered_as_a_motion(project, cli):
+    calls, _ = cli
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero",
+                               clips={"Idle": "Assets/ARIA/Idle.anim"})
+
+    idle = [a for a in every(calls, "add_animator_state")
+            if a["name"] == "Idle"][0]
+    assert idle["motion"] == "Assets/ARIA/Idle.anim"
+
+
+def test_no_placeholder_clips_are_made_when_real_ones_are_supplied(
+        project, cli):
+    """Otherwise eleven empty .anim files land in somebody's project
+    and are never played."""
+    calls, _ = cli
+    pipeline.animate_character(
+        "p.prefab", instance="Hero", name="Hero",
+        clips={"Idle": "Assets/Mixamo/X Bot@Standing Idle.fbx"})
+
+    assert "create_animation_clip" not in commands(calls)

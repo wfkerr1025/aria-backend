@@ -21,13 +21,20 @@ from typing import Any, Dict, List, Optional, Sequence
 
 __all__ = [
     "ATTACK",
+    "CROUCH",
     "DEFAULT_PARAMETERS",
+    "DODGE_LEFT",
+    "DODGE_RIGHT",
+    "GROUNDED",
+    "JUMP",
     "NUMERIC_TYPES",
+    "PARAMETERS_BY_STATE",
     "Parameter",
     "SPEED",
     "TYPES",
     "as_payloads",
     "find",
+    "parameters_for",
     "validate_parameters",
 ]
 
@@ -62,12 +69,60 @@ class Parameter:
         return body
 
 
-# What the spec asks for, and what a locomotion graph needs: one number
-# to blend on and one trigger to fire.
+# What a locomotion graph needs: one number to blend on and one trigger
+# to fire.
 SPEED = Parameter("speed", "Float", 0.0)
 ATTACK = Parameter("attack", "Trigger")
 
 DEFAULT_PARAMETERS = (SPEED, ATTACK)
+
+# The rest, for the states beyond the first four.
+#
+# GROUNDED DEFAULTS TO TRUE and that is not cosmetic. A Bool starts
+# false, so a character whose graph has a Fall state would begin the
+# game falling -- from Idle, on the first frame, before anything set
+# it. The default is the value that means "standing on the floor".
+CROUCH = Parameter("crouch", "Bool", False)
+JUMP = Parameter("jump", "Trigger")
+GROUNDED = Parameter("grounded", "Bool", True)
+DODGE_LEFT = Parameter("dodgeLeft", "Trigger")
+DODGE_RIGHT = Parameter("dodgeRight", "Trigger")
+
+# Which parameters each state's transitions actually reference. A graph
+# is refused for naming a parameter nobody declared, so the two have to
+# agree -- and working it out from the states is better than asking a
+# caller to keep a second list in step.
+PARAMETERS_BY_STATE = {
+    "Idle": (SPEED,),
+    "Walk": (SPEED,),
+    "Run": (SPEED,),
+    "Attack": (ATTACK,),
+    "Crouch": (CROUCH, SPEED),
+    "CrouchWalk": (CROUCH, SPEED),
+    "Jump": (JUMP,),
+    "Fall": (GROUNDED,),
+    "Land": (GROUNDED,),
+    "DodgeLeft": (DODGE_LEFT,),
+    "DodgeRight": (DODGE_RIGHT,),
+}
+
+
+def parameters_for(states):
+    """The parameters the transitions between these states will name.
+
+    Order is stable -- speed and attack first, then the rest as
+    declared -- so a controller built twice has its parameters in the
+    same order and a diff of the asset is readable.
+    """
+    wanted = []
+    for state in states or ():
+        for parameter in PARAMETERS_BY_STATE.get(state, ()):
+            if parameter not in wanted:
+                wanted.append(parameter)
+
+    order = [SPEED, ATTACK, CROUCH, JUMP, GROUNDED, DODGE_LEFT, DODGE_RIGHT]
+    return tuple(sorted(wanted, key=lambda p: order.index(p)
+                        if p in order else len(order)))
 
 
 def find(parameters: Sequence[Parameter], name: str) -> Optional[Parameter]:
