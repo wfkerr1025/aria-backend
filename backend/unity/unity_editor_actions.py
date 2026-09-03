@@ -49,12 +49,21 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "ARGUMENTS",
     "POSITIONAL",
+    "Unmappable",
     "answer_request",
     "describe_results",
     "parse_bridge_calls",
     "run_description",
     "send",
 ]
+
+
+class Unmappable(ValueError):
+    """A message that IS bridge calls, and that I could not turn into commands.
+
+    Distinct from "not my business", which is None. The distinction is
+    the whole point, and it cost a scene to learn -- see parse_bridge_calls.
+    """
 
 
 # ======================================================
@@ -143,44 +152,78 @@ def _statements(body: str) -> list[str]:
     return found
 
 
-def _one_call(statement: str, canonical: dict[str, str]) -> Optional[dict]:
-    """One `CommandName(...)` statement as a command, or None if it is not one.
+def _call_to(statement: str, canonical: dict[str, str]):
+    """(command name, the parsed call) when the statement is one of ours.
 
-    ast is the whole safety story: the statement is PARSED and its
-    arguments read with literal_eval, never executed, so
-    `OpenScene(__import__("os").system("del *"))` is a statement this
-    function declines rather than a hole.
+    None means the statement is not a bridge call at all -- prose, a
+    sentence with a call quoted inside it, a name this bridge does not
+    have. That is an ownership question, and it is answered by the SHAPE
+    of the statement, never by whether its arguments turned out to work.
     """
     try:
         node = ast.parse(statement, mode="eval").body
     except SyntaxError:
         return None
-
     if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
         return None
-
     name = canonical.get(node.func.id.lower())
-    if name is None:
-        return None
+    return None if name is None else (name, node)
 
-    # A *args or **kwargs form is not a literal call, and silently
-    # dropping the starred half would send a command missing arguments
-    # the person wrote down.
+
+_ORDINALS = {1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth"}
+
+
+def _given_twice(name: str, key: str, order: tuple[str, ...]) -> str:
+    """The collision that cost a scene, explained with the line that works.
+
+    CreateGameObject and CreateCamera take the name first. CreateLight
+    takes the light TYPE first and the name second. Someone writing the
+    three together puts the name first in all of them, so
+
+        CreateLight("DirectionalLight", type="Directional", intensity=1.2)
+
+    hands type both ways. The bridge's own signature is the odd one out
+    here, so the message says which order it wants rather than implying
+    the person got it wrong.
+    """
+    place = order.index(key) + 1
+    ordinal = _ORDINALS.get(place, f"{place}th")
+    return (f"{name} was given {key} twice -- as its {ordinal} unnamed value and "
+            f"again by name. Unnamed values are read in this order: "
+            f"{', '.join(order)}. Naming them avoids the question: "
+            f"{name}({', '.join(item + '=...' for item in order)}).")
+
+
+def _arguments(name: str, node: ast.Call, statement: str) -> dict:
+    """The call's arguments, or Unmappable saying what is wrong with the line.
+
+    ast is the whole safety story: the statement is PARSED and its values
+    read with literal_eval, never executed, so
+    `OpenScene(__import__("os").system("del *"))` is a line this refuses
+    rather than a hole.
+    """
     if any(isinstance(arg, ast.Starred) for arg in node.args):
-        return None
+        raise Unmappable(f"{statement} unpacks its arguments, and I would have to "
+                         f"run something to find out what they are. Write them out.")
     if any(keyword.arg is None for keyword in node.keywords):
-        return None
+        raise Unmappable(f"{statement} unpacks its keywords, and I would have to "
+                         f"run something to find out what they are. Write them out.")
 
     try:
         positional = [ast.literal_eval(arg) for arg in node.args]
         supplied = {keyword.arg: ast.literal_eval(keyword.value)
                     for keyword in node.keywords}
     except ValueError:
-        return None
+        raise Unmappable(
+            f"{name} takes plain values -- text, numbers, lists and objects. "
+            f"{statement} passes something I would have to run to find out.")
 
     order = POSITIONAL[name]
     if len(positional) > len(order):
-        return None
+        raise Unmappable(
+            f"{name} reads at most {len(order)} unnamed value"
+            f"{'' if len(order) == 1 else 's'} ({', '.join(order) or 'none'}), and "
+            f"{statement} gives {len(positional)}.")
     args: dict[str, Any] = dict(zip(order, positional))
 
     # componentType, component_type and componenttype are the same
@@ -188,11 +231,14 @@ def _one_call(statement: str, canonical: dict[str, str]) -> Optional[dict]:
     known = {key.lower(): key for key in ARGUMENTS[name]}
     for raw, value in supplied.items():
         key = known.get(raw.replace("_", "").lower())
-        if key is None or key in args:
-            return None
+        if key is None:
+            raise Unmappable(f"{name} has no {raw} argument. It takes: "
+                             f"{', '.join(ARGUMENTS[name]) or 'nothing'}.")
+        if key in args:
+            raise Unmappable(_given_twice(name, key, order))
         args[key] = value
 
-    return _command(name, args)
+    return args
 
 
 def _command(name: str, args: dict) -> dict:
@@ -210,12 +256,32 @@ def _command(name: str, args: dict) -> dict:
 
 
 def parse_bridge_calls(text: Any) -> Optional[list[dict]]:
-    """The commands in a message that is already bridge call syntax, or None.
+    """The commands in a message that is already bridge call syntax.
 
-    EVERY statement has to be a call this module recognises. One line of
-    prose and the answer is None, which hands the turn back -- so "what
-    does OpenScene do?" reaches a model, and a message that is nothing
-    but commands does not.
+    Three outcomes, and the difference between the last two is the whole
+    reason this function was rewritten:
+
+        None            not my business -- no statement is a bridge call,
+                        so a question about OpenScene reaches a model
+        a list          every statement mapped
+        Unmappable      these ARE bridge calls and one of them defeated
+                        me; the caller must answer, not hand the turn on
+
+    WHY THE THIRD OUTCOME EXISTS
+    It used to return None for a broken line too, and the second measured
+    scene-write came straight out of that. Typed into chat:
+
+        CreateCamera("MainCamera", position={"x":0,"y":1.6,"z":-3}, ...)
+        CreateLight("DirectionalLight", type="Directional", ...)
+
+    CreateLight reads the light type as its first unnamed value, so type
+    arrived twice, so that one statement did not map -- and the whole
+    message, four good commands included, went to nemo-12b, which started
+    writing Assets/Scenes/WorkshopScene.unity as YAML.
+
+    A message carrying a bridge call is this layer's business even when
+    it is wrong. Being wrong is something to say, not something to pass
+    to a model.
     """
     from aria.unity_editor_bridge import COMMANDS
 
@@ -224,13 +290,22 @@ def parse_bridge_calls(text: Any) -> Optional[list[dict]]:
         return None
 
     canonical = {name.lower(): name for name in COMMANDS}
+    statements = _statements(body)
+    calls = [(statement, _call_to(statement, canonical)) for statement in statements]
+    if not any(call for _statement, call in calls):
+        return None
+
     commands = []
-    for statement in _statements(body):
-        command = _one_call(statement, canonical)
-        if command is None:
-            return None
-        commands.append(command)
-    return commands or None
+    for statement, call in calls:
+        if call is None:
+            # A message is one thing or the other. Guessing which lines
+            # were meant to run is how a sentence becomes an edit.
+            raise Unmappable(
+                f"I can run bridge commands or read a sentence, not both in one "
+                f"message. I did not know what to do with: {statement}")
+        name, node = call
+        commands.append(_command(name, _arguments(name, node, statement)))
+    return commands
 
 
 # ======================================================
@@ -283,7 +358,12 @@ def answer_request(text: Any, *, bridge=None) -> Optional[dict]:
     Returns None when the message is not this layer's business, and
     {"ran": bool, "text": str} when it is.
     """
-    commands = parse_bridge_calls(text)
+    try:
+        commands = parse_bridge_calls(text)
+    except Unmappable as error:
+        # Bridge calls I could not read. Answering is the point: silence
+        # here is what sent the last one to a model, which wrote a scene.
+        return _nothing_happened(str(error))
     if commands is None:
         return None
 

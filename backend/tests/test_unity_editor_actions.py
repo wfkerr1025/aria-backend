@@ -136,9 +136,11 @@ def test_anything_that_is_not_a_list_of_calls_is_handed_back(text):
     assert actions.parse_bridge_calls(text) is None
 
 
-def test_one_line_of_prose_disqualifies_the_whole_message():
-    assert actions.parse_bridge_calls(
-        'OpenScene("Assets/Scenes/Main.unity")\nand then tell me what is in it') is None
+def test_a_message_that_is_half_prose_is_refused_rather_than_passed_on():
+    """Ours, and unanswerable. Passing it on is what wrote a scene."""
+    with pytest.raises(actions.Unmappable, match="not both"):
+        actions.parse_bridge_calls(
+            'OpenScene("Assets/Scenes/Main.unity")\nand then tell me what is in it')
 
 
 def test_a_fenced_block_is_still_a_list_of_calls():
@@ -159,22 +161,20 @@ def test_a_semicolon_separates_calls_too():
     assert len(actions.parse_bridge_calls('Ping(); Ping()')) == 2
 
 
-def test_arguments_that_are_not_literals_are_refused():
-    """The message is parsed, never executed."""
-    assert actions.parse_bridge_calls('OpenScene(__import__("os").getcwd())') is None
-    assert actions.parse_bridge_calls('DeleteGameObject(open("x").read())') is None
-
-
-def test_an_unknown_keyword_is_refused_rather_than_dropped():
-    assert actions.parse_bridge_calls('OpenScene(path="a.unity", colour="red")') is None
-
-
-def test_an_argument_given_twice_is_refused():
-    assert actions.parse_bridge_calls('OpenScene("a.unity", path="b.unity")') is None
-
-
-def test_too_many_positional_arguments_are_refused():
-    assert actions.parse_bridge_calls('DeleteGameObject("a", "b", "c")') is None
+@pytest.mark.parametrize("text, says", [
+    # The message is parsed, never executed.
+    ('OpenScene(__import__("os").getcwd())', "would have to run"),
+    ('DeleteGameObject(open("x").read())', "would have to run"),
+    ('OpenScene(*paths)', "unpacks its arguments"),
+    ('OpenScene(**options)', "unpacks its keywords"),
+    ('OpenScene(path="a.unity", colour="red")', "has no colour argument"),
+    ('OpenScene("a.unity", path="b.unity")', "given path twice"),
+    ('DeleteGameObject("a", "b", "c")', "reads at most 1 unnamed value"),
+])
+def test_a_call_i_cannot_read_is_refused_by_name(text, says):
+    """Refused, not returned as None: None would hand it to a model."""
+    with pytest.raises(actions.Unmappable, match=says):
+        actions.parse_bridge_calls(text)
 
 
 def test_a_null_field_value_survives():
@@ -182,6 +182,58 @@ def test_a_null_field_value_survives():
     command = actions.parse_bridge_calls('SetField("Crate", "Rigidbody", "mass", None)')[0]
     assert command["args"] == {"target": "Crate", "componentType": "Rigidbody",
                                "field": "mass", "value": None}
+
+
+# ======================================================
+# The second one, which got past the first fix
+#
+# The short-circuit was in and working, and this still reached a model
+# and started writing Assets/Scenes/WorkshopScene.unity. One statement
+# would not map, the whole message was disowned, and disowning meant
+# "let a model have it".
+# ======================================================
+
+THE_SECOND_MESSAGE = (
+    'CreateCamera("MainCamera", position={"x":0,"y":1.6,"z":-3}, '
+    'rotation={"x":10,"y":0,"z":0})\n'
+    'CreateLight("DirectionalLight", type="Directional", intensity=1.2)'
+)
+
+
+def test_the_light_that_defeated_it_is_refused_not_disowned():
+    with pytest.raises(actions.Unmappable) as refused:
+        actions.parse_bridge_calls(THE_SECOND_MESSAGE)
+
+    said = str(refused.value)
+    assert "CreateLight was given type twice" in said
+    # The signature is the odd one out, so the message says which order
+    # it wants rather than implying the person got it wrong.
+    assert "type, name, position, rotation, intensity, color" in said
+
+
+def test_the_second_message_never_reaches_a_model(tmp_path):
+    answer = actions.answer_request(THE_SECOND_MESSAGE, bridge=Stub(tmp_path))
+
+    assert answer is not None, "None is what let a model write the scene"
+    assert answer["ran"] is False
+    assert answer["text"].startswith("I did not send anything to Unity")
+
+
+def test_the_form_the_refusal_recommends_actually_works():
+    """A message that tells the user what to type has to be right."""
+    assert actions.parse_bridge_calls(
+        'CreateLight(type="Directional", name="DirectionalLight", intensity=1.2)'
+    ) == [{"command": "CreateLight",
+           "args": {"type": "Directional", "name": "DirectionalLight",
+                    "intensity": 1.2}}]
+
+
+def test_a_camera_with_dict_vectors_maps():
+    """The half of that message that was always fine."""
+    assert actions.parse_bridge_calls(
+        'CreateCamera("MainCamera", position={"x":0,"y":1.6,"z":-3})'
+    ) == [{"command": "CreateCamera",
+           "args": {"name": "MainCamera", "position": {"x": 0, "y": 1.6, "z": -3}}}]
 
 
 # ======================================================
