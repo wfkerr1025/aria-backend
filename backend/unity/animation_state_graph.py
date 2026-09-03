@@ -181,6 +181,25 @@ def default_graph(state_names: Sequence[str] = ("Idle", "Walk", "Run", "Attack")
                 transitions.append(
                     Transition(source, target, tuple(conditions), **rest))
 
+    # RETURNING FROM AN INTERRUPT STATE HAS TO MATCH THE SPEED.
+    # Idle was the only way back, so a jump taken at a run came down
+    # into Idle and then had to walk the Idle -> Walk -> Run chain one
+    # state at a time. Seen from play as a flash of standing and
+    # walking before the run picked up again.
+    #
+    # ORDER MATTERS. Unity takes the FIRST transition whose conditions
+    # hold, so the fastest is offered first and each later one only
+    # gets asked because the quicker ones did not match. Idle carries
+    # no speed condition at all, which makes it the catch-all and
+    # closes the gap between the thresholds -- an exact 0.1 must not
+    # leave the character stuck in the state he is trying to leave.
+    def back_to_locomotion(source, *conditions, **rest):
+        edge(source, "Run", *conditions,
+             Condition("speed", "Greater", 2.0), **rest)
+        edge(source, "Walk", *conditions,
+             Condition("speed", "Greater", 0.1), **rest)
+        edge(source, "Idle", *conditions, **rest)
+
     # The specification's four.
     edge("Idle", "Walk", Condition("speed", "Greater", 0.1))
     edge("Walk", "Run", Condition("speed", "Greater", 2.0))
@@ -190,8 +209,10 @@ def default_graph(state_names: Sequence[str] = ("Idle", "Walk", "Run", "Attack")
     if complete:
         edge("Walk", "Idle", Condition("speed", "Less", 0.1))
         edge("Run", "Walk", Condition("speed", "Less", 2.0))
-        # No condition: it leaves when the clip has played.
-        edge("Attack", "Idle", has_exit_time=True, exit_time=0.9)
+        # No condition on WHEN it leaves -- the clip having played is
+        # the whole trigger -- but where it goes still follows the
+        # speed, so attacking mid-run does not stop the run.
+        back_to_locomotion("Attack", has_exit_time=True, exit_time=0.9)
 
     # --- crouching ---------------------------------------------------
     edge("Idle", "Crouch", Condition("crouch", "If"))
@@ -236,24 +257,24 @@ def default_graph(state_names: Sequence[str] = ("Idle", "Walk", "Run", "Attack")
     # jump, and Land belongs to Fall, where a real drop needs one.
     edge("Jump", "Fall", Condition("grounded", "IfNot"),
          has_exit_time=True, exit_time=0.8)
-    edge("Jump", "Idle", Condition("grounded", "If"),
-         has_exit_time=True, exit_time=0.85)
+    back_to_locomotion("Jump", Condition("grounded", "If"),
+                       has_exit_time=True, exit_time=0.85)
     for grounded_state in ("Idle", "Walk", "Run", "Crouch", "CrouchWalk"):
         edge(grounded_state, "Fall", Condition("grounded", "IfNot"))
     edge("Fall", "Land", Condition("grounded", "If"))
-    edge("Land", "Idle", has_exit_time=True, exit_time=0.8)
+    back_to_locomotion("Land", has_exit_time=True, exit_time=0.8)
 
-    # A jump in a graph with no Idle to return to still has to end.
-    if "Idle" not in present:
+    # A jump in a graph with nothing to land back into still has to end.
+    if not present & {"Idle", "Walk", "Run"}:
         edge("Jump", "Fall", has_exit_time=True, exit_time=0.9)
     if "Land" not in present:
-        edge("Fall", "Idle", Condition("grounded", "If"))
+        back_to_locomotion("Fall", Condition("grounded", "If"))
 
     # --- dodges ------------------------------------------------------
     edge(ANY_STATE, "DodgeLeft", Condition("dodgeLeft", "If"))
-    edge("DodgeLeft", "Idle", has_exit_time=True, exit_time=0.9)
+    back_to_locomotion("DodgeLeft", has_exit_time=True, exit_time=0.9)
     edge(ANY_STATE, "DodgeRight", Condition("dodgeRight", "If"))
-    edge("DodgeRight", "Idle", has_exit_time=True, exit_time=0.9)
+    back_to_locomotion("DodgeRight", has_exit_time=True, exit_time=0.9)
 
     return Graph(states=states, transitions=transitions)
 

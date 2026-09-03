@@ -313,7 +313,10 @@ def test_it_adds_transitions(project, cli):
              for a in every(calls, "add_animator_transition")}
     assert ("Idle", "Walk") in edges
     assert ("AnyState", "Attack") in edges
-    assert len(result.transitions) == 7
+    # NINE, not seven. Attack used to return only to Idle; it now
+    # returns to whichever of Run/Walk/Idle matches the speed, so
+    # attacking mid-run does not stop the run.
+    assert len(result.transitions) == 9
 
 
 def test_the_conditions_go_over_as_json(project, cli):
@@ -837,7 +840,7 @@ def test_a_subset_builds_only_the_edges_it_can():
     four = graphs.default_graph(("Idle", "Walk", "Run", "Attack"))
 
     assert len(four.states) == 4
-    assert len(four.transitions) == 7
+    assert len(four.transitions) == 9
     assert graphs.validate_graph(four, params.DEFAULT_PARAMETERS) == []
 
 
@@ -1039,3 +1042,90 @@ def test_a_graph_with_a_landing_but_no_fall_does_not_strand_the_jump():
     assert ("Jump", "Idle") in out
     assert ("Jump", "Land") not in out
     assert not any("Jump" in a for a in graphs.graph_advice(graph))
+
+
+# ======================================================
+# Coming back at the speed you left at
+# ======================================================
+
+RETURNING_STATES = ["Jump", "Land", "Attack", "DodgeLeft", "DodgeRight"]
+
+
+@pytest.mark.parametrize("source", RETURNING_STATES)
+def test_returning_from_a_state_follows_the_speed(source):
+    """Idle used to be the only way back, so a jump taken at a run came
+    down into Idle and then walked the Idle -> Walk -> Run chain one
+    state at a time. Reported from play as a flash of standing and
+    walking before the run resumed."""
+    graph = graphs.default_graph(graphs.ALL_STATES)
+    back = {t.target for t in graph.transitions if t.source == source}
+
+    assert {"Idle", "Walk", "Run"} <= back, (
+        f"{source} can only return to {back}, so any other speed has to "
+        "be reached by chaining through states one at a time")
+
+
+@pytest.mark.parametrize("source", RETURNING_STATES)
+def test_the_fastest_way_back_is_offered_first(source):
+    """ORDER IS THE MECHANISM. Unity takes the first transition whose
+    conditions hold, and Run's speed > 2.0 also satisfies Walk's
+    speed > 0.1. Offer Walk first and a run always returns to a walk."""
+    graph = graphs.default_graph(graphs.ALL_STATES)
+    order = [t.target for t in graph.transitions if t.source == source]
+
+    assert order.index("Run") < order.index("Walk") < order.index("Idle"), (
+        f"{source} offers them as {order}; a slower one earlier in the "
+        "list wins over the correct faster one")
+
+
+@pytest.mark.parametrize("source", RETURNING_STATES)
+def test_the_way_back_to_idle_is_the_catch_all(source):
+    """Idle carries no speed condition, which closes the gap between
+    the thresholds. With one, an exact speed of 0.1 matches nothing and
+    the character is stuck in the state he is trying to leave."""
+    graph = graphs.default_graph(graphs.ALL_STATES)
+    to_idle = [t for t in graph.transitions
+               if t.source == source and t.target == "Idle"][0]
+
+    assert not [c for c in to_idle.conditions if c.parameter == "speed"], (
+        "the last way back must match whatever the others did not")
+
+
+def test_a_jump_returning_to_a_run_still_has_to_be_on_the_ground():
+    graph = graphs.default_graph(graphs.ALL_STATES)
+    to_run = [t for t in graph.transitions
+              if t.source == "Jump" and t.target == "Run"][0]
+
+    assert ("grounded", "If") in [(c.parameter, c.mode)
+                                  for c in to_run.conditions]
+    assert ("speed", "Greater") in [(c.parameter, c.mode)
+                                    for c in to_run.conditions]
+
+
+def test_the_builder_keeps_the_order_the_graph_declared(project, cli):
+    """The graph's order only means anything if it survives the build.
+    Confirmed against a live Editor too: the built controller offers
+    Jump -> Fall, Run, Walk, Idle in that order."""
+    calls, _ = cli
+    graph = graphs.default_graph(graphs.ALL_STATES)
+
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero",
+                               required_states=graphs.ALL_STATES)
+
+    built = [(a["fromState"], a["toState"])
+             for a in every(calls, "add_animator_transition")]
+    declared = [(t.source, t.target) for t in graph.transitions]
+    assert built == declared, "the builder reordered what the graph declared"
+
+
+def test_a_run_is_offered_before_a_walk_in_the_built_controller(project, cli):
+    """The end of the chain that matters: Run's speed > 2.0 also
+    satisfies Walk's speed > 0.1, so whichever is added first wins."""
+    calls, _ = cli
+    pipeline.animate_character("p.prefab", instance="Hero", name="Hero",
+                               required_states=graphs.ALL_STATES)
+
+    out = [a["toState"] for a in every(calls, "add_animator_transition")
+           if a["fromState"] == "Jump"]
+
+    assert out.index("Run") < out.index("Walk") < out.index("Idle")
