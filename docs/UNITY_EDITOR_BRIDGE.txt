@@ -1,0 +1,269 @@
+UNITY EDITOR BRIDGE
+===================
+
+ARIA (Python) drives an open Unity Editor by writing a JSON file that an
+editor script reads, executes and answers. Nothing is manual once the
+script is installed: the editor watches for the file on its own.
+
+    Assets/ARIA/Editor/ARIAEditorBridge.cs   the Unity side (editor-only)
+    aria/unity_editor_bridge.py              the Python side
+    backend/tests/test_unity_editor_bridge.py  tests for the Python side
+
+This is the open-editor sibling of backend/core/unity_ops.py, which starts
+a fresh batch-mode editor per call. Use this one when Unity is open.
+
+
+1. INSTALLING THE UNITY SIDE
+----------------------------
+
+Copy the C# file into the Unity project so it lands at
+
+    <UnityProject>/Assets/ARIA/Editor/ARIAEditorBridge.cs
+
+either by hand, or from Python:
+
+    python -m aria.unity_editor_bridge --project "D:/Path/To/UnityProject" --install
+
+Unity compiles it on its next refresh (click into the editor window). The
+console then shows:
+
+    [ARIA] Editor bridge 1.0.0 loaded. Commands: <UnityProject>/ARIA/unity_commands.json
+
+It lives in an Editor folder, so it is never part of a build, and it
+refuses to run while the game is in play mode.
+
+Works on Unity 2021 and later. It uses nothing from URP/HDRP or the
+Input System; verified on 6000.3.
+
+
+2. TRIGGERING THE BRIDGE IN UNITY
+---------------------------------
+
+Three ways, all doing the same thing:
+
+  ARIA > Watch For Commands   (menu, checked = on; on by default)
+      The editor looks for the commands file twice a second and runs it
+      as soon as it appears. This is what makes Python calls return on
+      their own. Turn it off if you would rather trigger runs by hand.
+
+  ARIA > Run Bridge Commands  (menu)
+      Runs the commands file once, now. Use it with the watcher off, or
+      when a Python call was made with wait=False.
+
+  Batch mode, for a project no editor has open:
+      Unity.exe -batchmode -nographics -quit -projectPath <UnityProject>
+                -executeMethod ARIA.Bridge.ARIAEditorBridge.RunPendingCommands
+      UnityEditorBridge.send_headless() does this for you. Unity refuses
+      to start while another editor holds the project, so this is the
+      fallback, not the default.
+
+  ARIA > Open Bridge Folder   shows the two files in Explorer.
+
+Every run logs a summary line to the Unity console prefixed [ARIA].
+
+
+3. WHERE THE FILES LIVE
+-----------------------
+
+    <UnityProject>/ARIA/unity_commands.json   written by Python, consumed by Unity
+    <UnityProject>/ARIA/unity_results.json    written by Unity, read by Python
+
+<UnityProject> is the folder that contains Assets/. The ARIA folder sits
+beside Assets, not inside it, so Unity never imports either file.
+
+Python writes the commands file whole and renames it into place; Unity
+does the same with the results file, so neither side ever reads half a
+document. Unity deletes the commands file as it picks it up. Each
+exchange carries an "id" that the results echo back, so a stale results
+file cannot be mistaken for a fresh one.
+
+Which project: pass project_root to UnityEditorBridge, or set the
+ARIA_UNITY_PROJECT environment variable; otherwise the Unity plugin's
+configured project (backend.core.unity_ops.project_path) is used.
+ARIA_UNITY_BRIDGE_TIMEOUT sets how long Python waits (default 60 s).
+
+
+4. COMMAND SCHEMA
+-----------------
+
+A single command:
+
+    { "command": "CreateGameObject", "args": { "name": "Floor", "primitive": "Plane" } }
+
+A batch (what Python always writes):
+
+    {
+      "id": "3f1c...",
+      "stopOnError": true,
+      "commands": [
+        { "command": "CreateGameObject", "args": { "name": "Crate", "primitive": "Cube",
+                                                   "position": [0, 1, 0] } },
+        { "command": "AddComponent",     "args": { "target": "Crate", "componentType": "Rigidbody" } },
+        { "command": "SetField",         "args": { "target": "Crate", "componentType": "Rigidbody",
+                                                   "field": "mass", "value": 5 } }
+      ]
+    }
+
+With stopOnError on (the default) the commands after a failure are
+reported as skipped rather than run against a scene in an unknown state.
+
+The results file:
+
+    {
+      "id": "3f1c...",  "ok": true,  "message": "Ran 3 command(s): 3 succeeded, 0 failed.",
+      "bridgeVersion": "1.0.0", "unityVersion": "6000.3.6f1", "project": "...", "finishedAt": "...",
+      "results": [
+        { "command": "CreateGameObject", "success": true, "message": "Created Crate.",
+          "data": { "name": "Crate", "path": "Crate", "instanceId": -1234,
+                    "globalId": "GlobalObjectId_V1-2-...", "scene": "Main", "active": true } },
+        ...
+      ]
+    }
+
+Every command answers with success, message and data. A command that
+throws inside Unity is reported as a failure with the exception message,
+never as silence.
+
+OBJECT REFERENCES  (the "target" argument, also accepted as "gameObject")
+
+    "Root/Child"                            hierarchy path, any loaded scene
+    "Assets/Scenes/Main.unity::Root/Child"  hierarchy path in one scene
+    "Player"                                a bare name, searched everywhere (inactive too)
+    "id:12345"                              instance id (valid for one editor session)
+    "gid:GlobalObjectId_V1-2-..."           global id (stable across sessions once the
+                                            scene is saved; all zeros before that)
+
+Vectors are [x, y, z] (also {"x":..,"y":..,"z":..} or "x, y, z"). Rotations
+are euler degrees [x, y, z], or a quaternion [x, y, z, w]. Colours are
+[r, g, b] / [r, g, b, a] in 0..1 (0..255 if any part exceeds 1), a hex
+string "#ff8800", or a name "red".
+
+COMMANDS
+
+  Ping               -> bridge and Unity version, active scene
+  CreateGameObject   name, parent?, position?, rotation?, scale?, primitive?
+                     (Cube/Sphere/Capsule/Cylinder/Plane/Quad), components? [names]
+  DeleteGameObject   target
+  AddComponent       target, componentType (e.g. "Rigidbody", "UnityEngine.Light",
+                     or a script class name), allowDuplicate?
+  RemoveComponent    target, componentType
+  SetTransform       target, position?, rotation?, scale? (vector or one number),
+                     local? (default false: world space)
+  SetField           target, componentType? ("GameObject" or omitted = the object itself),
+                     field, value
+                     Finds the serialized property first ("mass", "m_Mass" and
+                     "Mass" all match), then a public property or field. Values
+                     may be numbers, bools, strings, vectors, colours, enum names,
+                     layer names, or object references (an asset path such as
+                     "Assets/Materials/Red.mat", or a scene reference as above).
+                     Nested paths work: "m_Constraints", "size.x". "active" on a
+                     GameObject calls SetActive.
+  GetField           target, componentType?, field  -> data.value
+  GetHierarchy       target?, depth?  -> data.objects: [{name, path, instanceId,
+                     active, depth, components}], data.scenes
+  OpenScene          path (Assets/...unity), additive?, discardChanges?
+                     (in an interactive editor an unsaved scene prompts first)
+  SaveScene          path? (save-as; folders are created), saveAll?
+  CreatePrefab       target, prefabPath (Assets/...prefab), connect? (default true:
+                     the scene object becomes an instance of the new prefab)
+  ModifyPrefab       prefabPath, operations: [ {command, args}, ... ], stopOnError?
+                     Operations run on the prefab's contents; targets are
+                     relative to its root ("" or "/" is the root). Allowed:
+                     CreateGameObject, DeleteGameObject, AddComponent,
+                     RemoveComponent, SetTransform, SetField, GetField,
+                     GetHierarchy, CreateLight, CreateCamera. If any operation
+                     fails the prefab is left untouched.
+  InstantiatePrefab  prefabPath, name?, parent?, position?, rotation?
+  CreateLight        type (Directional/Point/Spot), name?, position?, rotation?,
+                     intensity?, color?, range?, spotAngle?, shadows? (None/Hard/Soft)
+  CreateCamera       name?, position?, rotation?, fov?, clearFlags?
+                     (Skybox/SolidColor/Depth/Nothing), backgroundColor?, main?
+                     (tags it MainCamera), near?, far?, orthographic?,
+                     orthographicSize?. Adds an AudioListener if the scene has none.
+
+Asset paths must start with Assets/ and contain no "..": the bridge does
+not write outside the project.
+
+
+5. USING IT FROM PYTHON
+-----------------------
+
+    from aria import unity_editor_bridge as unity
+
+    unity.configure("D:/Unity/Projects/Aria Test Project")   # or ARIA_UNITY_PROJECT
+
+    unity.ping()
+    floor = unity.create_game_object("Floor", primitive="Plane", position=(0, 0, 0), scale=5)
+    crate = unity.create_game_object("Crate", primitive="Cube", position=(0, 1, 0))
+    unity.add_component("Crate", "Rigidbody")
+    unity.set_field("Crate", "Rigidbody", "mass", 5)
+    unity.get_field("Crate", "Rigidbody", "mass")          # -> 5.0
+    unity.set_transform("Crate", rotation=(0, 45, 0))
+    unity.create_light("Directional", "Sun", rotation=(50, -30, 0), intensity=1.2, color="#fff4e0")
+    unity.create_camera("Main Camera", position=(0, 5, -10), rotation=(20, 0, 0), fov=60, main=True)
+    unity.create_prefab("Crate", "Assets/Prefabs/Crate.prefab")
+    unity.save_scene("Assets/Scenes/Demo.unity")
+
+Each function returns the command's data dict (create_game_object gives
+path, instanceId and globalId) and raises UnityBridgeError with the
+editor's message when a command is refused. UnityBridgeTimeout means
+nothing answered: no editor open, bridge not installed, or the watcher
+off.
+
+Several commands in one editor pass:
+
+    bridge = unity.UnityEditorBridge("D:/Unity/Projects/Aria Test Project")
+    with bridge.batch() as b:
+        b.create_game_object("Enemy", primitive="Capsule", position=(3, 1, 0))
+        b.add_component("Enemy", "Rigidbody")
+        b.add_component("Enemy", "CapsuleCollider")
+    b.results[0].data["globalId"]
+
+Editing a prefab in place:
+
+    ops = unity.Batch()
+    ops.add_component("", "Rigidbody")                 # "" is the prefab root
+    ops.set_field("", "Rigidbody", "useGravity", False)
+    ops.create_game_object("Muzzle", position=(0, 0, 1))
+    unity.modify_prefab("Assets/Prefabs/Gun.prefab", ops)
+
+Manual trigger (no waiting): construct with wait=False, call as usual,
+then choose ARIA > Run Bridge Commands in Unity and call
+bridge.read_results() afterwards.
+
+Plain descriptions, for ARIA's own routing:
+
+    unity.run_unity_command("create a floor plane at y=0")
+    unity.run_unity_command("create a cube named Crate at 0,1,0 then add a rigidbody to it")
+    unity.run_unity_command("set mass of Crate Rigidbody to 5")
+    unity.run_unity_command("create a directional light named Sun intensity 1.5")
+    unity.run_unity_command("create a main camera at 0,5,-10 fov 70")
+    unity.run_unity_command("make a prefab from Crate")      # Assets/Prefabs/Crate.prefab
+    unity.run_unity_command("save scene as Demo")            # Assets/Scenes/Demo.unity
+
+parse_unity_command(text) returns the commands without sending them. A
+description the router does not recognise raises UnroutableCommand; it
+never guesses. Anything beyond its shapes goes through the functions
+above.
+
+From a shell:
+
+    python -m aria.unity_editor_bridge --project "D:/Unity/Projects/Aria Test Project" "create a cube named Crate at 0,1,0"
+    python -m aria.unity_editor_bridge --json "what's in the scene"
+    python -m aria.unity_editor_bridge --headless "ping"      # starts a batch-mode editor
+
+
+6. EXTENDING
+------------
+
+A new command is one case in RunOne() in ARIAEditorBridge.cs, a method
+beside the others returning Ok(...) or Fail(...), its name added to
+COMMANDS in unity_editor_bridge.py, and a builder on _CommandBuilder so
+both the bridge and Batch get it. The test
+test_the_shipped_bridge_dispatches_every_command_the_client_knows fails
+if the two lists drift apart.
+
+The transport is one method pair (RunPendingCommands / WriteResults on
+the C# side, write_commands / read_results on the Python side).
+Replacing the files with localhost HTTP later means replacing those, and
+nothing else.
