@@ -217,27 +217,35 @@ def default_graph(state_names: Sequence[str] = ("Idle", "Walk", "Run", "Attack")
     # through Jump -> Fall on exit time instead.
     edge(ANY_STATE, "Jump", Condition("jump", "If"))
 
-    # THE JUMP CLIP OUTLIVES THE JUMP. A 1.2m jump is about 0.70s of
-    # airtime and Mixamo's Jump clip is 1.00s, so the character is back
-    # on the floor with the clip still playing. An exit-time-only edge
-    # then sent him to Fall while standing there, and Fall -> Land
-    # followed immediately -- reported as "he lands, then falls into the
-    # air, then lands in the air standing".
+    # THE JUMP CLIP ALREADY LANDS. Measured on all three variants, as
+    # root height sampled across the clip:
     #
-    # So leaving the jump asks where he actually is: still airborne
-    # goes to Fall, already down goes to Land.
+    #   Jump          0.00 .41 .78 1.01 1.02 .76 .35 .06 .02 .01 0.00
+    #   Running Jump  0.00 .23 .37 0.46 0.47 .40 .27 .10 .02 .00 0.00
+    #   Jumping      0.00 -.15 -.28 0.26 0.66 .48 -.11 -.31 -.11 .00 0.00
+    #
+    # Every one rises, comes back down and settles before it ends --
+    # takeoff, apex, descent, landing and recovery are all in there,
+    # and "Jumping" even opens with the wind-up crouch. Sending a
+    # finished jump on to Land therefore played a SECOND landing, out
+    # of clips authored for falling from a height: Landing descends
+    # 2.30m over its 2.10s and Falling To Roll 2.01m.
+    #
+    # So a jump that is over goes back to standing and lets its own
+    # clip do the landing. Fall is for leaving the ground WITHOUT a
+    # jump, and Land belongs to Fall, where a real drop needs one.
     edge("Jump", "Fall", Condition("grounded", "IfNot"),
          has_exit_time=True, exit_time=0.8)
-    edge("Jump", "Land", Condition("grounded", "If"),
-         has_exit_time=True, exit_time=0.5)
+    edge("Jump", "Idle", Condition("grounded", "If"),
+         has_exit_time=True, exit_time=0.85)
     for grounded_state in ("Idle", "Walk", "Run", "Crouch", "CrouchWalk"):
         edge(grounded_state, "Fall", Condition("grounded", "IfNot"))
     edge("Fall", "Land", Condition("grounded", "If"))
     edge("Land", "Idle", has_exit_time=True, exit_time=0.8)
 
-    # A jump with no Fall state to go to still has to end somewhere.
-    if "Fall" not in present and "Land" not in present:
-        edge("Jump", "Idle", has_exit_time=True, exit_time=0.9)
+    # A jump in a graph with no Idle to return to still has to end.
+    if "Idle" not in present:
+        edge("Jump", "Fall", has_exit_time=True, exit_time=0.9)
     if "Land" not in present:
         edge("Fall", "Idle", Condition("grounded", "If"))
 

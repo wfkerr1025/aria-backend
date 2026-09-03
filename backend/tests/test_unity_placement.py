@@ -749,11 +749,18 @@ def permissive_cli(monkeypatch):
         if name == "eval":
             code = named.get("code", "")
             if "DestroyImmediate" in code:
-                was = len(held)
-                while len(held) > 1:
-                    held.pop()
-                return envelope({"success": True, "error": None,
-                                 "result": f"found={was} removed={was - 1}"})
+                # Told apart the way the C# tells them apart -- by where
+                # the loop stops. A fake that always keeps one cannot
+                # fail a sweep that was supposed to keep none.
+                wanted = code.split('GetType().Name == "')[1].split('"')[0]
+                matching = [h for h in held if h == wanted]
+                keep = 1 if "i >= 1" in code else 0
+                for _ in range(max(0, len(matching) - keep)):
+                    held.remove(wanted)
+                return envelope({
+                    "success": True, "error": None,
+                    "result": f"found={len(matching)} "
+                              f"removed={max(0, len(matching) - keep)}"})
             return envelope({"success": True, "result": "", "error": None})
 
         return envelope({"globalId": INSTANCE_ID})
@@ -870,3 +877,37 @@ def test_the_sweep_stops_at_the_first_component():
         f"the sweep must stop above index 0 and keep one: {loops[0]}")
     assert "found.Count - 1" in loops[0], "it must start from the last"
     assert any("DestroyImmediate(found[i])" in line for line in statements)
+
+
+def test_removing_a_component_keeps_none_of_it(permissive_cli):
+    """remove_extra_components keeps one; this keeps none."""
+    delivery.add_component("AriaHero", "Animation")
+    delivery.add_component("AriaHero", "Animation")
+
+    result = delivery.remove_component("AriaHero", "Animation")
+
+    assert result["success"] is True
+    assert result["removed"] == 2
+    assert permissive_cli["held"] == []
+
+
+def test_removing_a_component_that_was_never_there_is_fine(permissive_cli):
+    result = delivery.remove_component("AriaHero", "Animation")
+
+    assert result["success"] is True
+    assert result["removed"] == 0
+
+
+def test_the_two_sweeps_differ_only_in_where_they_stop():
+    """The one that keeps a component and the one that keeps none are
+    the same loop with a different bound, and a Python fake cannot tell
+    them apart -- it reports whichever answer it was written to give."""
+    keep_one = [l.split("//")[0].strip()
+                for l in delivery._REMOVE_EXTRA.splitlines()
+                if l.split("//")[0].strip().startswith("for (")]
+    keep_none = [l.split("//")[0].strip()
+                 for l in delivery._REMOVE_ALL.splitlines()
+                 if l.split("//")[0].strip().startswith("for (")]
+
+    assert "i >= 1" in keep_one[0], "the extras sweep must leave one behind"
+    assert "i >= 0" in keep_none[0], "the removal sweep must leave none"

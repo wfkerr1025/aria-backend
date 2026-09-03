@@ -966,28 +966,50 @@ def test_no_placeholder_clips_are_made_when_real_ones_are_supplied(
 # Leaving the jump
 # ======================================================
 
-def test_leaving_the_jump_asks_where_the_character_actually_is():
-    """MEASURED: the Jump clip is 1.00s and a 1.2m jump at gravity
-    -19.62 is about 0.70s of airtime, so the character is back on the
-    floor with the clip still running. An exit-time-only Jump -> Fall
-    therefore fired while he was standing there and Fall -> Land
-    followed at once, reported from play as "he jumps, lands, then
-    falls into the air, lands in the air standing, then drops"."""
+def test_a_finished_jump_goes_back_to_standing_not_to_a_landing():
+    """MEASURED, as root height sampled across each jump clip:
+
+        Jump          0.00 .41 .78 1.01 1.02 .76 .35 .06 .02 .01 0.00
+        Running Jump  0.00 .23 .37 0.46 0.47 .40 .27 .10 .02 .00 0.00
+        Jumping      0.00 -.15 -.28 0.26 0.66 .48 -.11 -.31 -.11 .00 0.00
+
+    Each one rises, comes down and settles inside its own length: the
+    landing is already in the clip. Sending a finished jump on to Land
+    played a second one, from clips authored for falling from a height
+    -- Landing descends 2.30m, Falling To Roll 2.01m.
+    """
     graph = graphs.default_graph(graphs.ALL_STATES)
     leaving = [t for t in graph.transitions if t.source == "Jump"]
 
-    to_fall = [t for t in leaving if t.target == "Fall"]
-    assert to_fall, "a jump that is still airborne has to reach the fall"
-    assert [(c.parameter, c.mode) for c in to_fall[0].conditions] == [
-        ("grounded", "IfNot")], "falling out of a jump means still in the air"
+    assert "Land" not in {t.target for t in leaving}, (
+        "the jump clip lands by itself; a second landing is the bug")
 
-    to_land = [t for t in leaving if t.target == "Land"]
-    assert to_land, "a jump that has already touched down has to land"
-    assert [(c.parameter, c.mode) for c in to_land[0].conditions] == [
+    home = [t for t in leaving if t.target == "Idle"]
+    assert home, "a finished jump has to hand control back"
+    assert [(c.parameter, c.mode) for c in home[0].conditions] == [
         ("grounded", "If")]
-    assert to_land[0].exit_time < to_fall[0].exit_time, (
-        "the landing edge has to be reachable before the falling one, or "
-        "a short jump leaves through Fall anyway")
+    assert home[0].exit_time >= 0.8, (
+        "leaving early cuts off the landing the clip contains")
+
+
+def test_a_jump_that_is_still_in_the_air_falls():
+    """Jumping off a ledge: the clip runs out with nothing under him."""
+    graph = graphs.default_graph(graphs.ALL_STATES)
+    to_fall = [t for t in graph.transitions
+               if t.source == "Jump" and t.target == "Fall"]
+
+    assert to_fall
+    assert [(c.parameter, c.mode) for c in to_fall[0].conditions] == [
+        ("grounded", "IfNot")]
+
+
+def test_only_a_fall_reaches_the_landing():
+    """Land exists for a drop the character did not jump into. Every
+    other way in plays a from-height landing on flat ground."""
+    graph = graphs.default_graph(graphs.ALL_STATES)
+    into_land = {t.source for t in graph.transitions if t.target == "Land"}
+
+    assert into_land == {"Fall"}, f"something else reaches Land: {into_land}"
 
 
 def test_no_edge_out_of_the_jump_runs_on_exit_time_alone():
@@ -1000,13 +1022,20 @@ def test_no_edge_out_of_the_jump_runs_on_exit_time_alone():
         f"character has landed: {[t.target for t in unconditional]}")
 
 
-def test_a_jump_with_only_a_land_state_still_ends():
-    """The two-state fallback used to check for Fall alone, so a graph
-    with Land but no Fall got BOTH the Land edge and a bare exit-time
-    Jump -> Idle racing it."""
-    graph = graphs.default_graph(("Idle", "Jump", "Land"))
-    out = [(t.source, t.target) for t in graph.transitions]
+def test_a_jump_ends_even_with_nowhere_to_stand():
+    """Without an Idle to return to there is no hand-back edge, and a
+    jump with nowhere to go is a character stuck in the air."""
+    graph = graphs.default_graph(("Jump", "Fall"))
+    out = {(t.source, t.target) for t in graph.transitions}
 
-    assert ("Jump", "Land") in out
-    assert ("Jump", "Idle") not in out, "the fallback raced the real edge"
+    assert ("Jump", "Fall") in out
+    assert not any("Jump" in a for a in graphs.graph_advice(graph))
+
+
+def test_a_graph_with_a_landing_but_no_fall_does_not_strand_the_jump():
+    graph = graphs.default_graph(("Idle", "Jump", "Land"))
+    out = {(t.source, t.target) for t in graph.transitions}
+
+    assert ("Jump", "Idle") in out
+    assert ("Jump", "Land") not in out
     assert not any("Jump" in a for a in graphs.graph_advice(graph))

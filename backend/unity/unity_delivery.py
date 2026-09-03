@@ -71,6 +71,7 @@ __all__ = [
     "asset_path_for",
     "ensure_component",
     "has_component",
+    "remove_component",
     "remove_extra_components",
     "create_prefab",
     "deliver_to_unity",
@@ -732,6 +733,53 @@ for (var i = found.Count - 1; i >= 1; i--)
 if (removed > 0) UnityEditor.EditorUtility.SetDirty(go);
 return "found=" + found.Count + " removed=" + removed;
 """
+
+
+_REMOVE_ALL = """
+var go = UnityEngine.GameObject.Find("NAME");
+if (go == null) return "NO_OBJECT";
+var found = new System.Collections.Generic.List<UnityEngine.Component>();
+foreach (var c in go.GetComponents<UnityEngine.Component>())
+    if (c != null && c.GetType().Name == "TYPE") found.Add(c);
+var removed = 0;
+for (var i = found.Count - 1; i >= 0; i--)
+{
+    UnityEngine.Object.DestroyImmediate(found[i]);
+    removed++;
+}
+if (removed > 0) UnityEditor.EditorUtility.SetDirty(go);
+return "found=" + found.Count + " removed=" + removed;
+"""
+
+
+def remove_component(target: str, component: str) -> dict:
+    """Take this component off the object entirely.
+
+    Unlike remove_extra_components, which keeps one, this keeps none.
+    Returns how many were found and how many went; removing something
+    that was never there is a success with removed 0.
+    """
+    name = str(component or "").strip()
+    outcome = _run("eval", {
+        "code": _REMOVE_ALL.replace("NAME", str(target or "").replace('"', ""))
+                           .replace("TYPE", name.replace('"', "")),
+        "timeout": 60000,
+    })
+    if not outcome["success"]:
+        return {"success": False, "ran": True, "error": outcome["error"],
+                "found": 0, "removed": 0}
+
+    said = str(((outcome["data"] or {}) or {}).get("result") or "")
+    if "removed=" not in said:
+        return {"success": False, "ran": True,
+                "error": f"could not read the components on {target}: "
+                         f"{said or 'no answer'}",
+                "found": 0, "removed": 0}
+
+    numbers = dict(part.split("=") for part in said.split() if "=" in part)
+    return {"success": True, "ran": True, "error": None,
+            "found": int(numbers.get("found", 0)),
+            "removed": int(numbers.get("removed", 0))}
 
 
 def remove_extra_components(target: str, component: str) -> dict:

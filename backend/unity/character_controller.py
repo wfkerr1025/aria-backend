@@ -52,11 +52,16 @@ __all__ = [
     "declared_fields",
     "deliver",
     "script_path",
+    "LEGACY_ANIMATION",
     "stop_root_motion",
     "verify_compiled",
 ]
 
 CLASS_NAME = "AriaCharacterController"
+
+# Unity's pre-Mecanim animation component. Never wanted here: the
+# Animator drives this character.
+LEGACY_ANIMATION = "Animation"
 DEFAULT_SCRIPT_FOLDER = "Assets/ARIA/Scripts"
 
 # The C# itself. No formatting is applied to it -- braces are left
@@ -599,6 +604,14 @@ def attach(target: str) -> dict:
     # more than one of these, and every one of them calls Move.
     extra = delivery.remove_extra_components(target, CLASS_NAME)
     added["duplicates_removed"] = extra.get("removed", 0)
+
+    # A LEGACY Animation component beside the Animator, which an FBX
+    # import can leave behind. It is the pre-Mecanim animation system
+    # and it drives the same transforms from its own clip list, so it
+    # is a second thing animating one character -- the same shape of
+    # bug as root motion and as the duplicate script above.
+    legacy = delivery.remove_component(target, LEGACY_ANIMATION)
+    added["legacy_animation_removed"] = legacy.get("removed", 0)
 
     # Not a separate step a caller can forget: attaching this script
     # IS the statement that physics drives the character.

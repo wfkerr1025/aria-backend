@@ -376,7 +376,10 @@ def root_motion_cli(monkeypatch):
         if "applyRootMotion" in code:
             said = "was=True now=False prefabWas=True"
         elif "DestroyImmediate" in code:
-            said = "found=2 removed=1"
+            # The two sweeps are told apart the way the C# tells them
+            # apart: the one that keeps a component stops above zero.
+            said = ("found=2 removed=1" if "i >= 1" in code
+                    else "found=1 removed=1")
         elif "GetFields" in code:
             said = ",".join(controller.declared_fields()) + ","
 
@@ -445,3 +448,18 @@ def test_attaching_takes_off_the_copies_an_earlier_attach_left(
     assert added["duplicates_removed"] == 1
     assert any("DestroyImmediate" in c for c in root_motion_cli), (
         "nothing sweeps the duplicates an earlier attach left behind")
+
+
+def test_attaching_takes_off_the_legacy_animation_component(root_motion_cli):
+    """Unity's pre-Mecanim Animation component drives the same
+    transforms from its own clip list, so beside an Animator it is a
+    second thing animating one character -- the same shape of bug as
+    root motion and as the duplicate script."""
+    added = controller.attach("AriaHero")
+
+    assert added["legacy_animation_removed"] == 1
+    assert controller.LEGACY_ANIMATION == "Animation"
+
+    swept = [c for c in root_motion_cli if "DestroyImmediate" in c]
+    assert any('"Animation"' in c and "i >= 0" in c for c in swept), (
+        "the legacy component must be removed outright, not deduplicated")
