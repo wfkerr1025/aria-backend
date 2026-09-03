@@ -514,3 +514,92 @@ def test_configuring_blends_skips_what_it_cannot_build(cli):
 
     assert "Jump" in result["blends"]
     assert any("Fall" in s for s in result["skipped"])
+
+
+# ======================================================
+# How long the state lasts, when physics decides it
+# ======================================================
+
+def test_the_jump_matches_its_variants_durations_and_the_others_do_not():
+    """MEASURED, the three clips in the Jump tree:
+
+        threshold 0.0  Jump          1.00s
+        threshold 1.0  Jumping       1.90s   <- walking speed picks this
+        threshold 3.0  Running Jump  0.90s
+
+    Exit time is NORMALISED, a fraction of the tree's length, so the
+    walking slot held the character in the jump nearly twice as long
+    after he had already landed. Land is deliberately NOT matched: the
+    difference in length there is the difference between a gentle
+    landing and a hard one.
+    """
+    assert mixamo.BLEND_VARIANTS["Jump"].get("match_duration") is True
+    assert not mixamo.BLEND_VARIANTS["Land"].get("match_duration")
+    assert not mixamo.BLEND_VARIANTS["Fall"].get("match_duration")
+
+
+def test_matching_durations_only_happens_when_it_is_asked_for(cli):
+    calls, state = cli
+    state["result"] = "Jump:2:A,B,:0.00/3.00/:1.00/1.00/"
+    children = [{"asset": "a.fbx", "clip": "A", "threshold": 0.0},
+                {"asset": "b.fbx", "clip": "B", "threshold": 3.0}]
+
+    mixamo.assign_blend_tree("Assets/X.controller", "Land", "landForce",
+                             children)
+    assert ".timeScale =" not in calls[-1]["args"]["code"], (
+        "every tree REPORTS its scales; only a matched one writes them")
+
+    mixamo.assign_blend_tree("Assets/X.controller", "Jump", "speed",
+                             children, match_duration=True)
+    assert ".timeScale =" in calls[-1]["args"]["code"]
+
+
+def test_a_shorter_variant_is_never_stretched(cli):
+    """Running Jump is 0.90s against a 1.00s reference. Scaling it to
+    match would SLOW it down, and a running jump in slow motion is a
+    worse bug than the one being fixed."""
+    calls, state = cli
+    state["result"] = "Jump:2:A,B,:0.00/3.00/:1.00/1.90/"
+    mixamo.assign_blend_tree(
+        "Assets/X.controller", "Jump", "speed",
+        [{"asset": "a.fbx", "clip": "A", "threshold": 0.0},
+         {"asset": "b.fbx", "clip": "B", "threshold": 3.0}],
+        match_duration=True)
+
+    statements = [line.split("//")[0].strip()
+                  for line in calls[-1]["args"]["code"].splitlines()]
+    assert any("scale > 1f ? scale : 1f" in line for line in statements), (
+        "nothing stops a short variant from being slowed to fill time")
+
+
+def test_durations_that_did_not_change_are_reported(cli):
+    """Asking is not the same as it having happened -- the same lesson
+    the thresholds taught, and the same silence if it is not checked."""
+    calls, state = cli
+    state["result"] = "Jump:2:A,B,:0.00/3.00/:1.00/1.00/"
+
+    result = mixamo.assign_blend_tree(
+        "Assets/X.controller", "Jump", "speed",
+        [{"asset": "a.fbx", "clip": "A", "threshold": 0.0},
+         {"asset": "b.fbx", "clip": "B", "threshold": 3.0}],
+        match_duration=True)
+
+    assert result["success"] is False
+    assert "timeScale 1" in result["error"]
+    assert result["time_scales"] == [1.0, 1.0]
+
+
+def test_configuring_blends_matches_the_jump_and_not_the_landing(cli):
+    calls, state = cli
+    state["result"] = "Jump:3:A,B,C,:0.00/1.00/3.00/:1.00/1.90/1.00/"
+
+    mixamo.configure_blends(
+        "Assets/X.controller",
+        library("Jump", "Jumping", "Running Jump",
+                "Landing", "Hard Landing", "Falling To Roll"))
+
+    asked = {c["args"]["code"].split('s.state.name == "')[1].split('"')[0]:
+             (".timeScale =" in c["args"]["code"])
+             for c in calls if c["command"] == "eval"}
+    assert asked.get("Jump") is True, "the jump's length is set by gravity"
+    assert asked.get("Land") is False, "a hard landing takes longer, truthfully"

@@ -204,6 +204,9 @@ BLEND_VARIANTS: Dict[str, dict] = {
     "Jump": {
         "parameter": "speed",
         "clips": (("jump", 0.0), ("jumping", 1.0), ("running jump", 3.0)),
+        # The one state whose length is dictated by gravity rather than
+        # by the animator who drew it. See _MATCH_DURATIONS.
+        "match_duration": True,
     },
     "Fall": {
         "parameter": "speed",
@@ -269,6 +272,7 @@ float[] wanted = new float[] {{ {thresholds} }};
 for (int i = 0; i < kids.Length && i < wanted.Length; i++)
     kids[i].threshold = wanted[i];
 tree.children = kids;
+{durations}
 
 target.motion = tree;
 UnityEditor.EditorUtility.SetDirty(ctrl);
@@ -277,7 +281,48 @@ UnityEditor.AssetDatabase.ImportAsset(
     UnityEditor.AssetDatabase.GetAssetPath(ctrl));
 var got = "";
 foreach (var k in tree.children) got += k.threshold.ToString("F2") + "/";
-return "{state}:" + tree.children.Length + ":" + added.ToString() + ":" + got;
+var scales = "";
+foreach (var k in tree.children) scales += k.timeScale.ToString("F2") + "/";
+return "{state}:" + tree.children.Length + ":" + added.ToString() + ":"
+       + got + ":" + scales;
+"""
+
+
+# HOW LONG THE STATE LASTS IS SET BY PHYSICS, NOT BY THE CLIP. A jump
+# is airborne for as long as gravity says, and exit time is NORMALISED
+# -- a fraction of the blend tree's length -- so a variant that is
+# twice as long holds the character in the jump twice as long after he
+# has already landed. Measured lengths in the Jump tree:
+#
+#     threshold 0.0  Jump          1.00s
+#     threshold 1.0  Jumping       1.90s   <- walking speed picks this
+#     threshold 3.0  Running Jump  0.90s
+#
+# Walking sits on the one clip that is nearly twice its neighbours,
+# reported as the jump animation playing too long before the walk
+# resumed. So each variant is sped up to the length of the one at the
+# bottom of the tree, which is the clip the exit times were read
+# against. NEVER SLOWED: a variant shorter than the reference is left
+# alone rather than stretched to fill time it does not have.
+_MATCH_DURATIONS = """
+var timed = tree.children;
+var reference = 0f;
+if (timed.Length > 0)
+{
+    var first = timed[0].motion as UnityEngine.AnimationClip;
+    if (first != null) reference = first.length;
+}
+if (reference > 0.01f)
+{
+    for (var i = 0; i < timed.Length; i++)
+    {
+        var c = timed[i].motion as UnityEngine.AnimationClip;
+        if (c == null || c.length <= 0.01f) continue;
+        var scale = c.length / reference;
+        timed[i].timeScale = scale > 1f ? scale : 1f;
+    }
+    tree.children = timed;
+}
 """
 
 _CHILD = """var c{index} = pick("{asset}");
@@ -317,8 +362,16 @@ def match_variants(clips: Sequence[dict], state: str, *,
 
 
 def assign_blend_tree(controller_path: str, state: str,
-                      parameter: str, children: Sequence[dict]) -> dict:
-    """Give one state a 1D blend tree over its variants."""
+                      parameter: str, children: Sequence[dict], *,
+                      match_duration: bool = False) -> dict:
+    """Give one state a 1D blend tree over its variants.
+
+    `match_duration` speeds the longer variants up to the length of the
+    first, for a state whose real duration is set by physics rather
+    than by the clip. Off by default: for a state like Land the
+    difference in length IS the difference between a gentle landing and
+    a hard one, and flattening it would throw that away.
+    """
     if not children:
         return {"success": False, "ran": False, "state": state,
                 "error": f"no clips to blend for {state}"}
@@ -339,7 +392,8 @@ def assign_blend_tree(controller_path: str, state: str,
             state=str(state).replace('"', ""),
             parameter=str(parameter).replace('"', ""),
             children=body,
-            thresholds=", ".join(f"{c['threshold']}f" for c in children)),
+            thresholds=", ".join(f"{c['threshold']}f" for c in children),
+            durations=_MATCH_DURATIONS if match_duration else ""),
         "timeout": 120000,
     })
     if not outcome["success"]:
@@ -356,6 +410,7 @@ def assign_blend_tree(controller_path: str, state: str,
     count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
     added = [n for n in (parts[2] if len(parts) > 2 else "").split(",") if n]
     got = [float(v) for v in (parts[3] if len(parts) > 3 else "").split("/") if v]
+    scales = [float(v) for v in (parts[4] if len(parts) > 4 else "").split("/") if v]
 
     asked = [round(float(c["threshold"]), 2) for c in children]
     kept = [round(v, 2) for v in got] == asked
@@ -366,10 +421,14 @@ def assign_blend_tree(controller_path: str, state: str,
     if got and not kept:
         problems.append(f"thresholds came back as {got} rather than {asked} "
                         "-- useAutomaticThresholds redistributed them")
+    if match_duration and scales and all(v == 1.0 for v in scales):
+        problems.append("the durations were asked to match and every "
+                        "variant came back at timeScale 1")
 
     return {"success": not problems, "ran": True,
             "state": state, "parameter": parameter,
             "children": added, "count": count, "thresholds": got,
+            "time_scales": scales,
             "error": "; ".join(problems) if problems else None}
 
 
@@ -387,8 +446,10 @@ def configure_blends(controller_path: str, clips: Sequence[dict], *,
         if len(found["children"]) < 2:
             skipped.append(f"{state} ({len(found['children'])} variant)")
             continue
-        outcome = assign_blend_tree(controller_path, state,
-                                    found["parameter"], found["children"])
+        table = (variants or BLEND_VARIANTS).get(state, {})
+        outcome = assign_blend_tree(
+            controller_path, state, found["parameter"], found["children"],
+            match_duration=bool(table.get("match_duration")))
         if outcome["success"]:
             built[state] = outcome["children"]
         else:
