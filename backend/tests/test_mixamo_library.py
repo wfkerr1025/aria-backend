@@ -392,3 +392,125 @@ def test_a_model_with_no_clips_is_reported(cli):
 
     assert result["success"] is False
     assert "could not set looping" in result["error"]
+
+
+# ======================================================
+# Blend variants
+#
+# The seven clips left over after eleven states were wired are all
+# VARIANTS of states that exist -- a second fall, a running jump, four
+# different landings -- rather than behaviours of their own. As
+# separate states they would need triggers nobody would ever set; as
+# blend children they are chosen by a number the game already knows.
+# ======================================================
+
+VARIANTS = library("Jump", "Jumping", "Running Jump", "Falling Idle",
+                   "Falling", "Landing", "Falling To Landing",
+                   "Falling To Roll", "Hard Landing",
+                   "Falling Flat Impact")
+
+
+def test_a_jump_blends_on_speed():
+    found = mixamo.match_variants(VARIANTS, "Jump")
+
+    assert found["parameter"] == "speed"
+    assert [c["clip"] for c in found["children"]] == [
+        "Jump", "Jumping", "Running Jump"]
+
+
+def test_a_landing_blends_on_force_not_speed():
+    """A fast run into a gentle step down is not a hard landing, and
+    blending those on the same number would make it one."""
+    found = mixamo.match_variants(VARIANTS, "Land")
+
+    assert found["parameter"] == "landForce"
+    assert len(found["children"]) == 5
+
+
+def test_the_thresholds_are_in_order():
+    """A 1D blend tree needs them ascending; the numbers themselves are
+    placeholders to tune against real units."""
+    for state in mixamo.BLEND_VARIANTS:
+        found = mixamo.match_variants(VARIANTS, state)
+        thresholds = [c["threshold"] for c in found["children"]]
+        assert thresholds == sorted(thresholds), state
+
+
+def test_a_variant_that_was_never_downloaded_is_skipped():
+    """A blend child with no motion plays nothing at exactly the value
+    it was meant to cover."""
+    found = mixamo.match_variants(library("Jump", "Running Jump"), "Jump")
+
+    assert [c["clip"] for c in found["children"]] == ["Jump", "Running Jump"]
+    assert found["missing"] == ["jumping"]
+
+
+def test_a_state_with_no_variants_declared_asks_for_nothing():
+    assert mixamo.match_variants(VARIANTS, "Idle")["children"] == []
+
+
+def test_one_variant_is_a_clip_not_a_blend(cli):
+    """A tree with a single child is a clip wearing a costume."""
+    result = mixamo.assign_blend_tree(
+        "Assets/X.controller", "Jump", "speed",
+        [{"asset": "Assets/A.fbx", "clip": "Jump", "threshold": 0.0}])
+
+    assert result["success"] is False
+    assert "rather than a blend" in result["error"]
+
+
+def test_automatic_thresholds_are_turned_off(cli):
+    """MEASURED: useAutomaticThresholds is ON by default and
+    redistributes evenly the moment children are added. Jump asked for
+    0, 1, 3 and came back 0, 0.5, 1 -- the order survives and the
+    numbers do not, which matters because speed is in metres per
+    second."""
+    calls, state = cli
+    state["result"] = "Jump:2:A,B,:0.00/3.00/"
+
+    mixamo.assign_blend_tree("Assets/X.controller", "Jump", "speed",
+                             [{"asset": "a.fbx", "clip": "A", "threshold": 0.0},
+                              {"asset": "b.fbx", "clip": "B", "threshold": 3.0}])
+
+    code = calls[0]["args"]["code"]
+    live = [line.strip() for line in code.splitlines()
+            if not line.strip().startswith("//")]
+    assert "tree.useAutomaticThresholds = false;" in live
+    assert "tree.children = kids;" in live,         "the edited array is never assigned back"
+
+
+def test_thresholds_that_came_back_wrong_are_reported(cli):
+    """Asking is not the same as it having happened, and this one
+    silently did not happen the first time."""
+    calls, state = cli
+    state["result"] = "Jump:2:A,B,:0.00/1.00/"
+
+    result = mixamo.assign_blend_tree(
+        "Assets/X.controller", "Jump", "speed",
+        [{"asset": "a.fbx", "clip": "A", "threshold": 0.0},
+         {"asset": "b.fbx", "clip": "B", "threshold": 3.0}])
+
+    assert result["success"] is False
+    assert "redistributed" in result["error"]
+
+
+def test_a_blend_replaces_rather_than_nests(cli):
+    """Running it twice should not leave a tree inside a tree."""
+    calls, state = cli
+    state["result"] = "Jump:2:A,B,:0.00/3.00/"
+    mixamo.assign_blend_tree("Assets/X.controller", "Jump", "speed",
+                             [{"asset": "a.fbx", "clip": "A", "threshold": 0.0},
+                              {"asset": "b.fbx", "clip": "B", "threshold": 3.0}])
+
+    assert "DestroyImmediate(old" in calls[0]["args"]["code"]
+
+
+def test_configuring_blends_skips_what_it_cannot_build(cli):
+    calls, state = cli
+    state["result"] = "Jump:3:A,B,C,:0.00/1.00/3.00/"
+
+    result = mixamo.configure_blends("Assets/X.controller",
+                                     library("Jump", "Jumping", "Running Jump"))
+
+    assert "Jump" in result["blends"]
+    assert any("Fall" in s for s in result["skipped"])

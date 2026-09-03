@@ -88,6 +88,12 @@ GROUNDED = Parameter("grounded", "Bool", True)
 DODGE_LEFT = Parameter("dodgeLeft", "Trigger")
 DODGE_RIGHT = Parameter("dodgeRight", "Trigger")
 
+# How hard the landing was, 0 to 1. Only meaningful once Land has a
+# blend tree across its variants -- a controller with a single landing
+# clip ignores it, which is why it is declared with Land rather than
+# always.
+LAND_FORCE = Parameter("landForce", "Float", 0.0)
+
 # Which parameters each state's transitions actually reference. A graph
 # is refused for naming a parameter nobody declared, so the two have to
 # agree -- and working it out from the states is better than asking a
@@ -101,7 +107,7 @@ PARAMETERS_BY_STATE = {
     "CrouchWalk": (CROUCH, SPEED),
     "Jump": (JUMP,),
     "Fall": (GROUNDED,),
-    "Land": (GROUNDED,),
+    "Land": (GROUNDED, LAND_FORCE),
     "DodgeLeft": (DODGE_LEFT,),
     "DodgeRight": (DODGE_RIGHT,),
 }
@@ -120,7 +126,8 @@ def parameters_for(states):
             if parameter not in wanted:
                 wanted.append(parameter)
 
-    order = [SPEED, ATTACK, CROUCH, JUMP, GROUNDED, DODGE_LEFT, DODGE_RIGHT]
+    order = [SPEED, ATTACK, CROUCH, JUMP, GROUNDED, LAND_FORCE,
+             DODGE_LEFT, DODGE_RIGHT]
     return tuple(sorted(wanted, key=lambda p: order.index(p)
                         if p in order else len(order)))
 

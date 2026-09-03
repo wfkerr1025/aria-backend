@@ -847,7 +847,7 @@ def test_parameters_follow_the_states():
     get it wrong."""
     assert [p.name for p in params.parameters_for(("Idle", "Walk"))] == ["speed"]
     assert [p.name for p in params.parameters_for(graphs.ALL_STATES)] == [
-        "speed", "attack", "crouch", "jump", "grounded",
+        "speed", "attack", "crouch", "jump", "grounded", "landForce",
         "dodgeLeft", "dodgeRight"]
 
 

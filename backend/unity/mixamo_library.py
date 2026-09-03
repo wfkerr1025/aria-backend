@@ -42,6 +42,7 @@ from backend.unity import unity_delivery as delivery
 logger = get_logger(__name__)
 
 __all__ = [
+    "BLEND_VARIANTS",
     "DEFAULT_ALIASES",
     "DEFAULT_FOLDER",
     "HUMANOID_IMPORT",
@@ -49,9 +50,12 @@ __all__ = [
     "ONE_SHOT_STATES",
     "assign_clips",
     "configure_humanoid",
+    "assign_blend_tree",
+    "configure_blends",
     "configure_looping",
     "discover",
     "match_states",
+    "match_variants",
     "set_looping",
 ]
 
@@ -182,6 +186,217 @@ def configure_looping(matched: Dict[str, dict], *,
     return {"success": bool(looped) and not failures, "ran": True,
             "error": "; ".join(failures[:3]) if failures else None,
             "looping": looped, "left_alone": skipped, "failures": failures}
+
+
+# States worth blending, and what to blend them across.
+#
+# THE SEVEN LEFTOVER CLIPS ARE ALL VARIANTS of states that already
+# exist -- a second fall, a running jump, four different landings --
+# rather than behaviours of their own. As separate states they would
+# need triggers nobody would ever set. As blend children they are
+# chosen by a number the game already knows: how fast the character is
+# moving, and how hard it hit the ground.
+#
+# Thresholds are placeholders in the same sense the speed thresholds
+# are: they say the ORDER, which is what a blend tree needs, and the
+# numbers want tuning against whatever units the controller feeds in.
+BLEND_VARIANTS: Dict[str, dict] = {
+    "Jump": {
+        "parameter": "speed",
+        "clips": (("jump", 0.0), ("jumping", 1.0), ("running jump", 3.0)),
+    },
+    "Fall": {
+        "parameter": "speed",
+        "clips": (("falling idle", 0.0), ("falling", 3.0)),
+    },
+    "Land": {
+        # Not speed: how hard the landing was. A fast run into a gentle
+        # step down is not a hard landing, and blending those on the
+        # same number would make it one.
+        "parameter": "landForce",
+        "clips": (("landing", 0.0), ("falling to landing", 0.35),
+                  ("falling to roll", 0.6), ("hard landing", 0.8),
+                  ("falling flat impact", 1.0)),
+    },
+}
+
+# Building one needs eval: there is no blend-tree command, and
+# add_animator_state takes a BlendTree only as an existing ASSET. The
+# tree is created as a sub-asset of the controller, which is where
+# Unity itself puts them.
+_BLEND = """
+var ctrl = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEditor.Animations.AnimatorController>("{controller}");
+if (ctrl == null) return "NO_CONTROLLER";
+
+UnityEditor.Animations.AnimatorState target = null;
+foreach (var s in ctrl.layers[0].stateMachine.states)
+    if (s.state.name == "{state}") target = s.state;
+if (target == null) return "NO_STATE";
+
+System.Func<string, UnityEngine.AnimationClip> pick = (path) => {{
+    foreach (var a in UnityEditor.AssetDatabase.LoadAllAssetsAtPath(path))
+    {{
+        var c = a as UnityEngine.AnimationClip;
+        if (c != null && !c.name.StartsWith("__preview")) return c;
+    }}
+    return null;
+}};
+
+// Replace rather than accumulate: running this twice should not leave
+// a tree inside a tree.
+var old = target.motion as UnityEditor.Animations.BlendTree;
+if (old != null) UnityEngine.Object.DestroyImmediate(old, true);
+
+var tree = new UnityEditor.Animations.BlendTree();
+tree.name = "{state}Blend";
+tree.blendType = UnityEditor.Animations.BlendTreeType.Simple1D;
+tree.blendParameter = "{parameter}";
+tree.hideFlags = UnityEngine.HideFlags.HideInHierarchy;
+UnityEditor.AssetDatabase.AddObjectToAsset(tree, ctrl);
+
+var added = new System.Text.StringBuilder();
+{children}
+
+// useAutomaticThresholds is ON by default and REDISTRIBUTES the
+// thresholds evenly across 0..1 the moment children are added --
+// measured: Jump asked for 0, 1, 3 and came back 0, 0.5, 1. The order
+// survives and the numbers do not, which matters because the blend
+// parameter is speed in metres per second, so a running jump would
+// start at 1 instead of 3.
+tree.useAutomaticThresholds = false;
+var kids = tree.children;
+float[] wanted = new float[] {{ {thresholds} }};
+for (int i = 0; i < kids.Length && i < wanted.Length; i++)
+    kids[i].threshold = wanted[i];
+tree.children = kids;
+
+target.motion = tree;
+UnityEditor.EditorUtility.SetDirty(ctrl);
+UnityEditor.AssetDatabase.SaveAssets();
+UnityEditor.AssetDatabase.ImportAsset(
+    UnityEditor.AssetDatabase.GetAssetPath(ctrl));
+var got = "";
+foreach (var k in tree.children) got += k.threshold.ToString("F2") + "/";
+return "{state}:" + tree.children.Length + ":" + added.ToString() + ":" + got;
+"""
+
+_CHILD = """var c{index} = pick("{asset}");
+if (c{index} != null) {{ tree.AddChild(c{index}, {threshold}f); added.Append(c{index}.name).Append(","); }}
+"""
+
+
+def match_variants(clips: Sequence[dict], state: str, *,
+                   variants: Optional[Dict[str, dict]] = None) -> dict:
+    """The clips a state's blend tree wants, in threshold order.
+
+    A variant that was never downloaded is skipped rather than left as
+    a hole in the tree: a blend child with no motion plays nothing at
+    exactly the value it was supposed to cover.
+    """
+    table = dict(BLEND_VARIANTS)
+    table.update(variants or {})
+    wanted = table.get(state)
+    if not wanted:
+        return {"parameter": "", "children": [], "missing": []}
+
+    by_name = {(entry.get("clip") or "").strip().lower(): entry
+               for entry in clips if entry.get("clip")}
+
+    children: List[dict] = []
+    missing: List[str] = []
+    for name, threshold in wanted["clips"]:
+        entry = by_name.get(name)
+        if entry is None:
+            missing.append(name)
+            continue
+        children.append({"asset": entry["asset"], "clip": entry["clip"],
+                         "threshold": float(threshold)})
+
+    return {"parameter": wanted["parameter"], "children": children,
+            "missing": missing}
+
+
+def assign_blend_tree(controller_path: str, state: str,
+                      parameter: str, children: Sequence[dict]) -> dict:
+    """Give one state a 1D blend tree over its variants."""
+    if not children:
+        return {"success": False, "ran": False, "state": state,
+                "error": f"no clips to blend for {state}"}
+    if len(children) < 2:
+        return {"success": False, "ran": False, "state": state,
+                "error": f"{state} has one variant, which is a clip rather "
+                         "than a blend"}
+
+    body = "".join(
+        _CHILD.format(index=index,
+                      asset=child["asset"].replace('"', ""),
+                      threshold=child["threshold"])
+        for index, child in enumerate(children))
+
+    outcome = delivery._run("eval", {
+        "code": _BLEND.format(
+            controller=str(controller_path or "").replace('"', ""),
+            state=str(state).replace('"', ""),
+            parameter=str(parameter).replace('"', ""),
+            children=body,
+            thresholds=", ".join(f"{c['threshold']}f" for c in children)),
+        "timeout": 120000,
+    })
+    if not outcome["success"]:
+        return {"success": False, "ran": True, "state": state,
+                "error": outcome["error"]}
+
+    said = str(((outcome["data"] or {}) or {}).get("result") or "")
+    if said in ("NO_CONTROLLER", "NO_STATE") or ":" not in said:
+        return {"success": False, "ran": True, "state": state,
+                "error": f"could not build a blend for {state}: "
+                         f"{said or 'no answer'}"}
+
+    parts = said.split(":")
+    count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    added = [n for n in (parts[2] if len(parts) > 2 else "").split(",") if n]
+    got = [float(v) for v in (parts[3] if len(parts) > 3 else "").split("/") if v]
+
+    asked = [round(float(c["threshold"]), 2) for c in children]
+    kept = [round(v, 2) for v in got] == asked
+
+    problems = []
+    if count != len(children):
+        problems.append(f"asked for {len(children)} children and got {count}")
+    if got and not kept:
+        problems.append(f"thresholds came back as {got} rather than {asked} "
+                        "-- useAutomaticThresholds redistributed them")
+
+    return {"success": not problems, "ran": True,
+            "state": state, "parameter": parameter,
+            "children": added, "count": count, "thresholds": got,
+            "error": "; ".join(problems) if problems else None}
+
+
+def configure_blends(controller_path: str, clips: Sequence[dict], *,
+                     states: Optional[Sequence[str]] = None,
+                     variants: Optional[Dict[str, dict]] = None) -> dict:
+    """Build every blend tree the downloaded clips can support."""
+    wanted = states if states is not None else sorted(BLEND_VARIANTS)
+    built: Dict[str, List[str]] = {}
+    skipped: List[str] = []
+    failures: List[str] = []
+
+    for state in wanted:
+        found = match_variants(clips, state, variants=variants)
+        if len(found["children"]) < 2:
+            skipped.append(f"{state} ({len(found['children'])} variant)")
+            continue
+        outcome = assign_blend_tree(controller_path, state,
+                                    found["parameter"], found["children"])
+        if outcome["success"]:
+            built[state] = outcome["children"]
+        else:
+            failures.append(f"{state}: {outcome['error']}")
+
+    return {"success": bool(built) and not failures, "ran": True,
+            "error": "; ".join(failures[:3]) if failures else None,
+            "blends": built, "skipped": skipped, "failures": failures}
 
 
 # The C# that lists what is in the folder. FindAssets rather than a
