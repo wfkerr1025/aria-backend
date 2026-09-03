@@ -43,6 +43,24 @@ def no_plugins():
 UNITY_PROMPT = "create a player_inventory.cs file with a full inventory script"
 
 
+def test_no_topic_pushes_the_plugin_past_its_allowance():
+    """Over the cap, the tail is cut off and nothing says which line went.
+
+    Caught the hard way: one rule added to RULES took the containers
+    topic to 2412 characters, twelve over, and the line that vanished was
+    "raise an event on add and on remove" -- one test away from being an
+    unexplained drop in output quality. The budget is real, so failing
+    here is how the next rule finds out.
+    """
+    for topic in unity_csharp.PLUGIN.topics:
+        for trigger in topic.triggers:
+            size = len(unity_csharp.PLUGIN.section(trigger))
+            assert size <= brief_plugins.MAX_PLUGIN_CHARS, (
+                f"the {topic.name} topic makes the plugin {size} chars, over the "
+                f"{brief_plugins.MAX_PLUGIN_CHARS} cap; shorten a rule rather "
+                f"than letting one be truncated away")
+
+
 def flat(text: str) -> str:
     return " ".join(str(text or "").lower().split())
 

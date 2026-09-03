@@ -155,6 +155,14 @@ RULES = (
     "to create from the Assets menu.",
     "GetComponentInChildren and GetComponentInParent when the component "
     "may be on a relative rather than on this object.",
+    # Twice in one evening a model asked to change a scene wrote the
+    # scene FILE instead, generating YAML for ninety seconds. edit_file
+    # now refuses these outright; this is here so the turn is not spent
+    # producing something that will be refused.
+    "Never write a .unity, .prefab, .asset, .meta, .mat, .anim or "
+    ".controller file: they carry GUIDs nothing else can produce, so a "
+    "written one replaces the real file with a broken one. Ask the "
+    "editor for the change.",
 )
 
 # What each KIND of system needs, delivered only when the request is

@@ -48,6 +48,7 @@ __all__ = [
     "ENV_WORKSPACE",
     "MAX_READ_BYTES",
     "MAX_WRITE_BYTES",
+    "UNITY_SERIALISED_SUFFIXES",
     "WorkspaceError",
     "edit_file",
     "read_file",
@@ -77,6 +78,31 @@ MAX_WRITE_BYTES = 1_000_000
 _SCOPE_ALLOWED = re.compile(r"^[A-Za-z0-9_./:\- \[\]=]*$")
 
 _TEST_TIMEOUT_SECONDS = 600
+
+# What Unity serialises and owns. edit_file refuses these outright.
+#
+# Twice in one evening, a model asked to change a scene took the only
+# shape it recognised -- a file path -- and began generating
+# Assets/Scenes/SampleScene.unity as YAML, a token at a time, for ninety
+# seconds. Both times it ran out of context before finishing. Had it not,
+# a real scene would have been replaced by an invented one and the user
+# told it had been edited.
+#
+# These formats carry GUIDs, local file ids and references that only the
+# editor can produce. A generated one is not a worse version of the file;
+# it is a different file wearing its name, and Unity opens it as an empty
+# or broken scene. So this is not a judgement about quality that a
+# careful model could pass -- there is no correct way to write these by
+# hand, which is why the check is a suffix and not a heuristic.
+#
+# The routing in backend/unity/unity_editor_actions.py is what SHOULD
+# keep a model away from here. This is the floor under it, because
+# routing that declines a message hands it straight back to a model, and
+# that is exactly how both scene-writes happened.
+UNITY_SERIALISED_SUFFIXES = frozenset({
+    ".unity", ".prefab", ".asset", ".meta", ".mat", ".anim",
+    ".controller", ".overridecontroller", ".physicmaterial",
+})
 
 
 class WorkspaceError(ValueError):
@@ -212,6 +238,17 @@ def edit_file(path: str, content: str, confirm: bool = False, root: Path | None 
     """
     resolved = resolve_in_workspace(path, root=root)
     name = _relative(resolved, root)
+
+    # Before the preview, not just before the write: a diff of an
+    # invented scene against a real one is not something to show anyone.
+    if resolved.suffix.lower() in UNITY_SERIALISED_SUFFIXES:
+        raise WorkspaceError(
+            f"{name} is a file the Unity editor writes, not one to hand-write. "
+            f"Its contents are serialised with GUIDs and file ids that only the "
+            f"editor can produce, so writing it would replace the real file with "
+            f"one that looks right and is not. Ask the Unity editor for the change "
+            f"instead -- say what you want done to the scene, prefab or asset."
+        )
 
     if resolved.exists() and not resolved.is_file():
         raise WorkspaceError(f"Not a file: {name}")
