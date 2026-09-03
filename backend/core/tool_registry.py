@@ -441,6 +441,84 @@ def register_unity_cli_tools() -> None:
                 len(engine.UNITY_TOOLS))
 
 
+UNITY_EDITOR_TOOL = "unity_editor_command"
+
+
+def register_unity_editor_tool() -> None:
+    """Expose the OPEN Unity editor to a model, as one tool.
+
+    One tool and one free-text parameter, rather than a tool per
+    operation. The mapping from a sentence to bridge commands already
+    exists and is deterministic -- aria.unity_editor_bridge's
+    parse_unity_command -- so sixteen schemas would buy nothing except
+    sixteen entries in a small model's brief, and this module already
+    knows what that costs.
+
+    Anything the router cannot map comes back as an error naming the
+    clause, which is a better answer than a model inventing a
+    plausible-looking one.
+
+    NOT the same thing as the Unity CLI tools above. Those start a fresh
+    batch-mode editor for a project that may not be open; this drives the
+    editor the user is looking at, and the user watches each change land
+    with undo.
+
+    Registration is conditional on the C# half being INSTALLED in the
+    resolved project. That is a deliberate act (--install, then a Unity
+    compile), and it is the closest thing the bridge has to the CLI
+    plugin's enabled switch. Without it every call could only time out
+    after a minute.
+    """
+    installed = False
+    try:
+        from aria import unity_editor_bridge
+
+        # configure() rather than get_bridge(): this function is re-run
+        # when the Unity plugin's settings change, and get_bridge()
+        # would hand back a bridge still pointed at the old project.
+        installed = unity_editor_bridge.configure().is_installed()
+    except Exception:
+        # No project, no Assets folder, several projects and no way to
+        # choose -- all of them mean "no editor to talk to", and none of
+        # them is an error at import time.
+        logger.debug("no Unity Editor Bridge to register", exc_info=True)
+
+    if not installed:
+        logger.debug("register_unity_editor_tool() -> no installed bridge; skipped")
+        _REGISTRY.pop(UNITY_EDITOR_TOOL, None)
+        return
+
+    def handler(description: str = "", **_ignored):
+        from backend.unity import unity_editor_actions
+
+        answer = unity_editor_actions.run_description(description)
+        if not answer.get("ran"):
+            raise RuntimeError(answer["text"])
+        return answer["text"]
+
+    register_tool(
+        ToolSchema(
+            name=UNITY_EDITOR_TOOL,
+            description=(
+                "Do something in the Unity editor the user has open: create, move, "
+                "delete or configure objects, add components, open or save a scene, "
+                "or describe the hierarchy. Say the request in one plain sentence, "
+                "e.g. 'delete the Main Camera' or 'create a cube named Crate at "
+                "0,1,0'. Several steps can be joined with 'and then'."),
+            parameters={"description": {
+                "type": "string", "required": True,
+                "description": "What to do, in plain language."}},
+            permission=PERMISSION_FILESYSTEM,
+            # The bridge waits a minute for the editor by default, and an
+            # editor mid-domain-reload spends a good part of it.
+            timeout_seconds=90.0,
+            family="cli",
+        ),
+        handler,
+    )
+    logger.info("register_unity_editor_tool() -> the Unity Editor Bridge is callable")
+
+
 def register_file_tools() -> None:
     register_tool(
         ToolSchema(
@@ -502,6 +580,11 @@ register_fs_operation_tools()
 # update handler -- so turning Unity CLI on does not need a restart to
 # make its tools callable.
 register_unity_cli_tools()
+
+# Conditional on the C# bridge being installed in the project, so a
+# machine with no Unity editor is never told about a tool that could
+# only wait a minute and time out.
+register_unity_editor_tool()
 
 
 # ============================================================

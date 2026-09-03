@@ -109,6 +109,11 @@ WORKSPACE_MODEL = "workspace"
 # on a sentence no model wrote.
 UNITY_CLI_MODEL = "unity_cli"
 
+# A turn answered by the OPEN Unity editor, through the file bridge.
+# Separate from UNITY_CLI_MODEL, which starts a fresh batch-mode editor:
+# these two drive different Unity processes and fail differently.
+UNITY_EDITOR_MODEL = "unity_editor"
+
 # A turn answered by a plugin's own program -- Blender and whatever
 # joins it. Same convention: not a model id, because no model wrote it.
 CLI_PROGRAM_MODEL = "cli_program"
@@ -412,6 +417,73 @@ def _unity_cli_reply(request: TurnRequest, telemetry: list):
         session_updates={"last_turn_was_weather": False},
         telemetry=telemetry + [_event("unity_cli_invocation",
                                       command=invocation.get("command"),
+                                      ran=answer.get("ran", False))],
+    )
+
+
+def _unity_editor_reply(request: TurnRequest, telemetry: list):
+    """Bridge call syntax, typed out, answered by the open editor.
+
+    Returns None for everything that is not already a list of
+    `CommandName(...)` calls -- which is nearly every message, and costs
+    one failed parse to find out.
+
+    WHY THIS IS A SHORT-CIRCUIT
+    Measured on the developer's machine. Typed into chat:
+
+        OpenScene("Assets/Scenes/SampleScene.unity")
+        SaveScene("Assets/Scenes/WorkshopScene.unity")
+        DeleteGameObject("Main Camera")
+        DeleteGameObject("Directional Light")
+
+    Nothing owned that vocabulary, so it reached nemo-12b, which took
+    the only shape it recognised -- a file path -- and started WRITING
+    Assets/Scenes/SampleScene.unity as generated YAML. It ran out of
+    context first. Otherwise it would have overwritten a real scene with
+    invented text and reported success.
+
+    That is _unity_cli_reply's rule again: an instruction with an
+    authority behind it must not be routed through a model. The
+    authority here is the editor. Either it ran the commands and this
+    says what it answered, or it did not and this says that in the first
+    sentence.
+
+    Plain language is deliberately NOT handled here -- "delete the main
+    camera" could be an instruction or a question about one, and that
+    judgement is the orchestrator's. It reaches the bridge through the
+    registered unity_editor_command tool instead.
+    """
+    text = (request.latest_user_text or "").strip()
+    if not text:
+        return None
+
+    try:
+        from backend.unity import unity_editor_actions
+
+        answer = unity_editor_actions.answer_request(text)
+        if answer is None:
+            return None
+    except Exception:
+        logger.exception("could not answer a Unity Editor Bridge request")
+        # Silence would hand the turn back to the model, which is the
+        # one outcome this function exists to prevent.
+        return TurnResult(
+            kind=KIND_TEXT,
+            text=("I could not send that to Unity, and nothing changed. "
+                  "Something went wrong on my side."),
+            model_id=UNITY_EDITOR_MODEL,
+            conversation_id=request.conversation_id,
+            session_updates={"last_turn_was_weather": False},
+            telemetry=telemetry + [_event("unity_editor_request_failed")],
+        )
+
+    return TurnResult(
+        kind=KIND_TEXT,
+        text=answer["text"],
+        model_id=UNITY_EDITOR_MODEL,
+        conversation_id=request.conversation_id,
+        session_updates={"last_turn_was_weather": False},
+        telemetry=telemetry + [_event("unity_editor_request",
                                       ran=answer.get("ran", False))],
     )
 
@@ -983,7 +1055,7 @@ def orchestrate_turn(
 
     # --- 2. Tool short-circuits, BEFORE anything that spends a model.
     #
-    # These four are deterministic and free: they read the sentence,
+    # These five are deterministic and free: they read the sentence,
     # match a vocabulary this codebase owns, and answer or decline.
     # None of them consults the search verdict or the detected intent.
     #
@@ -1005,6 +1077,11 @@ def orchestrate_turn(
     # part. Now they are not: a turn a tool can answer costs no model
     # at all.
     cli_reply = _unity_cli_reply(request, telemetry)
+    if cli_reply is None:
+        # Also a typed command, and also Unity, but the OPEN editor
+        # rather than a batch-mode one. Neither can match the other's
+        # text: a CLI line starts with "unity", and this one is a call.
+        cli_reply = _unity_editor_reply(request, telemetry)
     if cli_reply is None:
         cli_reply = _cli_program_reply(request, telemetry)
     if cli_reply is None:

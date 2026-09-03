@@ -868,6 +868,14 @@ def _handle_plugin_update(payload: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:  # pragma: no cover - a tool refresh is not a save
         logger.exception("could not refresh the Unity CLI tools")
 
+    # The editor bridge's gate is whether its C# half is installed in the
+    # project the settings point at, so pointing them somewhere else is
+    # exactly when that answer changes.
+    try:
+        _tool_registry.register_unity_editor_tool()
+    except Exception:  # pragma: no cover - a tool refresh is not a save
+        logger.exception("could not refresh the Unity Editor Bridge tool")
+
     return fmt.plugin_update_result(updated)
 
 

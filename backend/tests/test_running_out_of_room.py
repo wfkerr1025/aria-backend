@@ -47,6 +47,16 @@ BLOCK_HEAD = (
 CUT_OFF = BLOCK_HEAD + "    public void AddItem(str"
 COMPLETE = BLOCK_HEAD + "}\n" + QUOTE + "}\n```\n"
 
+# The same failure, one line shorter: a path, and then the room ran out
+# before any of the content. Seen for real when a turn was spent writing
+# Assets/Scenes/SampleScene.unity, which the model should never have been
+# asked for -- the reply read "about 0 lines of it arrived".
+NOTHING_ARRIVED = (
+    "Proposed actions:\n\n"
+    "```json\n"
+    '{"tool": "edit_file", "path": "Assets/Scenes/SampleScene.unity", "content": "'
+)
+
 
 # --- the budget -------------------------------------------------------
 
@@ -113,6 +123,24 @@ def test_the_reply_says_it_ran_out_of_room():
     assert "ran out of room" in shown
     assert "`player_inventory.cs`" in shown
     assert "did not produce a usable action" not in shown
+
+
+def test_a_block_that_got_no_further_than_the_path_says_so():
+    """Zero lines is not "part-way through".
+
+    "about 0 lines of it arrived" is not a sentence a person says, and
+    it describes the shorter failure as though it were the longer one.
+    """
+    unfinished = truncated_action(NOTHING_ARRIVED)
+    assert unfinished["lines"] == 0, "this fixture is supposed to carry no content"
+
+    shown = render_actions_for_reading(NOTHING_ARRIVED, expected_action=True)
+
+    assert "0 lines" not in shown
+    assert "ran out of room" in shown
+    assert "before any of the file itself arrived" in shown
+    assert "`Assets/Scenes/SampleScene.unity`" in shown
+    assert "I have not written anything" in shown
 
 
 def test_the_raw_block_is_never_shown_when_it_was_cut_off():

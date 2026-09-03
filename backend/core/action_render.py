@@ -407,12 +407,21 @@ def _note_a_missing_action(text: str, expected_action: bool) -> str:
         prose = _without_any_action_block(text)
         lines = unfinished.get("lines") or 0
         parts = [prose] if prose else []
+        if lines:
+            arrived = (f"part-way through writing `{unfinished['path']}` -- about "
+                       f"{lines} line{'' if lines == 1 else 's'} of it arrived")
+        else:
+            # Zero is not "part-way through". The block named a path and
+            # stopped before a byte of the content, and the sentence for
+            # that used to read "about 0 lines of it arrived", which is
+            # not something a person says and describes the shorter
+            # failure as the longer one.
+            arrived = (f"writing `{unfinished['path']}` before any of the file "
+                       f"itself arrived")
         parts.append(
-            f"I ran out of room part-way through writing "
-            f"`{unfinished['path']}` -- about {lines} "
-            f"line{'' if lines == 1 else 's'} of it arrived, so I have not "
-            f"written anything. Ask for it again and I will have more room, "
-            f"or ask for it in pieces."
+            f"I ran out of room {arrived}, so I have not written anything. "
+            f"Ask for it again and I will have more room, or ask for it in "
+            f"pieces."
         )
         return "\n\n".join(parts)
 
