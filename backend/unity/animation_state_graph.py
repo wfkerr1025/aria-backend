@@ -106,7 +106,14 @@ class State:
 
 @dataclass(frozen=True)
 class Transition:
-    """One edge. `source` may be AnyState; `target` may be Exit."""
+    """One edge. `source` may be AnyState; `target` may be Exit.
+
+    `can_transition_to_self` is false by default and Unity's default is
+    TRUE, which is the wrong way round for every edge here. An AnyState
+    transition that may re-enter its own destination restarts that clip
+    on every frame its condition holds -- an attack that never gets
+    past its first few frames, a fall that keeps starting over.
+    """
 
     source: str
     target: str
@@ -114,6 +121,7 @@ class Transition:
     has_exit_time: bool = False
     exit_time: float = 0.0
     duration: float = 0.25
+    can_transition_to_self: bool = False
 
 
 @dataclass
@@ -196,12 +204,21 @@ def default_graph(state_names: Sequence[str] = ("Idle", "Walk", "Run", "Attack")
     edge("CrouchWalk", "Walk", Condition("crouch", "IfNot"))
 
     # --- the air -----------------------------------------------------
-    # Jump is a trigger from anywhere; falling is a STATE OF THE WORLD
-    # and is driven by `grounded` rather than by an event, because a
-    # character can leave the ground without jumping.
+    # Jump is a trigger from anywhere. Falling is a state of the world
+    # and is driven by `grounded`, but NOT from AnyState:
+    #
+    #   AnyState -> Fall on !grounded fires the frame after a jump
+    #   leaves the ground and overrides the Jump state immediately.
+    #   Reported as "while running, if I jump, he does the falling
+    #   animation" -- the jump was playing for about one frame.
+    #
+    # So falling is entered from the GROUNDED states, which is where
+    # walking off a ledge actually happens, and a jump reaches it
+    # through Jump -> Fall on exit time instead.
     edge(ANY_STATE, "Jump", Condition("jump", "If"))
     edge("Jump", "Fall", has_exit_time=True, exit_time=0.8)
-    edge(ANY_STATE, "Fall", Condition("grounded", "IfNot"))
+    for grounded_state in ("Idle", "Walk", "Run", "Crouch", "CrouchWalk"):
+        edge(grounded_state, "Fall", Condition("grounded", "IfNot"))
     edge("Fall", "Land", Condition("grounded", "If"))
     edge("Land", "Idle", has_exit_time=True, exit_time=0.8)
 

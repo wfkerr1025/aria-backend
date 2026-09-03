@@ -859,17 +859,40 @@ def test_grounded_starts_true():
     assert params.GROUNDED.default is True
 
 
-def test_falling_is_a_state_of_the_world_not_an_event():
+def test_falling_is_entered_from_the_grounded_states_not_from_anystate():
     """A character can leave the ground without jumping, so Fall is
-    entered from AnyState on `grounded` being false rather than by a
-    trigger somebody has to remember to fire."""
-    graph = graphs.default_graph(graphs.ALL_STATES)
-    into_fall = [t for t in graph.transitions if t.target == "Fall"]
+    driven by `grounded` rather than a trigger. But NOT from AnyState:
 
-    from_any = [t for t in into_fall if t.source == graphs.ANY_STATE]
-    assert from_any, "nothing enters Fall from AnyState"
-    assert from_any[0].conditions[0].parameter == "grounded"
-    assert from_any[0].conditions[0].mode == "IfNot"
+        AnyState -> Fall on !grounded fires the frame after a jump
+        leaves the ground and overrides the Jump state immediately.
+        Reported as "while running, if I jump, he does the falling
+        animation" -- the jump played for about one frame.
+
+    So it is entered from the grounded states, which is where walking
+    off a ledge actually happens, and a jump reaches it through
+    Jump -> Fall on exit time.
+    """
+    graph = graphs.default_graph(graphs.ALL_STATES)
+    into_fall = {t.source for t in graph.transitions if t.target == "Fall"}
+
+    assert graphs.ANY_STATE not in into_fall,         "AnyState -> Fall interrupts the jump on its first airborne frame"
+    assert {"Idle", "Walk", "Run", "Crouch", "CrouchWalk"} <= into_fall
+    assert "Jump" in into_fall, "a jump has to reach the fall somehow"
+
+    grounded_edge = [t for t in graph.transitions
+                     if t.source == "Walk" and t.target == "Fall"][0]
+    assert grounded_edge.conditions[0].parameter == "grounded"
+    assert grounded_edge.conditions[0].mode == "IfNot"
+
+
+def test_anystate_transitions_do_not_interrupt_themselves():
+    """Unity's default is true, which restarts the destination clip on
+    every frame the condition holds."""
+    graph = graphs.default_graph(graphs.ALL_STATES)
+
+    for transition in graph.transitions:
+        if transition.source == graphs.ANY_STATE:
+            assert transition.can_transition_to_self is False, transition.target
 
 
 def test_standing_up_while_moving_goes_to_walk_not_idle():

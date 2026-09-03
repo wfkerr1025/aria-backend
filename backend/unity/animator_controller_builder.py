@@ -261,5 +261,43 @@ def build_controller(graph: graphs.Graph,
         answer["transitions"].append(edge)
         steps.append(f"add_animator_transition:{edge}")
 
+    # add_animator_transition has no argument for canTransitionToSelf,
+    # and Unity's default is true. Left alone, an AnyState transition
+    # re-enters its own destination on every frame its condition holds
+    # and the clip never gets past its opening frames.
+    settled = _stop_self_interruption(controller_path)
+    if settled:
+        steps.append("no_self_interruption")
+    else:
+        warnings.append(
+            "could not clear canTransitionToSelf on the AnyState "
+            "transitions; states entered from AnyState may restart every "
+            "frame their condition holds")
+
     answer["success"] = True
     return answer
+
+
+_NO_SELF = """
+var ctrl = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEditor.Animations.AnimatorController>("{controller}");
+if (ctrl == null) return "NO_CONTROLLER";
+int changed = 0;
+foreach (var layer in ctrl.layers)
+    foreach (var t in layer.stateMachine.anyStateTransitions)
+        if (t.canTransitionToSelf) {{ t.canTransitionToSelf = false; changed++; }}
+UnityEditor.EditorUtility.SetDirty(ctrl);
+UnityEditor.AssetDatabase.SaveAssets();
+return "cleared:" + changed;
+"""
+
+
+def _stop_self_interruption(controller_path: str) -> bool:
+    outcome = delivery._run("eval", {
+        "code": _NO_SELF.format(
+            controller=str(controller_path or "").replace('"', "")),
+        "timeout": 60000,
+    })
+    if not outcome["success"]:
+        return False
+    said = str(((outcome["data"] or {}) or {}).get("result") or "")
+    return said.startswith("cleared:")

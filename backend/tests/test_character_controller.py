@@ -34,10 +34,18 @@ def cli(monkeypatch):
                  for i in range(0, len(argv) - 1, 2) if argv[i].startswith("--")}
         name = command.replace("cmd ", "")
         calls.append({"command": name, "args": named})
+
+        # The field query gets a fully compiled answer by default, so a
+        # test about delivery is not accidentally a test about a stale
+        # assembly. The stale case is exercised deliberately below.
+        said = "ok"
+        if "GetFields" in named.get("code", ""):
+            said = ",".join(controller.declared_fields()) + ","
+
         return {"success": True, "output": "", "error": None,
                 "json": {"success": True, "errors": [],
                          "data": {"command": name, "parameters": named,
-                                  "result": {"success": True, "result": "ok"},
+                                  "result": {"success": True, "result": said},
                                   "target": {}, "success": True}}}
 
     from backend.unity import unity_cli_engine
@@ -208,3 +216,141 @@ def test_no_project_means_nowhere_to_put_it(monkeypatch, cli):
 
     assert result["success"] is False
     assert "nowhere to put it" in result["error"]
+
+
+# ======================================================
+# What playing it actually found
+#
+# Three complaints, three separate causes:
+#   "turning left and right do not work properly"
+#   "jumping standing still doesn't work all the time"
+#   "he acts as if he hits the ground while in the air and does a roll"
+# ======================================================
+
+def test_turn_and_walk_is_the_default_scheme():
+    """Without a camera, absolute directions snap the character to
+    compass points: A walks west, and then W turns him back north
+    rather than walking the way he is facing."""
+    assert "steering = Steering.TurnAndWalk" in controller.SOURCE
+    assert "transform.Rotate(0f, _move.x * turnSpeed" in controller.SOURCE
+
+
+def test_the_absolute_scheme_is_still_available():
+    """It is the right one WITH a camera, which is the usual
+    third-person setup."""
+    assert "DirectionIsAbsolute" in controller.SOURCE
+    assert "cameraTransform" in controller.SOURCE
+
+
+def test_grounded_is_buffered_rather_than_read_raw():
+    """CharacterController.isGrounded is false on scattered frames
+    while standing still. The jump press landed on one of those."""
+    assert "groundedGrace" in controller.SOURCE
+    assert "Time.time - _lastGroundedAt <= groundedGrace" in controller.SOURCE
+
+
+def test_the_jump_uses_the_buffered_grounded():
+    assert "keyboard.spaceKey.wasPressedThisFrame && Grounded" in \
+        controller.SOURCE
+
+
+def test_rising_counts_as_airborne_immediately():
+    """Otherwise the grace period reports grounded for the first tenth
+    of a second of every jump."""
+    assert "_controller.isGrounded && _verticalSpeed <= 0f" in controller.SOURCE
+
+
+def test_a_routine_jump_is_a_soft_landing_not_a_roll():
+    """MEASURED against the roll it was producing. A 1.2m jump lands at
+    about 6.9 m/s; dividing that by 12 gave 0.57, and the Land blend
+    puts Falling To Roll at 0.6."""
+    source = controller.SOURCE
+    soft = float([l for l in source.splitlines()
+                  if "public float softLandingSpeed" in l][0]
+                 .split("=")[1].strip().rstrip("f;").strip())
+    hard = float([l for l in source.splitlines()
+                  if "public float hardLandingSpeed" in l][0]
+                 .split("=")[1].strip().rstrip("f;").strip())
+
+    jump_impact = 6.9
+    force = max(0.0, min(1.0, (jump_impact - soft) / (hard - soft)))
+    assert force < 0.35, (
+        f"a routine jump maps to {force:.2f}, which reaches the roll at 0.6")
+    assert hard > soft, "the landing scale has no span"
+
+
+def test_the_enum_is_not_under_a_header_attribute():
+    """[Header] is valid on a field and not on a type. It was a CS0592
+    that left Unity running the previously compiled assembly while
+    every file on disk looked correct."""
+    lines = controller.SOURCE.splitlines()
+    for index, line in enumerate(lines[:-1]):
+        if line.strip().startswith("[Header("):
+            assert not lines[index + 1].strip().startswith(
+                ("public enum", "public class", "public struct")), line
+
+
+# ======================================================
+# Delivery has to know whether Unity accepted it
+# ======================================================
+
+def test_the_declared_fields_are_read_out_of_the_source():
+    declared = controller.declared_fields()
+
+    for expected in ("walkSpeed", "runSpeed", "steering", "softLandingSpeed",
+                     "groundedGrace", "hardLandingSpeed"):
+        assert expected in declared, expected
+    assert "Steering" not in declared, "the enum type is not a field"
+
+
+def test_a_stale_assembly_is_detected_by_a_missing_field(monkeypatch, cli):
+    """This is the actual symptom: the file on disk is correct, the
+    component in the scene is the OLD type, and nothing says so."""
+    monkeypatch.setattr(controller, "compiled_fields",
+                        lambda name=controller.CLASS_NAME: {
+                            "checked": True, "reason": "",
+                            "fields": ["walkSpeed", "runSpeed"]})
+
+    report = controller.verify_compiled()
+
+    assert report["compiled"] is False
+    assert "steering" in report["missing"]
+
+
+def test_a_fully_compiled_assembly_verifies(monkeypatch, cli):
+    monkeypatch.setattr(controller, "compiled_fields",
+                        lambda name=controller.CLASS_NAME: {
+                            "checked": True, "reason": "",
+                            "fields": controller.declared_fields()})
+
+    assert controller.verify_compiled()["compiled"] is True
+
+
+def test_a_check_that_cannot_run_is_not_a_pass(monkeypatch, cli):
+    """An earlier version returned an empty error list when the check
+    itself failed, so a broken check read as a clean compile -- which
+    is how the check's own first version got past its own delivery."""
+    monkeypatch.setattr(controller, "compiled_fields",
+                        lambda name=controller.CLASS_NAME: {
+                            "checked": False, "fields": [],
+                            "reason": "the Editor was not reachable"})
+
+    report = controller.verify_compiled()
+
+    assert report["checked"] is False
+    assert report["compiled"] is False
+
+
+def test_delivering_reports_a_stale_assembly_rather_than_success(
+        tmp_path, monkeypatch, cli):
+    monkeypatch.setattr(delivery, "unity_project_root", lambda: tmp_path)
+    monkeypatch.setattr(controller, "verify_compiled",
+                        lambda name=controller.CLASS_NAME: {
+                            "checked": True, "compiled": False,
+                            "missing": ["steering"], "reason": ""})
+
+    result = controller.deliver(compile_attempts=1)
+
+    assert result["success"] is False
+    assert "older build" in result["error"]
+    assert result["written"] is True, "the file was still written"

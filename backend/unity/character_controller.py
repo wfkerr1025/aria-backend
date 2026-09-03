@@ -48,8 +48,11 @@ __all__ = [
     "DEFAULT_SCRIPT_FOLDER",
     "SOURCE",
     "attach",
+    "compiled_fields",
+    "declared_fields",
     "deliver",
     "script_path",
+    "verify_compiled",
 ]
 
 CLASS_NAME = "AriaCharacterController"
@@ -111,14 +114,47 @@ public class AriaCharacterController : MonoBehaviour
 
     [Tooltip("Downward speed treated as the hardest possible landing. "
              + "Impacts at or above this set landForce to 1.")]
-    public float hardLandingSpeed = 12.0f;
+    public float hardLandingSpeed = 20.0f;
+
+    [Tooltip("Downward speed below which a landing is soft. A 1.2m jump "
+             + "lands at about 6.9 m/s, and that should not be a roll.")]
+    public float softLandingSpeed = 8.0f;
+
+    [Tooltip("How long after leaving the ground the character may still "
+             + "jump, and how long before `grounded` is reported false. "
+             + "CharacterController.isGrounded flickers, and without "
+             + "this the jump misses presses and the fall triggers on "
+             + "level floor.")]
+    public float groundedGrace = 0.15f;
+
+    // Declared OUTSIDE the [Header] that follows: Header is valid on a
+    // field or property and not on a type, and putting it here was a
+    // CS0592 that left Unity running the previously compiled version
+    // while every file on disk looked correct.
+    public enum Steering
+    {
+        // A and D turn the character; W and S move along its facing.
+        TurnAndWalk,
+        // A and D walk west and east. Needs a camera to make sense of,
+        // and without one the character snaps to compass directions.
+        DirectionIsAbsolute,
+    }
 
     [Header("Input")]
+    [Tooltip("TurnAndWalk: A/D turn, W/S move along the facing. "
+             + "DirectionIsAbsolute: each key walks a world direction, "
+             + "which needs a camera to read naturally.")]
+    public Steering steering = Steering.TurnAndWalk;
+
+    [Tooltip("Degrees per second when turning.")]
+    public float turnSpeed = 180f;
+
     [Tooltip("Hold to crouch, or press to toggle.")]
     public bool crouchIsToggle = false;
 
-    [Tooltip("Movement is relative to this transform when set, and to "
-             + "the world axes when it is not.")]
+    [Tooltip("Only used by DirectionIsAbsolute. Movement is relative to "
+             + "this transform when set, and to the world axes when it "
+             + "is not.")]
     public Transform cameraTransform;
 
     // Hashes rather than strings: SetFloat(string) does the lookup
@@ -146,6 +182,17 @@ public class AriaCharacterController : MonoBehaviour
     // controller has already zeroed the vertical speed.
     float _fallSpeedLastFrame;
     bool _wasGrounded = true;
+
+    // CharacterController.isGrounded is false on scattered frames while
+    // standing on level ground. Reported as "jumping standing still
+    // doesn't work all the time" -- the press landed on one of those
+    // frames -- and it also fires the Fall transition on a flat floor.
+    // So grounded is remembered for a moment rather than read raw.
+    float _lastGroundedAt = -999f;
+    bool Grounded
+    {
+        get { return Time.time - _lastGroundedAt <= groundedGrace; }
+    }
 
     void Awake()
     {
@@ -188,7 +235,7 @@ public class AriaCharacterController : MonoBehaviour
                          || keyboard.leftCtrlKey.isPressed;
         }
 
-        if (keyboard.spaceKey.wasPressedThisFrame && _controller.isGrounded)
+        if (keyboard.spaceKey.wasPressedThisFrame && Grounded)
         {
             _animator.SetTrigger(JumpId);
             _verticalSpeed = Mathf.Sqrt(jumpHeight * -2f * gravity);
@@ -204,29 +251,46 @@ public class AriaCharacterController : MonoBehaviour
 
     void Move()
     {
-        Vector3 heading = new Vector3(_move.x, 0f, _move.y);
-        if (cameraTransform != null && heading.sqrMagnitude > 0.0001f)
+        Vector3 planar;
+
+        if (steering == Steering.TurnAndWalk)
         {
-            // Flattened: a camera looking down would otherwise walk the
-            // character into the floor.
-            Vector3 forward = cameraTransform.forward;
-            Vector3 right = cameraTransform.right;
-            forward.y = 0f; right.y = 0f;
-            heading = (forward.normalized * _move.y
-                       + right.normalized * _move.x);
+            // A and D turn; W and S move along the facing. This is the
+            // scheme that behaves sensibly with no camera: pressing A
+            // then W walks the way the character is now looking,
+            // rather than snapping him back to north.
+            transform.Rotate(0f, _move.x * turnSpeed * Time.deltaTime, 0f);
+            float pace = _crouching ? crouchSpeed
+                                    : (_running ? runSpeed : walkSpeed);
+            planar = transform.forward * (_move.y * pace);
         }
-
-        float target = _crouching ? crouchSpeed
-                                  : (_running ? runSpeed : walkSpeed);
-        Vector3 planar = heading * target;
-
-        if (heading.sqrMagnitude > 0.0001f)
+        else
         {
-            float wanted = Mathf.Atan2(heading.x, heading.z) * Mathf.Rad2Deg;
-            float angle = Mathf.SmoothDampAngle(
-                transform.eulerAngles.y, wanted, ref _turnVelocity,
-                Mathf.Max(0.0001f, turnSeconds));
-            transform.rotation = Quaternion.Euler(0f, angle, 0f);
+            Vector3 heading = new Vector3(_move.x, 0f, _move.y);
+            if (cameraTransform != null && heading.sqrMagnitude > 0.0001f)
+            {
+                // Flattened: a camera looking down would otherwise walk
+                // the character into the floor.
+                Vector3 forward = cameraTransform.forward;
+                Vector3 right = cameraTransform.right;
+                forward.y = 0f; right.y = 0f;
+                heading = (forward.normalized * _move.y
+                           + right.normalized * _move.x);
+            }
+
+            float pace = _crouching ? crouchSpeed
+                                    : (_running ? runSpeed : walkSpeed);
+            planar = heading.normalized * (heading.magnitude > 0.0001f
+                                           ? pace : 0f);
+
+            if (heading.sqrMagnitude > 0.0001f)
+            {
+                float wanted = Mathf.Atan2(heading.x, heading.z) * Mathf.Rad2Deg;
+                float angle = Mathf.SmoothDampAngle(
+                    transform.eulerAngles.y, wanted, ref _turnVelocity,
+                    Mathf.Max(0.0001f, turnSeconds));
+                transform.rotation = Quaternion.Euler(0f, angle, 0f);
+            }
         }
 
         // Remembered BEFORE the move, because the move is what lands
@@ -243,11 +307,17 @@ public class AriaCharacterController : MonoBehaviour
 
         _controller.Move((planar + Vector3.up * _verticalSpeed)
                          * Time.deltaTime);
+
+        // Raw here, buffered everywhere else. Rising counts as
+        // airborne immediately, or the grace would let a jump report
+        // grounded for its first tenth of a second.
+        if (_controller.isGrounded && _verticalSpeed <= 0f)
+            _lastGroundedAt = Time.time;
     }
 
     void DriveAnimator()
     {
-        bool grounded = _controller.isGrounded;
+        bool grounded = Grounded;
 
         Vector3 planar = _controller.velocity;
         planar.y = 0f;
@@ -259,8 +329,14 @@ public class AriaCharacterController : MonoBehaviour
         // it would make the next gentle landing play a flat impact.
         if (grounded && !_wasGrounded)
         {
+            // Measured against the roll it was producing: a 1.2m jump
+            // lands at about 6.9 m/s, and a straight divide by 12 made
+            // that 0.57 -- which is the "Falling To Roll" child at 0.6.
+            // A routine jump should be a landing, so everything below
+            // softLandingSpeed is one, and the scale runs from there.
+            float span = Mathf.Max(0.01f, hardLandingSpeed - softLandingSpeed);
             float force = Mathf.Clamp01(
-                _fallSpeedLastFrame / Mathf.Max(0.01f, hardLandingSpeed));
+                (_fallSpeedLastFrame - softLandingSpeed) / span);
             _animator.SetFloat(LandForceId, force);
         }
         _wasGrounded = grounded;
@@ -298,7 +374,8 @@ def parameters_used() -> List[str]:
 
 
 def deliver(folder: str = DEFAULT_SCRIPT_FOLDER, *,
-            overwrite: bool = True) -> dict:
+            overwrite: bool = True,
+            compile_attempts: int = 6) -> dict:
     """Write the script into the project and let Unity compile it."""
     root = delivery.unity_project_root()
     if root is None:
@@ -318,17 +395,124 @@ def deliver(folder: str = DEFAULT_SCRIPT_FOLDER, *,
     except OSError as error:
         return delivery._failure(f"Could not write {relative}: {error}")
 
-    refreshed = delivery._run("eval", {
+    delivery._run("eval", {
         "code": 'UnityEditor.AssetDatabase.Refresh('
                 'UnityEditor.ImportAssetOptions.ForceUpdate); '
-                'return "ok";',
+                'UnityEditor.Compilation.CompilationPipeline'
+                '.RequestScriptCompilation(); return "ok";',
         "timeout": 180000,
     })
 
-    return {"success": True, "ran": True, "error": None,
+    # Unity compiles asynchronously, so the first look can legitimately
+    # find the old assembly. Give it a few.
+    report = {"checked": False, "compiled": False, "missing": [],
+              "reason": "not checked"}
+    for _ in range(int(compile_attempts)):
+        report = verify_compiled()
+        if report["compiled"]:
+            break
+
+    if report["compiled"]:
+        problem = None
+    elif not report["checked"]:
+        problem = ("the file was written but whether Unity compiled it "
+                   f"could not be checked: {report.get('reason')}")
+    elif report["missing"]:
+        problem = ("Unity is still running an older build of this script -- "
+                   "it has no " + ", ".join(report["missing"][:4])
+                   + ". Check the Console for a compile error.")
+    else:
+        problem = ("Unity has not compiled this script: "
+                   + (report.get("reason") or "the type is not loaded"))
+
+    return {"success": problem is None, "ran": True, "error": problem,
             "path": relative, "written": True,
-            "refreshed": bool(refreshed["success"]),
+            "checked": report["checked"], "compiled": report["compiled"],
+            "missing": report["missing"],
             "parameters": parameters_used()}
+
+
+# Unity keeps running the PREVIOUSLY compiled assembly when a script
+# fails to compile. Nothing throws, the file on disk is correct, and
+# the component in the scene is the old type -- which is exactly what
+# happened here: a [Header] on an enum was a CS0592, deliver() reported
+# success, and the new fields simply were not there.
+# Whether the assembly Unity is RUNNING matches the source on disk.
+#
+# The Editor log was the first attempt and it is the wrong instrument:
+# it accumulates, so errors from a compile three edits ago read as
+# errors now. This asks the loaded type which public fields it has and
+# compares them to the ones the source declares. A stale assembly is
+# missing whatever the last edit added, which is exactly the symptom --
+# the file on disk was correct, the component in the scene was the old
+# type, and nothing anywhere said so.
+_FIELDS = """
+System.Type found = null;
+foreach (var asm in System.AppDomain.CurrentDomain.GetAssemblies())
+{
+    var t = asm.GetType("CLASS_NAME");
+    if (t != null) { found = t; break; }
+}
+if (found == null) return "NO_TYPE";
+var sb = new System.Text.StringBuilder();
+foreach (var f in found.GetFields(System.Reflection.BindingFlags.Public
+                                  | System.Reflection.BindingFlags.Instance))
+    sb.Append(f.Name).Append(",");
+return sb.ToString();
+"""
+
+
+def declared_fields() -> List[str]:
+    """The public instance fields the C# source declares."""
+    found: List[str] = []
+    for line in SOURCE.splitlines():
+        text = line.strip()
+        if not text.startswith("public ") or "(" in text or "{" in text:
+            continue
+        if text.startswith(("public enum", "public class", "public struct")):
+            continue
+        if "=" not in text and not text.endswith(";"):
+            continue
+        name = text.split("=")[0].strip().rstrip(";").split()[-1]
+        if name and name not in found:
+            found.append(name)
+    return found
+
+
+def compiled_fields(class_name: str = CLASS_NAME) -> dict:
+    """What the loaded assembly's version of the class actually has."""
+    outcome = delivery._run("eval", {
+        "code": _FIELDS.replace("CLASS_NAME", class_name),
+        "timeout": 120000,
+    })
+    if not outcome["success"]:
+        return {"checked": False, "fields": [],
+                "reason": outcome["error"] or "the type could not be read"}
+
+    said = str(((outcome["data"] or {}) or {}).get("result") or "")
+    if said == "NO_TYPE":
+        return {"checked": True, "fields": [],
+                "reason": f"{class_name} is not in any loaded assembly"}
+    return {"checked": True,
+            "fields": [n for n in said.split(",") if n], "reason": ""}
+
+
+def verify_compiled(class_name: str = CLASS_NAME) -> dict:
+    """Is Unity running THIS source, or a previous one?
+
+    Returns checked, compiled, missing. `missing` is the public fields
+    the source declares that the loaded type does not have, which is
+    what a stale assembly looks like from the outside.
+    """
+    report = compiled_fields(class_name)
+    if not report["checked"]:
+        return {"checked": False, "compiled": False, "missing": [],
+                "reason": report.get("reason", "")}
+
+    have = set(report["fields"])
+    missing = [name for name in declared_fields() if name not in have]
+    return {"checked": True, "compiled": not missing and bool(have),
+            "missing": missing, "reason": report.get("reason", "")}
 
 
 def attach(target: str) -> dict:
