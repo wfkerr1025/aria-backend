@@ -219,13 +219,39 @@ def test_the_second_message_never_reaches_a_model(tmp_path):
     assert answer["text"].startswith("I did not send anything to Unity")
 
 
-def test_the_form_the_refusal_recommends_actually_works():
-    """A message that tells the user what to type has to be right."""
-    assert actions.parse_bridge_calls(
-        'CreateLight(type="Directional", name="DirectionalLight", intensity=1.2)'
-    ) == [{"command": "CreateLight",
-           "args": {"type": "Directional", "name": "DirectionalLight",
-                    "intensity": 1.2}}]
+def test_the_refusal_ends_with_a_call_that_runs():
+    """Whatever a message ends with will be pasted back, so it must run.
+
+    The first version ended with the SHAPE -- "CreateLight(type=...,
+    name=...)" -- and the ellipsis came back pasted into a command, which
+    is a SyntaxError, which reached a model, which said it had made a
+    light. Anything this message ends with had better be a real call, so
+    the test feeds the suggestion straight back in.
+    """
+    with pytest.raises(actions.Unmappable) as refused:
+        actions.parse_bridge_calls(
+            'CreateLight("DirectionalLight", type="Directional", intensity=1.2)')
+
+    suggested = str(refused.value).split("come up: ", 1)[1]
+    assert "..." not in suggested
+
+    assert actions.parse_bridge_calls(suggested) == [
+        {"command": "CreateLight",
+         "args": {"type": "Directional", "name": "DirectionalLight",
+                  "intensity": 1.2}}]
+
+
+def test_the_suggestion_keeps_every_value_that_was_given():
+    with pytest.raises(actions.Unmappable) as refused:
+        actions.parse_bridge_calls(
+            'CreateLight("DirectionalLight", type="Directional", '
+            'position={"x":0,"y":10,"z":0}, intensity=1.2)')
+
+    suggested = str(refused.value).split("come up: ", 1)[1]
+    assert actions.parse_bridge_calls(suggested) == [
+        {"command": "CreateLight",
+         "args": {"type": "Directional", "name": "DirectionalLight",
+                  "position": {"x": 0, "y": 10, "z": 0}, "intensity": 1.2}}]
 
 
 def test_a_camera_with_dict_vectors_maps():
@@ -234,6 +260,61 @@ def test_a_camera_with_dict_vectors_maps():
         'CreateCamera("MainCamera", position={"x":0,"y":1.6,"z":-3})'
     ) == [{"command": "CreateCamera",
            "args": {"name": "MainCamera", "position": {"x": 0, "y": 1.6, "z": -3}}}]
+
+
+# ======================================================
+# The third one: a call that does not parse is still a call
+#
+# The refusal above ends "CreateLight(type=..., name=..., position=...)".
+# A person read that as the shape to type and pasted it, ellipsis and
+# all -- and a positional argument after keyword arguments is a Python
+# SyntaxError. Ownership was decided by ast.parse succeeding, so the line
+# was disowned, and phi-3-mini answered "Light created at specified
+# position and rotation." Nothing was created.
+# ======================================================
+
+THE_PASTED_TEMPLATE = 'CreateLight(type="Directional", name="DirectionalLight", ...)'
+
+
+def test_a_call_that_does_not_parse_is_still_this_layers_business():
+    with pytest.raises(actions.Unmappable, match="placeholder"):
+        actions.parse_bridge_calls(THE_PASTED_TEMPLATE)
+
+
+def test_the_pasted_template_never_reaches_a_model(tmp_path):
+    answer = actions.answer_request(THE_PASTED_TEMPLATE, bridge=Stub(tmp_path))
+
+    assert answer is not None, "None is what let phi-3 claim it made a light"
+    assert answer["ran"] is False
+
+
+def test_an_unfinished_call_says_it_could_not_be_read():
+    with pytest.raises(actions.Unmappable, match="could not read"):
+        actions.parse_bridge_calls('CreateLight("x", type="y"')
+
+
+def test_a_call_written_across_lines_is_one_call():
+    """Paste formatted code and the formatting comes with it."""
+    assert actions.parse_bridge_calls(
+        'CreateCamera("MainCamera",\n'
+        '             position={"x":0,"y":1.6,"z":-3},\n'
+        '             rotation={"x":10,"y":0,"z":0})'
+    ) == [{"command": "CreateCamera",
+           "args": {"name": "MainCamera",
+                    "position": {"x": 0, "y": 1.6, "z": -3},
+                    "rotation": {"x": 10, "y": 0, "z": 0}}}]
+
+
+def test_calls_separated_by_commas_are_still_separate():
+    """The other thing a trailing comma means, and both have to work."""
+    assert actions.parse_bridge_calls('Ping(),\nPing()') == [
+        {"command": "Ping", "args": {}}, {"command": "Ping", "args": {}}]
+
+
+def test_prose_is_never_swallowed_into_the_line_above_it():
+    """Continuation is only attempted for a piece that names a command."""
+    with pytest.raises(actions.Unmappable, match="not both"):
+        actions.parse_bridge_calls('Ping()\nnow tell me what happened')
 
 
 # ======================================================

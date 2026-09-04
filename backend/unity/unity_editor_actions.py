@@ -41,7 +41,9 @@ is the failure the whole file exists to prevent.
 from __future__ import annotations
 
 import ast
+import json
 import logging
+import re
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -141,40 +143,122 @@ def _without_code_fence(text: Any) -> str:
     return "\n".join(lines).strip()
 
 
-def _statements(body: str) -> list[str]:
-    """One call per entry, split on the two separators a person uses."""
+# The name at the front of a call, read WITHOUT parsing. Ownership has to
+# survive a statement that does not parse -- see _statements.
+_CALL_START = re.compile(r"^\s*([A-Za-z_]\w*)\s*\(")
+
+
+def _names_a_command(piece: str, canonical: dict[str, str]) -> Optional[str]:
+    match = _CALL_START.match(piece)
+    return canonical.get(match.group(1).lower()) if match else None
+
+
+def _pieces(body: str) -> list[str]:
+    """The message cut at the two separators a person writes between calls."""
     found = []
     for line in body.splitlines():
         for part in line.split(";"):
-            part = part.strip().rstrip(",")
+            part = part.strip()
             if part:
                 found.append(part)
     return found
 
 
-def _call_to(statement: str, canonical: dict[str, str]):
-    """(command name, the parsed call) when the statement is one of ours.
+def _closes(text: str) -> bool:
+    """Whether this reads as one finished call."""
+    try:
+        node = ast.parse(text, mode="eval").body
+    except SyntaxError:
+        return False
+    return isinstance(node, ast.Call)
 
-    None means the statement is not a bridge call at all -- prose, a
-    sentence with a call quoted inside it, a name this bridge does not
-    have. That is an ownership question, and it is answered by the SHAPE
-    of the statement, never by whether its arguments turned out to work.
+
+def _statements(body: str, canonical: dict[str, str]) -> list[str]:
+    """Whole calls, even when one of them is written across several lines.
+
+    A person pasting formatted code brings the formatting with it:
+
+        CreateCamera("MainCamera",
+                     position={"x":0,"y":1.6,"z":-3})
+
+    Split by line, neither half is a call, so nothing here would have
+    recognised the message and a model would have got it.
+
+    Continuation is only ever attempted for a piece that NAMES a bridge
+    command, so prose is never swallowed into the line above it. A
+    trailing comma is tried both ways: it separates two finished calls
+    as often as it continues an unfinished one.
     """
+    statements: list[str] = []
+    buffer = ""
+    for piece in _pieces(body):
+        if buffer:
+            buffer = f"{buffer}\n{piece}"
+        elif _names_a_command(piece, canonical):
+            buffer = piece
+        else:
+            statements.append(piece)
+            continue
+
+        if _closes(buffer):
+            statements.append(buffer)
+            buffer = ""
+        elif buffer.endswith(",") and _closes(buffer[:-1]):
+            statements.append(buffer[:-1])
+            buffer = ""
+
+    if buffer:
+        # Unfinished at the end of the message. It still names a command,
+        # so it is ours, and _arguments says what is wrong with it.
+        statements.append(buffer)
+    return statements
+
+
+def _call_to(statement: str, canonical: dict[str, str]):
+    """(command name, the parsed call or None) when the statement is ours.
+
+    Ownership is the NAME at the front and nothing else. A statement that
+    names a bridge command is this layer's business even when it does not
+    parse, and the node comes back None so _arguments can say why.
+
+    That distinction is the second thing this module learned the hard
+    way. Told to write
+
+        CreateLight(type="Directional", name="DirectionalLight", ...)
+
+    a person pasted it as given -- and a positional argument after
+    keyword arguments is a Python SyntaxError. Ownership was decided by
+    ast.parse succeeding, so the line was disowned, and phi-3-mini
+    answered "Light created at specified position and rotation." Nothing
+    was created. A message this obviously meant for the bridge must never
+    be able to reach a model, whatever is wrong with it.
+
+    None means it is not a bridge call at all -- prose, a sentence with a
+    call quoted inside it, a name this bridge does not have.
+    """
+    name = _names_a_command(statement, canonical)
+    if name is None:
+        return None
     try:
         node = ast.parse(statement, mode="eval").body
     except SyntaxError:
-        return None
+        return name, None
     if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
-        return None
-    name = canonical.get(node.func.id.lower())
-    return None if name is None else (name, node)
+        return name, None
+    return name, node
 
 
 _ORDINALS = {1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth"}
 
 
-def _given_twice(name: str, key: str, order: tuple[str, ...]) -> str:
-    """The collision that cost a scene, explained with the line that works.
+def _render(value: Any) -> str:
+    """One argument as a person would type it."""
+    return json.dumps(value) if isinstance(value, str) else repr(value)
+
+
+def _given_twice(name: str, key: str, order: tuple[str, ...],
+                 displaced: Any, keywords: dict) -> str:
+    """The collision that cost a scene, answered with the line that works.
 
     CreateGameObject and CreateCamera take the name first. CreateLight
     takes the light TYPE first and the name second. Someone writing the
@@ -183,18 +267,35 @@ def _given_twice(name: str, key: str, order: tuple[str, ...]) -> str:
         CreateLight("DirectionalLight", type="Directional", intensity=1.2)
 
     hands type both ways. The bridge's own signature is the odd one out
-    here, so the message says which order it wants rather than implying
-    the person got it wrong.
+    here, so this says which order it wants rather than implying the
+    person got it wrong.
+
+    WHY IT WRITES THE CALL OUT IN FULL
+    The first version of this message ended with a SHAPE --
+    "CreateLight(type=..., name=..., position=...)" -- and the ellipsis
+    was read as part of the syntax and pasted back verbatim. A message
+    that ends in something pasteable will be pasted, so what it ends
+    with had better run.
     """
     place = order.index(key) + 1
     ordinal = _ORDINALS.get(place, f"{place}th")
+
+    # The unnamed value landed in an argument that was also named, so it
+    # was meant for a different slot -- the first one still free.
+    values = dict(keywords)
+    free = next((item for item in order if item not in values), None)
+    if free is not None:
+        values[free] = displaced
+    written = ", ".join(f"{item}={_render(values[item])}"
+                        for item in order if item in values)
+
     return (f"{name} was given {key} twice -- as its {ordinal} unnamed value and "
             f"again by name. Unnamed values are read in this order: "
-            f"{', '.join(order)}. Naming them avoids the question: "
-            f"{name}({', '.join(item + '=...' for item in order)}).")
+            f"{', '.join(order)}. Name them and the question does not come up: "
+            f"{name}({written})")
 
 
-def _arguments(name: str, node: ast.Call, statement: str) -> dict:
+def _arguments(name: str, node: Optional[ast.Call], statement: str) -> dict:
     """The call's arguments, or Unmappable saying what is wrong with the line.
 
     ast is the whole safety story: the statement is PARSED and its values
@@ -202,6 +303,19 @@ def _arguments(name: str, node: ast.Call, statement: str) -> dict:
     `OpenScene(__import__("os").system("del *"))` is a line this refuses
     rather than a hole.
     """
+    if node is None:
+        # "..." is how this module's own error message wrote "and the
+        # rest", and it came back pasted into a command. Worth naming,
+        # because a person reading a template does exactly that.
+        if "..." in statement:
+            raise Unmappable(
+                f"{statement} is not a finished call -- the ... is a placeholder, "
+                f"not an argument. Write out the arguments you want, or leave "
+                f"them off entirely.")
+        raise Unmappable(
+            f"I could not read {statement} as a {name} call. Check the brackets "
+            f"and quotes, and write each argument as name=value.")
+
     if any(isinstance(arg, ast.Starred) for arg in node.args):
         raise Unmappable(f"{statement} unpacks its arguments, and I would have to "
                          f"run something to find out what they are. Write them out.")
@@ -229,13 +343,17 @@ def _arguments(name: str, node: ast.Call, statement: str) -> dict:
     # componentType, component_type and componenttype are the same
     # argument. The bridge's own spelling is what gets sent.
     known = {key.lower(): key for key in ARGUMENTS[name]}
+    named: dict[str, Any] = {}
     for raw, value in supplied.items():
         key = known.get(raw.replace("_", "").lower())
         if key is None:
             raise Unmappable(f"{name} has no {raw} argument. It takes: "
                              f"{', '.join(ARGUMENTS[name]) or 'nothing'}.")
+        named[key] = value
+
+    for key, value in named.items():
         if key in args:
-            raise Unmappable(_given_twice(name, key, order))
+            raise Unmappable(_given_twice(name, key, order, args[key], named))
         args[key] = value
 
     return args
@@ -290,7 +408,7 @@ def parse_bridge_calls(text: Any) -> Optional[list[dict]]:
         return None
 
     canonical = {name.lower(): name for name in COMMANDS}
-    statements = _statements(body)
+    statements = _statements(body, canonical)
     calls = [(statement, _call_to(statement, canonical)) for statement in statements]
     if not any(call for _statement, call in calls):
         return None
