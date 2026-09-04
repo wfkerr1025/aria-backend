@@ -200,58 +200,82 @@ THE_SECOND_MESSAGE = (
 )
 
 
-def test_the_light_that_defeated_it_is_refused_not_disowned():
+def test_the_second_message_maps_now_that_the_light_takes_a_name_first():
+    """Refusing this was the right answer to the wrong question.
+
+    The message is not wrong. Every Create* line in it puts the name
+    first, which is what CreateGameObject and CreateCamera do; only
+    CreateLight read that value as the light type. The refusal explained
+    itself well and the person deleted the light -- twice -- and then
+    said they could not add any lights at all.
+    """
+    assert actions.parse_bridge_calls(THE_SECOND_MESSAGE) == [
+        {"command": "CreateCamera",
+         "args": {"name": "MainCamera",
+                  "position": {"x": 0, "y": 1.6, "z": -3},
+                  "rotation": {"x": 10, "y": 0, "z": 0}}},
+        {"command": "CreateLight",
+         "args": {"name": "DirectionalLight", "type": "Directional",
+                  "intensity": 1.2}},
+    ]
+
+
+@pytest.mark.parametrize("text, expected", [
+    # The two lines that were actually deleted from a real session.
+    ('CreateLight("WorkshopLamp", type="Point", position={"x":0,"y":3,"z":0}, '
+     'intensity=3.0, range=8)',
+     {"name": "WorkshopLamp", "type": "Point", "position": {"x": 0, "y": 3, "z": 0},
+      "intensity": 3.0, "range": 8}),
+    ('CreateLight("PortalGlow", type="Point", position={"x":1.5,"y":2.5,"z":2}, '
+     'intensity=2.5, range=4)',
+     {"name": "PortalGlow", "type": "Point",
+      "position": {"x": 1.5, "y": 2.5, "z": 2}, "intensity": 2.5, "range": 4}),
+    # And the fully named form, which never stopped working.
+    ('CreateLight(type="Directional", name="DirectionalLight", intensity=1.2)',
+     {"type": "Directional", "name": "DirectionalLight", "intensity": 1.2}),
+])
+def test_the_lights_from_that_session(text, expected):
+    assert actions.parse_bridge_calls(text) == [
+        {"command": "CreateLight", "args": expected}]
+
+
+def test_every_create_reads_its_first_unnamed_value_as_the_name():
+    """The rule, stated once, so a fifth Create cannot quietly differ."""
+    for name in ("CreateGameObject", "CreateCamera", "CreateLight"):
+        assert actions.POSITIONAL[name][0] == "name", name
+    # InstantiatePrefab is the deliberate exception: what it makes is
+    # identified by the asset it comes from, and the name is optional.
+    assert actions.POSITIONAL["InstantiatePrefab"][0] == "prefabPath"
+
+
+def test_a_value_really_given_twice_is_still_refused():
+    """The collision check did not go away with the signature that caused it."""
     with pytest.raises(actions.Unmappable) as refused:
-        actions.parse_bridge_calls(THE_SECOND_MESSAGE)
+        actions.parse_bridge_calls('CreateLight("Lamp", name="Other")')
 
     said = str(refused.value)
-    assert "CreateLight was given type twice" in said
-    # The signature is the odd one out, so the message says which order
-    # it wants rather than implying the person got it wrong.
-    assert "type, name, position, rotation, intensity, color" in said
+    assert "CreateLight was given name twice" in said
+    assert "name, type, position, rotation, intensity, color" in said
 
 
-def test_the_second_message_never_reaches_a_model(tmp_path):
-    answer = actions.answer_request(THE_SECOND_MESSAGE, bridge=Stub(tmp_path))
+def test_the_refusal_shows_both_values_and_guesses_nothing():
+    """It used to end by writing out the call the person probably meant.
 
-    assert answer is not None, "None is what let a model write the scene"
-    assert answer["ran"] is False
-    assert answer["text"].startswith("I did not send anything to Unity")
-
-
-def test_the_refusal_ends_with_a_call_that_runs():
-    """Whatever a message ends with will be pasted back, so it must run.
-
-    The first version ended with the SHAPE -- "CreateLight(type=...,
-    name=...)" -- and the ellipsis came back pasted into a command, which
-    is a SyntaxError, which reached a model, which said it had made a
-    light. Anything this message ends with had better be a real call, so
-    the test feeds the suggestion straight back in.
+    That was right while CreateLight's signature was the trap: the
+    displaced value could only have been the name, so moving it there was
+    safe. With the signature fixed, a collision is a real mistake and the
+    next free slot is not a safe guess -- for CreateGameObject the free
+    slot is `parent`, and suggesting parent="Crate" produces a call that
+    RUNS and quietly parents the object to something nobody named.
     """
     with pytest.raises(actions.Unmappable) as refused:
         actions.parse_bridge_calls(
-            'CreateLight("DirectionalLight", type="Directional", intensity=1.2)')
+            'CreateGameObject("Crate", name="Box", primitive="Cube")')
 
-    suggested = str(refused.value).split("come up: ", 1)[1]
-    assert "..." not in suggested
-
-    assert actions.parse_bridge_calls(suggested) == [
-        {"command": "CreateLight",
-         "args": {"type": "Directional", "name": "DirectionalLight",
-                  "intensity": 1.2}}]
-
-
-def test_the_suggestion_keeps_every_value_that_was_given():
-    with pytest.raises(actions.Unmappable) as refused:
-        actions.parse_bridge_calls(
-            'CreateLight("DirectionalLight", type="Directional", '
-            'position={"x":0,"y":10,"z":0}, intensity=1.2)')
-
-    suggested = str(refused.value).split("come up: ", 1)[1]
-    assert actions.parse_bridge_calls(suggested) == [
-        {"command": "CreateLight",
-         "args": {"type": "Directional", "name": "DirectionalLight",
-                  "position": {"x": 0, "y": 10, "z": 0}, "intensity": 1.2}}]
+    said = str(refused.value)
+    assert '"Crate"' in said and '"Box"' in said, "show both, so the conflict is visible"
+    assert "Give name once." in said
+    assert "parent=" not in said, "a guessed slot is a call that runs and is wrong"
 
 
 def test_a_camera_with_dict_vectors_maps():

@@ -119,7 +119,29 @@ POSITIONAL: dict[str, tuple[str, ...]] = {
     "CreatePrefab": ("target", "prefabPath"),
     "ModifyPrefab": ("prefabPath", "operations"),
     "InstantiatePrefab": ("prefabPath", "name", "parent", "position", "rotation"),
-    "CreateLight": ("type", "name", "position", "rotation", "intensity", "color"),
+    # NAME FIRST, deliberately unlike _CommandBuilder.create_light, whose
+    # signature is create_light(light_type, name, ...).
+    #
+    # This table is the TYPED-CALL order, and it is not obliged to match
+    # the Python signature -- it is obliged to match what a person
+    # writing these lines means. Measured, in one message:
+    #
+    #     CreateCamera("MainCamera", position=..., rotation=...)
+    #     CreateLight("WorkshopLamp", type="Point", intensity=3.0, range=8)
+    #     CreateGameObject("MiningArea", primitive="Cube", position=...)
+    #     ... five more, all name first
+    #
+    # Every Create* in the message put the name first, because that is
+    # what CreateGameObject and CreateCamera do. Only CreateLight read it
+    # as the light type, so type arrived twice and the line was refused.
+    # The refusal explained itself clearly and the person deleted the
+    # light and moved on -- twice, and then said they could not add any
+    # lights at all.
+    #
+    # A message that is right in the only way a reader would write it is
+    # not a message to explain. Type is named or defaulted; the first
+    # unnamed value is the name, in all four Create* commands.
+    "CreateLight": ("name", "type", "position", "rotation", "intensity", "color"),
     "CreateCamera": ("name", "position", "rotation", "fov", "clearFlags"),
 }
 
@@ -258,41 +280,27 @@ def _render(value: Any) -> str:
 
 def _given_twice(name: str, key: str, order: tuple[str, ...],
                  displaced: Any, keywords: dict) -> str:
-    """The collision that cost a scene, answered with the line that works.
+    """One argument, supplied both ways, with both values shown.
 
-    CreateGameObject and CreateCamera take the name first. CreateLight
-    takes the light TYPE first and the name second. Someone writing the
-    three together puts the name first in all of them, so
+    This used to end by writing out the call the person probably meant,
+    moving the unnamed value to the next free slot. That was worth doing
+    while CreateLight read its first unnamed value as the light TYPE and
+    everything beside it read a name -- the collision was the API's
+    fault, and the guess was always right.
 
-        CreateLight("DirectionalLight", type="Directional", intensity=1.2)
-
-    hands type both ways. The bridge's own signature is the odd one out
-    here, so this says which order it wants rather than implying the
-    person got it wrong.
-
-    WHY IT WRITES THE CALL OUT IN FULL
-    The first version of this message ended with a SHAPE --
-    "CreateLight(type=..., name=..., position=...)" -- and the ellipsis
-    was read as part of the syntax and pasted back verbatim. A message
-    that ends in something pasteable will be pasted, so what it ends
-    with had better run.
+    CreateLight now takes the name first like its neighbours, so a
+    collision that reaches here is a real mistake rather than a trap, and
+    the next free slot is no longer a safe guess: for
+    CreateGameObject("Crate", name="Box") it is `parent`, and suggesting
+    parent="Crate" would produce a call that RUNS and quietly does
+    something nobody asked for. So this states the conflict and stops.
     """
     place = order.index(key) + 1
     ordinal = _ORDINALS.get(place, f"{place}th")
-
-    # The unnamed value landed in an argument that was also named, so it
-    # was meant for a different slot -- the first one still free.
-    values = dict(keywords)
-    free = next((item for item in order if item not in values), None)
-    if free is not None:
-        values[free] = displaced
-    written = ", ".join(f"{item}={_render(values[item])}"
-                        for item in order if item in values)
-
-    return (f"{name} was given {key} twice -- as its {ordinal} unnamed value and "
-            f"again by name. Unnamed values are read in this order: "
-            f"{', '.join(order)}. Name them and the question does not come up: "
-            f"{name}({written})")
+    return (f"{name} was given {key} twice -- as its {ordinal} unnamed value "
+            f"({_render(displaced)}) and again by name ({_render(keywords[key])}). "
+            f"Unnamed values are read in this order: {', '.join(order)}. Give "
+            f"{key} once.")
 
 
 def _arguments(name: str, node: Optional[ast.Call], statement: str) -> dict:
