@@ -274,6 +274,19 @@ def test_a_folder_without_assets_is_refused(tmp_path):
         ueb.UnityEditorBridge(tmp_path)
 
 
+def test_a_folder_holding_one_project_resolves_to_it(project):
+    """The workspace is often the folder the projects live in, not a project."""
+    assert ueb.find_project_root(project.parent) == project.resolve()
+
+
+def test_a_folder_holding_several_projects_names_them(project):
+    other = project.parent / "Other"
+    (other / "Assets").mkdir(parents=True)
+
+    with pytest.raises(ueb.UnityBridgeUnavailable, match="'Other', 'Proj'"):
+        ueb.find_project_root(project.parent)
+
+
 def test_install_copies_the_real_bridge_source_once(bridge):
     assert ueb.BRIDGE_SOURCE.is_file(), "the C# bridge must ship in the repo"
     assert not bridge.is_installed()

@@ -168,9 +168,11 @@ def find_project_root(explicit: str | os.PathLike | None = None) -> Path:
 
     Explicit argument, then ARIA_UNITY_PROJECT, then whatever
     backend.core.unity_ops resolves (the plugin's setting or the workspace),
-    then the current directory. Raises rather than guessing when the
-    result has no Assets folder: a bridge pointed at the wrong place would
-    wait a minute to say nothing.
+    then the current directory. A folder that holds exactly one Unity
+    project resolves to that project, since the workspace is often the
+    folder the projects live in. Raises rather than guessing when the
+    result is neither: a bridge pointed at the wrong place would wait a
+    minute to say nothing.
     """
     candidate: Path | None = None
 
@@ -187,11 +189,29 @@ def find_project_root(explicit: str | os.PathLike | None = None) -> Path:
             candidate = Path.cwd()
 
     root = candidate.expanduser().resolve()
-    if not (root / "Assets").is_dir():
+    if (root / "Assets").is_dir():
+        return root
+
+    inside = _projects_inside(root)
+    if len(inside) == 1:
+        return inside[0]
+    if inside:
+        names = ", ".join(repr(project.name) for project in inside)
         raise UnityBridgeUnavailable(
-            f"{root} is not a Unity project (no Assets folder). Pass project_root "
-            f"or set {ENV_PROJECT}.")
-    return root
+            f"{root} holds several Unity projects ({names}). Pass project_root "
+            f"or set {ENV_PROJECT} to the one you mean.")
+    raise UnityBridgeUnavailable(
+        f"{root} is not a Unity project (no Assets folder). Pass project_root "
+        f"or set {ENV_PROJECT}.")
+
+
+def _projects_inside(root: Path) -> list[Path]:
+    """The Unity projects one level down, in name order; nothing if root cannot be read."""
+    try:
+        children = sorted(child for child in root.iterdir() if child.is_dir())
+    except OSError:
+        return []
+    return [child for child in children if (child / "Assets").is_dir()]
 
 
 def _default_timeout() -> float:
