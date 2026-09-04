@@ -1,0 +1,173 @@
+"""Typed calls for Blender: what maps, and what is refused rather than guessed."""
+
+import pytest
+
+from backend.blender import blender_typed_calls as tc
+
+
+# ======================================================
+# The vocabulary
+# ======================================================
+
+def test_every_action_is_callable_as_a_typed_name():
+    """The table is derived, so it cannot drift from blender_actions."""
+    import inspect
+
+    from backend.blender import blender_actions
+
+    expected = {
+        name for name in blender_actions.__all__
+        if name not in tc._NOT_OPERATIONS
+        and inspect.isfunction(getattr(blender_actions, name, None))
+    }
+
+    derived = {operation.python_name for operation in tc.OPERATIONS.values()}
+    assert derived == expected
+
+
+def test_names_are_pascal_case():
+    assert "AddCube" in tc.OPERATIONS
+    assert "SmartUvProject" in tc.OPERATIONS
+    assert "ExportGlb" in tc.OPERATIONS
+
+
+# ======================================================
+# Reading a message
+# ======================================================
+
+def test_a_sentence_is_not_this_layers_business():
+    """A question about AddCube must reach a model, not be run."""
+    assert tc.parse_blender_calls("how does AddCube work?") is None
+    assert tc.parse_blender_calls("") is None
+
+
+def test_a_build_maps_in_order():
+    planned = tc.parse_blender_calls(
+        'AddCube("BenchTop", size=1, location=[0, 0, 0.9])\n'
+        'Scale("BenchTop", 1.2, 0.1, 0.7)\n'
+        'ExportGlb("out.glb", "BenchTop")')
+
+    assert [step["function"] for step in planned] == ["add_cube", "scale", "export_glb"]
+    assert planned[0]["args"] == {"name": "BenchTop", "size": 1, "location": [0, 0, 0.9]}
+    assert planned[1]["args"] == {"obj": "BenchTop", "x": 1.2, "y": 0.1, "z": 0.7}
+
+
+def test_a_code_fence_is_stripped():
+    planned = tc.parse_blender_calls('```\nAddCube("A")\nAddSphere("B")\n```')
+    assert [step["operation"] for step in planned] == ["AddCube", "AddSphere"]
+
+
+def test_a_call_may_span_lines():
+    planned = tc.parse_blender_calls(
+        'AddCylinder("Pillar",\n'
+        '            radius=0.15,\n'
+        '            depth=2.0)')
+    assert planned[0]["args"] == {"name": "Pillar", "radius": 0.15, "depth": 2.0}
+
+
+def test_camel_case_arguments_are_accepted():
+    """Nobody typing calls should have to know which spelling Python used."""
+    planned = tc.parse_blender_calls('AddTorus("Ring", majorRadius=2, minorRadius=0.3)')
+    assert planned[0]["args"] == {"name": "Ring", "major_radius": 2, "minor_radius": 0.3}
+
+
+# ======================================================
+# Name first
+# ======================================================
+
+def test_add_cube_reads_the_name_first():
+    """add_cube's signature is (size, location, name); the typed call is not.
+
+    Every other Create* in ARIA takes the name first, and reading
+    AddCube("BenchTop") as a size is the CreateLight trap again.
+    """
+    assert tc.OPERATIONS["AddCube"].order[0] == "name"
+
+    planned = tc.parse_blender_calls('AddCube("BenchTop", 1.5)')
+    assert planned[0]["args"] == {"name": "BenchTop", "size": 1.5}
+
+
+@pytest.mark.parametrize("call, expected", [
+    ('AddSphere("Boulder", 0.8)', {"name": "Boulder", "radius": 0.8}),
+    ('AddPlane("Floor", 10)', {"name": "Floor", "size": 10}),
+])
+def test_every_primitive_reads_the_name_first(call, expected):
+    assert tc.parse_blender_calls(call)[0]["args"] == expected
+
+
+# ======================================================
+# Being wrong out loud
+# ======================================================
+
+def test_prose_mixed_with_calls_is_refused_not_half_run():
+    """The failure this exists to prevent: four good lines and one sentence."""
+    with pytest.raises(tc.Unmappable, match="not both in one message"):
+        tc.parse_blender_calls('AddCube("X")\nplease also bevel it')
+
+
+def test_an_unknown_argument_names_what_is_taken():
+    with pytest.raises(tc.Unmappable, match="no sizze argument"):
+        tc.parse_blender_calls('AddCube("X", sizze=2)')
+
+
+def test_an_argument_given_twice_is_refused():
+    with pytest.raises(tc.Unmappable, match="given name twice"):
+        tc.parse_blender_calls('AddCube("X", 2, name="Y")')
+
+
+def test_an_expression_is_refused_rather_than_evaluated():
+    with pytest.raises(tc.Unmappable, match="plain value"):
+        tc.parse_blender_calls('AddCube("X", size=1+1)')
+
+
+def test_too_many_unnamed_values_are_refused():
+    with pytest.raises(tc.Unmappable, match="at most"):
+        tc.parse_blender_calls('AddCube("X", 1, [0,0,0], "extra", "more")')
+
+
+# ======================================================
+# Running
+# ======================================================
+
+def test_a_failing_step_stops_the_ones_after_it(monkeypatch):
+    """A bevel on an object the previous line failed to make is not partial
+    success, it is a different object."""
+    calls = []
+
+    def ok(**kwargs):
+        calls.append("add_cube")
+        return {"ok": True}
+
+    def broken(**kwargs):
+        calls.append("scale")
+        return {"ok": False, "error": "no such object"}
+
+    def never(**kwargs):
+        calls.append("export_glb")
+        return {"ok": True}
+
+    monkeypatch.setattr(tc.OPERATIONS["AddCube"], "function", ok)
+    monkeypatch.setattr(tc.OPERATIONS["Scale"], "function", broken)
+    monkeypatch.setattr(tc.OPERATIONS["ExportGlb"], "function", never)
+
+    planned = tc.parse_blender_calls(
+        'AddCube("X")\nScale("X", 2, 2, 2)\nExportGlb("out.glb")')
+    results = tc.run_blender_calls(planned)
+
+    assert calls == ["add_cube", "scale"]
+    assert [result["ok"] for result in results] == [True, False]
+
+
+def test_answer_typed_reports_a_refusal_without_running(monkeypatch):
+    ran = []
+    monkeypatch.setattr(tc.OPERATIONS["AddCube"], "function",
+                        lambda **kwargs: ran.append(1) or {"ok": True})
+
+    answer = tc.answer_typed('AddCube("X")\nplease also bevel it')
+
+    assert answer["ran"] is False
+    assert ran == []
+
+
+def test_answer_typed_hands_a_question_back():
+    assert tc.answer_typed("what does ExportGlb do?") is None
