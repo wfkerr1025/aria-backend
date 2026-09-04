@@ -76,14 +76,19 @@ def test_cloud_mode_ignores_explicit_local_model_id():
 
     provider, resolved_model_id = _with_mode_manager(scenario)
     # Batch 2: Cloud Mode now resolves a REAL cloud model via
-    # backend.core.model_selector (e.g. "gpt-4" for openai) instead of
-    # always None — the actual regression this guards against is the
-    # REJECTED local model_id ("nemo-12b-q5") surviving through, not
-    # resolved_model_id being non-null in general.
+    # backend.core.model_selector instead of always None — the actual
+    # regression this guards against is the REJECTED local model_id
+    # ("nemo-12b-q5") surviving through, not resolved_model_id being
+    # non-null in general.
     assert resolved_model_id != "nemo-12b-q5", (
         f"Cloud Mode must never return the rejected local model_id, got {resolved_model_id!r}"
     )
-    assert resolved_model_id == "gpt-4", resolved_model_id
+    # Read from the table rather than restating it. Spelling the id out
+    # here made a catalogue refresh look like a mode-separation failure,
+    # which is the opposite of what this test is about.
+    from backend.core.model_selector import CLOUD_DEFAULT_MODELS
+
+    assert resolved_model_id == CLOUD_DEFAULT_MODELS["openai"][0], resolved_model_id
     assert type(provider).__module__.endswith("openai_wrapper"), (
         f"expected fallthrough to the cloud provider, got module {type(provider).__module__}"
     )
@@ -110,11 +115,13 @@ def test_cloud_mode_never_falls_back_to_qwen_or_any_local_model():
 
     provider, resolved_model_id = _with_mode_manager(scenario)
     # Batch 2: Cloud Mode now resolves a REAL cloud model via
-    # model_selector (e.g. "claude-3-opus" for anthropic) instead of
-    # always None — the regression this guards against is a LOCAL
-    # registry model_id surviving through, not non-null in general.
+    # model_selector instead of always None — the regression this guards
+    # against is a LOCAL registry model_id surviving through, not
+    # non-null in general.
+    from backend.core.model_selector import CLOUD_DEFAULT_MODELS
+
     assert resolved_model_id != "qwen2.5-0.5b-instruct-q4_k_m"
-    assert resolved_model_id == "claude-3-opus", resolved_model_id
+    assert resolved_model_id == CLOUD_DEFAULT_MODELS["anthropic"][0], resolved_model_id
     assert type(provider).__module__.endswith("anthropic_wrapper")
 
 

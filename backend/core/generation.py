@@ -92,27 +92,54 @@ def make_generator(
         raise ModeSeparationError(model_id, mode)
 
     def generate(prompt: str) -> str:
-        router = ProviderRouter()
-        provider, resolved_model_id = router.resolve(model_id, prompt)
+        if stream_sink is None:
+            # This branch needs a provider object of its own, so it is the
+            # one that resolves here. (It has never run -- see the note in
+            # turn_orchestrator._classifier_generator -- and is left
+            # exactly as it was.)
+            router = ProviderRouter()
+            provider, resolved_model_id = router.resolve(model_id, prompt)
+            if provider is None:
+                # ProviderRouter returning (None, None) is its documented
+                # way of refusing -- Cloud Mode with no provider
+                # configured, for instance. Refusing loudly here keeps
+                # that refusal visible instead of an empty answer.
+                raise GenerationUnavailable(
+                    f"No provider available for model_id={model_id!r} in mode {mode!r}."
+                )
+            return str(provider.infer(InferenceRequest(
+                model_id=resolved_model_id,
+                messages=[InferenceMessage(role="user", content=prompt)],
+                max_tokens=max_tokens,
+                temperature=temperature,
+            ))).strip()
 
-        if provider is None:
-            # ProviderRouter returning (None, None) is its documented way
-            # of refusing -- Cloud Mode with no provider configured, for
-            # instance. Refusing loudly here keeps that refusal visible
-            # instead of turning into an empty answer.
-            raise GenerationUnavailable(
-                f"No provider available for model_id={model_id!r} in mode {mode!r}."
-            )
-
+        # ONE resolution, and StreamingEngine does it.
+        #
+        # This used to resolve here as well and put the ANSWER into
+        # request.model_id, which StreamingEngine then resolved a second
+        # time -- as an explicit request, for a model nobody had asked
+        # for. In Automatic mode that is not merely redundant, because
+        # Automatic can answer "cloud", and a cloud model is named by
+        # provider rather than registered as an id. Measured:
+        #
+        #     resolve #1: asked for None    -> 'gpt-4'
+        #     resolve #2: asked for 'gpt-4' -> 'nemo-12b-q5'
+        #       WARNING  Unknown model_id in explicit resolution: gpt-4
+        #
+        # The router warning about its own output, an escalation recorded
+        # in routing_history that never happened, and every Automatic
+        # cloud decision quietly becoming a local one.
+        #
+        # model_id is passed through as the caller gave it, because None
+        # is the meaningful value: it is what tells ProviderRouter to use
+        # its mode-based branches rather than the explicit-model one.
         request = InferenceRequest(
-            model_id=resolved_model_id,
+            model_id=model_id,
             messages=[InferenceMessage(role="user", content=prompt)],
             max_tokens=max_tokens,
             temperature=temperature,
         )
-
-        if stream_sink is None:
-            return str(provider.infer(request)).strip()
 
         chunks: list[str] = []
 

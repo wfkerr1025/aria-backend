@@ -300,8 +300,12 @@ def test_cloud_mode_prefers_anthropic_for_reasoning_when_nothing_manually_pinned
 
         provider, model_id = router.resolve(None, prompt="Explain and analyze the root cause of this bug in detail.")
         # Batch 2: cloud mode now resolves a real model via
-        # backend.core.model_selector instead of always None.
-        assert model_id == "claude-3-opus", model_id
+        # backend.core.model_selector instead of always None. Which model
+        # that is belongs to the catalogue; this test is about WHICH
+        # PROVIDER a reasoning-heavy prompt prefers.
+        from backend.core.model_selector import CLOUD_DEFAULT_MODELS
+
+        assert model_id == CLOUD_DEFAULT_MODELS["anthropic"][0], model_id
         assert type(provider).__module__.endswith("anthropic_wrapper"), (
             f"expected the anthropic provider for a reasoning-heavy prompt, got module {type(provider).__module__}"
         )

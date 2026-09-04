@@ -61,15 +61,37 @@ SelectionResult = Union[ModelInfo, SelectionError]
 # These are deliberately plain, stable model-family names rather than
 # dated snapshot ids (which drift and go stale) — a deployment that
 # needs a specific dated snapshot should set the override instead.
+#
+# THIS TABLE ROTS, AND NOTHING TELLS YOU
+# It sat at gpt-4 / claude-3-opus / gemini-1.5-pro long after all three
+# were superseded, and nothing failed loudly: the ids only reach a real
+# API when a cloud turn actually runs, and until the double resolution
+# in generation.py was fixed, an Automatic cloud decision never got that
+# far. So a row here is checked, or it is a guess, and the two are
+# marked apart below rather than left to look alike.
+#
+# An alias id (mistral-large-latest, openrouter/auto, deepseek-chat)
+# tracks its provider's current model and is the right shape for this
+# table. A named id is a snapshot of a check on a date.
+#
+# CHECKED 2026-09-03 against each provider's own documentation:
+#   anthropic, openai, gemini, grok, cohere
+# NOT CHECKED — still whatever they were, and some are certainly dead
+# (perplexity's llama-3.1-sonar id in particular). Left rather than
+# guessed at: a wrong id here is the failure this comment is about. Set
+# metadata.preferred_cloud_model for any of these before relying on it:
+#   together, perplexity, huggingface, replicate, azure
 # ---------------------------------------------------------------------------
 CLOUD_DEFAULT_MODELS: dict[str, tuple[str, str]] = {
-    "anthropic": ("claude-3-opus", "Claude 3 Opus"),
-    "openai": ("gpt-4", "GPT-4"),
-    "gemini": ("gemini-1.5-pro", "Gemini 1.5 Pro"),
-    "grok": ("grok-2", "Grok 2"),
+    "anthropic": ("claude-opus-5", "Claude Opus 5"),
+    "openai": ("gpt-6-astra", "GPT-6 Astra"),
+    # 3.1 Pro is the Pro-tier flagship but ships as a preview id, and a
+    # preview id is exactly what rots. This is the current stable one.
+    "gemini": ("gemini-3.8-flash", "Gemini 3.8 Flash"),
+    "grok": ("grok-4.6", "Grok 4.6"),
     "mistral": ("mistral-large-latest", "Mistral Large"),
     "deepseek": ("deepseek-chat", "DeepSeek Chat"),
-    "cohere": ("command-r-plus", "Command R+"),
+    "cohere": ("command-a-plus-05-2026", "Command A+"),
     "together": ("meta-llama/Llama-3-70b-chat-hf", "Llama 3 70B"),
     "openrouter": ("openrouter/auto", "OpenRouter Auto"),
     "perplexity": ("llama-3.1-sonar-large-128k-online", "Sonar Large"),

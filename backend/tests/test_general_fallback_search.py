@@ -333,6 +333,45 @@ def test_the_classifier_is_given_a_real_generator(monkeypatch, real_builder):
     assert built[0]["temperature"] == sa.TEMPERATURE
 
 
+@pytest.mark.parametrize("mode, expected", [
+    # Local already named the 0.5B, and still does.
+    ("local", "the classifier's own model"),
+    # Automatic used to defer, which sent a one-token verdict through the
+    # full ladder: escalated to openai, resolved gpt-4, failed to find it
+    # in a registry that holds no cloud ids, and loaded the 12B instead.
+    ("automatic", "the classifier's own model"),
+    # Cloud is untouched. Naming a local model there would break absolute
+    # mode separation, and Automatic is the one mode exempt from it.
+    ("cloud", None),
+])
+def test_which_model_the_classifier_asks_for_in_each_mode(monkeypatch, real_builder,
+                                                          mode, expected):
+    from backend.chat import model_router
+    from backend.core import turn_orchestrator as orch
+    from backend.config.model_roles import installed_model_for
+
+    built = []
+    monkeypatch.setattr(orch, "make_generator",
+                        lambda model_id, turn_mode, **kwargs:
+                        built.append(model_id) or (lambda prompt: "LOCAL"))
+
+    class Session:
+        explicit_model_override = None
+
+    Session.mode = mode
+
+    class Request:
+        session = Session()
+        requested_model_id = None
+
+    real_builder(Request(), lambda: None, None)
+
+    wanted = (model_router.classification_model() if expected else None)
+    assert built == [wanted]
+    if mode != "cloud":
+        assert wanted == installed_model_for("qwen2.5-0.5b")
+
+
 def test_a_generator_the_caller_supplied_is_used_as_is(monkeypatch, real_builder):
     from backend.core import turn_orchestrator as orch
 

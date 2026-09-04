@@ -80,6 +80,7 @@ __all__ = [
     "TURN_CLASSIFICATION",
     "TURN_HEAVY",
     "TURN_TOOLS",
+    "classification_model",
     "classify_turn",
     "select_model_for_turn",
 ]
@@ -494,6 +495,29 @@ def _family_for(turn_kind: str) -> str:
     # The table lives in model_roles, so the routing done here and the
     # floor complexity_router applies when this defers cannot disagree.
     return model_roles.family_for_turn(turn_kind)
+
+
+def classification_model() -> str | None:
+    """The installed model for a classification, whatever the mode is.
+
+    select_model_for_turn defers in every non-local mode, and for a turn
+    a person will read that is right: Automatic must stay free to reach
+    for a cloud provider. A classification is not that turn. Its entire
+    output is one token nobody sees.
+
+    Measured, in Automatic mode: deferring sent the search classifier
+    through the full ladder, which read 626 characters of classifier
+    prompt as a medium-complexity code task, escalated to openai, and
+    resolved gpt-4 -- a model the registry cannot hold, because the
+    registry is local-only by design and a cloud model is named by
+    provider. So it fell back to the default local model and spent eight
+    seconds loading the 12B to answer WEB or LOCAL, while the turn it was
+    classifying went to a 4k phi-3.
+
+    Returns None when nothing in the family is installed, which is the
+    caller's cue to fall back exactly as it did before.
+    """
+    return model_roles.installed_model_for(_family_for(TURN_CLASSIFICATION))
 
 
 def select_model_for_turn(turn_request, workspace_state=None, *, intent=None,

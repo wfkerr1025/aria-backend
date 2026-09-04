@@ -855,6 +855,18 @@ def _classifier_generator(request, default_local_model, supplied):
         # install that has no small model.
         routed = model_router.select_model_for_turn(request, classification_only=True)
         model_id = routed.model_id
+
+        if model_id is None and request.session.mode == "automatic":
+            # Automatic defers on which model runs a turn, and deferring
+            # is right for a turn a person will read. This one nobody
+            # reads: it is one token, and letting it through the ladder
+            # escalated it to a cloud provider and then dropped it onto
+            # the 12B. Automatic is the one mode allowed to use either
+            # registry, so naming a local model here breaks no separation
+            # rule -- which is why this is scoped to Automatic and Cloud
+            # Mode still routes its classifier through the provider.
+            model_id = model_router.classification_model()
+
         if model_id is None:
             model_id, _ = _resolve_model_id(request, default_local_model)
 
