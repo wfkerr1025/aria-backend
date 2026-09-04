@@ -15,6 +15,15 @@ Unity side takes:
     ApplyBevel("BenchTop", amount=0.02, segments=2, apply=True)
     ExportGlb("Assets/Models/bench.glb", "BenchTop")
 
+These plan actions, they do not call blender_actions' functions. Each of
+those is a thin `_one(...)` wrapper that launches Blender immediately from
+--factory-startup, so calling six of them in a row is six Blenders, five of
+which open the default scene and cannot find what the first one made:
+
+    RuntimeError: no object called 'BenchTop' -- the scene has: Camera, Cube, Light
+
+A build is one scene. The whole list goes to run_actions once.
+
 The vocabulary is DERIVED from blender_actions by inspection rather than
 written out. The Unity tables have to be hand-written because the Python
 parameter names and the arguments the C# bridge receives differ; here the
@@ -34,7 +43,7 @@ __all__ = [
     "OPERATIONS",
     "typed_names",
     "parse_blender_calls",
-    "run_blender_calls",
+    "plan_blender_calls",
     "answer_typed",
 ]
 
@@ -188,55 +197,57 @@ def parse_blender_calls(text: Any) -> Optional[list[dict]]:
     return planned
 
 
-def run_blender_calls(planned: list[dict]) -> list[dict]:
-    """Run planned operations in order, stopping at the first failure.
+def plan_blender_calls(text: Any) -> Optional[list[dict]]:
+    """The message as blender_actions descriptors, ready for run_actions.
 
-    Stops rather than continuing because these are construction steps: a
-    bevel applied to an object the previous line failed to create is not
-    a partial success, it is a different object.
+    Every public action is a thin wrapper around _one("<its own name>",
+    **kwargs), verified by a test, so the descriptor is mechanical: the
+    action is the function name and the params are the bound arguments.
     """
-    results: list[dict] = []
+    parsed = parse_blender_calls(text)
+    if parsed is None:
+        return None
 
-    for step in planned:
-        operation = OPERATIONS[step["operation"]]
-        try:
-            outcome = operation.function(**step["args"])
-            ok = not isinstance(outcome, dict) or outcome.get("ok", True)
-            results.append({"operation": step["operation"], "ok": bool(ok), "result": outcome})
-            if not ok:
-                break
-        except Exception as failure:  # a Blender fault is a result, not a crash
-            results.append({
-                "operation": step["operation"],
-                "ok": False,
-                "result": {"error": str(failure)},
-            })
-            break
-
-    return results
+    return [{"action": step["function"], "params": step["args"]} for step in parsed]
 
 
-def answer_typed(text: Any) -> Optional[dict]:
-    """Handle a message of typed calls, or hand the turn back with None."""
+def answer_typed(text: Any, *, on_output=None) -> Optional[dict]:
+    """Run a message of typed calls, or hand the turn back with None.
+
+    One Blender launch for the whole message, so later steps can see what
+    earlier ones built.
+    """
+    from backend.blender import blender_actions
+
     try:
-        planned = parse_blender_calls(text)
+        actions = plan_blender_calls(text)
     except Unmappable as refused:
         return {"ran": False, "text": "I did not run anything. " + str(refused)}
 
-    if not planned:
+    if not actions:
         return None
 
-    results = run_blender_calls(planned)
-    done = sum(1 for result in results if result["ok"])
+    named = ", ".join(action["action"] for action in actions)
+    result = blender_actions.run_actions(actions, on_output=on_output)
 
-    if done == len(planned):
-        return {"ran": True,
-                "text": f"Ran {done} Blender operation(s): "
-                        + ", ".join(step["operation"] for step in planned) + "."}
+    if not result.get("ran"):
+        return {"ran": False, "text": (
+            "I did not run Blender, and nothing happened.\n\n"
+            + str(result.get("error")))}
 
-    failed = next(result for result in results if not result["ok"])
-    detail = failed["result"].get("error") if isinstance(failed["result"], dict) else ""
+    if not result.get("success"):
+        return {"ran": True, "text": (
+            f"I ran Blender with {len(actions)} operation(s) and it failed: "
+            + str(result.get("error")) + "\n\nSteps: " + named)}
 
-    return {"ran": done > 0,
-            "text": f"Ran {done} of {len(planned)} operations, then {failed['operation']} "
-                    f"failed{': ' + detail if detail else ''}. Nothing after it ran."}
+    outcome = result.get("result") or {}
+    made = outcome.get("created") or []
+    exported = outcome.get("exported") or []
+
+    lines = [f"Ran {len(actions)} Blender operation(s): {named}."]
+    if made:
+        lines.append("Created: " + ", ".join(made) + ".")
+    if exported:
+        lines.append("Exported:\n" + "\n".join("- " + path for path in exported))
+
+    return {"ran": True, "text": "\n\n".join(lines)}

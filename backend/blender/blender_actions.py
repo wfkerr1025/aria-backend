@@ -651,8 +651,19 @@ def answer_request(text: str, *,
     prevent.
     """
     from backend.blender import blender_nl_mapping as mapping
+    from backend.blender import blender_typed_calls as typed
 
     said = str(text or "").strip()
+
+    # Typed calls first, and before the names_blender gate: AddCube(...)
+    # never says the word "Blender", and it should not have to. A message
+    # in that syntax identifies itself, the same way the Unity bridge's
+    # does. Returns None when the message is not calls at all, so a
+    # sentence falls straight through to the mapper below.
+    answered = typed.answer_typed(said, on_output=on_output)
+    if answered is not None:
+        return answered
+
     if not mapping.names_blender(said) or mapping.names_another_tool(said):
         return None
 

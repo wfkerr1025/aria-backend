@@ -129,44 +129,52 @@ def test_too_many_unnamed_values_are_refused():
 # Running
 # ======================================================
 
-def test_a_failing_step_stops_the_ones_after_it(monkeypatch):
-    """A bevel on an object the previous line failed to make is not partial
-    success, it is a different object."""
-    calls = []
+def test_a_build_is_one_blender_launch(monkeypatch):
+    """Six operations must be one scene, not six default scenes.
 
-    def ok(**kwargs):
-        calls.append("add_cube")
-        return {"ok": True}
+    blender_actions' public functions each run Blender immediately from
+    --factory-startup, so calling them in sequence loses everything the
+    previous one made. Planning descriptors and running them together is
+    the whole reason plan_blender_calls exists.
+    """
+    launches = []
 
-    def broken(**kwargs):
-        calls.append("scale")
-        return {"ok": False, "error": "no such object"}
+    def once(actions, **kwargs):
+        launches.append([action["action"] for action in actions])
+        return {"ran": True, "success": True,
+                "result": {"created": ["BenchTop"], "exported": ["out.glb"]}}
 
-    def never(**kwargs):
-        calls.append("export_glb")
-        return {"ok": True}
+    from backend.blender import blender_actions
+    monkeypatch.setattr(blender_actions, "run_actions", once)
 
-    monkeypatch.setattr(tc.OPERATIONS["AddCube"], "function", ok)
-    monkeypatch.setattr(tc.OPERATIONS["Scale"], "function", broken)
-    monkeypatch.setattr(tc.OPERATIONS["ExportGlb"], "function", never)
+    answer = tc.answer_typed(
+        'AddCube("BenchTop")\n'
+        'Scale("BenchTop", 2, 2, 2)\n'
+        'ExportGlb("out.glb")')
 
-    planned = tc.parse_blender_calls(
-        'AddCube("X")\nScale("X", 2, 2, 2)\nExportGlb("out.glb")')
-    results = tc.run_blender_calls(planned)
+    assert len(launches) == 1
+    assert launches[0] == ["add_cube", "scale", "export_glb"]
+    assert answer["ran"] is True
 
-    assert calls == ["add_cube", "scale"]
-    assert [result["ok"] for result in results] == [True, False]
+
+def test_a_plan_never_runs_anything(monkeypatch):
+    """Planning is inspection; nothing should reach Blender."""
+    from backend.blender import blender_actions
+    monkeypatch.setattr(blender_actions, "run_actions",
+                        lambda *a, **k: pytest.fail("planning ran Blender"))
+
+    assert tc.plan_blender_calls('AddCube("X")') == [
+        {"action": "add_cube", "params": {"name": "X"}}]
 
 
 def test_answer_typed_reports_a_refusal_without_running(monkeypatch):
-    ran = []
-    monkeypatch.setattr(tc.OPERATIONS["AddCube"], "function",
-                        lambda **kwargs: ran.append(1) or {"ok": True})
+    from backend.blender import blender_actions
+    monkeypatch.setattr(blender_actions, "run_actions",
+                        lambda *a, **k: pytest.fail("a refused message ran Blender"))
 
     answer = tc.answer_typed('AddCube("X")\nplease also bevel it')
 
     assert answer["ran"] is False
-    assert ran == []
 
 
 def test_answer_typed_hands_a_question_back():
