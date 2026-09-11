@@ -456,11 +456,35 @@ class PlaythroughRunner:
         return finish(ok, steps, errors, safe)
 
     def _start(self, seed: str) -> None:
-        if (self.bridge.ping() or {}).get("isPlaying"):
+        """Start a session on the test save, and touch no other.
+
+        A game already running is stopped first only when it is a test
+        session -- one an earlier run left behind. Anything else is someone
+        playing their own save: the bridge would refuse to drive it, and
+        stopping it makes the game save, so the run is refused and the session
+        left alone. The same holds for a Play pressed by hand in the moment
+        between looking and asking, which the bridge answers "Already
+        playing" rather than starting anything.
+        """
+        data = self.bridge.ping() or {}
+        if data.get("isPlaying"):
+            if not data.get("testSave"):
+                raise StepFailed("the editor is already playing on the real save -- someone may be "
+                                 "playing it; the session was left alone")
             self.bridge.set_play_mode(False)
             self._wait_playing(False)
-        self.bridge.set_play_mode(True, seed=seed)
-        self._wait_playing(True, min_frame=5)
+
+        answer = self.bridge.set_play_mode(True, seed=seed) or {}
+        if answer.get("changed") is False:
+            raise StepFailed("the editor was already playing when the run asked to start -- a session "
+                             "the run did not begin; it was left alone")
+
+        started = self._wait_playing(True, min_frame=5)
+        if not started.get("testSave"):
+            # This one the run did start, so stopping it is the run's to do --
+            # and at once, before the game has a chance to save over the player.
+            self.bridge.set_play_mode(False)
+            raise StepFailed("the session started on the real save, not the test save; it was stopped")
 
     def _wait_playing(self, playing: bool, min_frame: int = 0) -> dict:
         deadline = self.monotonic() + self.start_timeout
@@ -773,6 +797,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="play every step even after one fails")
     parser.add_argument("--json", action="store_true", help="print results as JSON")
     options = parser.parse_args(argv)
+
+    # A failure quotes what the game's screen said, and a game's screen says
+    # things a Windows console cannot encode -- a "HIDE ▴" crashed the
+    # summary of a run whose reports had already been written. Escaped, not
+    # dropped, so the quote still shows what was there.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
 
     scripts = _scripts(options.scripts)
     if not scripts:

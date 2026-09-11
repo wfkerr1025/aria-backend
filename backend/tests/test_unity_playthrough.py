@@ -28,6 +28,9 @@ class FakeBridge:
         self.report = None
         self.real_save_safe = True
         self.refuse: set[str] = set()
+        self.test_save = ""
+        self.starts_on_real_save = False
+        self.pressed_play_by_hand = False
 
     def _record(self, name, *args, **kwargs):
         self.sent.append((name, args, kwargs))
@@ -37,14 +40,24 @@ class FakeBridge:
     def ping(self):
         if self.playing:
             self.frame += 10
-        return {"isPlaying": self.playing, "frame": self.frame if self.playing else 0}
+        return {"isPlaying": self.playing, "frame": self.frame if self.playing else 0,
+                "testSave": self.test_save if self.playing else ""}
 
     def set_play_mode(self, playing=True, **kwargs):
         self._record("set_play_mode", playing, **kwargs)
+        if playing and self.pressed_play_by_hand:
+            # Someone pressed Play between the runner looking and asking: the
+            # real bridge answers "Already playing." and starts nothing.
+            self.playing = True
+            return {"changed": False}
+        changed = self.playing != bool(playing)
         if self.playing and not playing:
             self.report = {"startedAt": f"run{len(self.sent)}", "realSaveSafe": self.real_save_safe}
+        if playing and changed:
+            real = self.starts_on_real_save or kwargs.get("test_save") is False
+            self.test_save = "" if real else "ARIA/testsave"
         self.playing = bool(playing)
-        return {"changed": True}
+        return {"changed": changed}
 
     def last_play(self):
         return self.report
@@ -270,12 +283,44 @@ def test_keep_playing_leaves_the_game_running_and_says_the_save_was_not_checked(
     assert result.real_save_safe is None and "not known" in result.summary()
 
 
-def test_a_game_already_playing_is_stopped_first(tmp_path):
+def test_a_test_session_left_playing_is_stopped_first(tmp_path):
     bridge = FakeBridge(tmp_path)
-    bridge.playing = True
+    bridge.playing, bridge.test_save = True, "ARIA/testsave"
     runner(bridge).run({"steps": [{"wait": 0}]})
     names = [(name, args) for name, args, _ in bridge.sent if name == "set_play_mode"]
     assert names[:2] == [("set_play_mode", (False,)), ("set_play_mode", (True,))]
+
+
+def test_someone_playing_the_real_save_is_left_alone(tmp_path):
+    """Stopping a person's session makes their game save; the run is refused instead."""
+    bridge = FakeBridge(tmp_path)
+    bridge.playing = True
+    result = runner(bridge).run({"steps": [{"wait": 0}]})
+
+    assert not result.ok and "already playing on the real save" in result.problem
+    assert bridge.playing, "their session is still running"
+    assert not any(name == "set_play_mode" for name, _, _ in bridge.sent), "nothing started or stopped"
+
+
+def test_play_pressed_by_hand_as_the_run_starts_is_left_alone(tmp_path):
+    """The bridge says 'Already playing' and starts nothing; the run must not take that session."""
+    bridge = FakeBridge(tmp_path)
+    bridge.pressed_play_by_hand = True
+    result = runner(bridge).run({"steps": [{"console": "score 1"}]})
+
+    assert not result.ok and "did not begin" in result.problem
+    assert result.steps == [], "no step was played on it"
+    assert bridge.playing and ("set_play_mode", (False,), {}) not in bridge.sent, "and it was not stopped"
+
+
+def test_a_session_that_starts_on_the_real_save_is_stopped_before_any_step(tmp_path):
+    bridge = FakeBridge(tmp_path)
+    bridge.starts_on_real_save = True
+    result = runner(bridge).run({"steps": [{"console": "score 1"}]})
+
+    assert not result.ok and "started on the real save" in result.problem
+    assert result.steps == [] and not bridge.playing
+    assert not any(name == "run_console" for name, _, _ in bridge.sent)
 
 
 def test_click_text_finds_a_button_by_what_it_says(tmp_path):
