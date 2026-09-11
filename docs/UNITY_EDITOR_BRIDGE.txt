@@ -200,6 +200,18 @@ COMMANDS
                      every overlay canvas onto the capture camera for the one
                      frame and hands them back afterwards. Defaults under
                      ARIA/shots/: a screenshot is evidence, not an asset.
+                     BURST: count? (>1), every? (frames), everySeconds? (0.1
+                     unless every is given), sheet? (true), columns?
+                     (square-ish). While the game plays, takes count shots
+                     (at most 64, 640x360 unless sized), saves each as
+                     <path>_00.png, _01.png..., lays them out on one contact
+                     sheet <path>_sheet.png left to right and top to bottom,
+                     and lists them with frame and seconds in <path>.json.
+                     Returns before the first shot; Ping's burstPending
+                     reaches 0 when it is done and lastBurst names the list.
+                     One burst at a time, refused in edit mode. For what
+                     moves -- a sway, a tumble, a wave -- one frame says
+                     nothing about whether it moves right.
   SetPlayMode        playing? (true), testSave? (true), seed? (keep/fresh/real),
                      keepRunning? (true), allowUnfocused?, skipSnapshot?
                      Returns BEFORE it happens. Entering play mode reloads the

@@ -97,6 +97,7 @@ __all__ = [
     "send_input",
     "read_screen",
     "get_log",
+    "screenshot_burst",
     "install_bridge",
 ]
 
@@ -661,7 +662,9 @@ class _CommandBuilder:
 
     def screenshot(self, path: str | None = None, *,
                    width: int | None = None, height: int | None = None,
-                   view: str | None = None) -> Any:
+                   view: str | None = None, count: int | None = None,
+                   every: int | None = None, every_seconds: float | None = None,
+                   sheet: bool | None = None, columns: int | None = None) -> Any:
         """Render a camera to a PNG and return where it landed.
 
         view: "game" (default) renders the main camera, "scene" the Scene
@@ -673,9 +676,18 @@ class _CommandBuilder:
         capture camera for the single frame and hands them back afterwards.
         Without that, a game that builds its interface in code photographs
         as an empty room.
+
+        count > 1 takes a BURST while the game plays: a shot every
+        every_seconds (0.1 unless every, in frames, is given), saved as
+        <path>_00.png, _01.png..., laid out on one contact sheet
+        <path>_sheet.png in reading order, and listed with frame and time in
+        <path>.json. Shots default to 640x360 in a burst. It returns before
+        the first shot; wait_for_burst() waits and reads the list, and the
+        module-level screenshot_burst() does both.
         """
         return self._submit(make_command(
-            "Screenshot", path=path, width=width, height=height, view=view))
+            "Screenshot", path=path, width=width, height=height, view=view,
+            count=count, every=every, everySeconds=every_seconds, sheet=sheet, columns=columns))
 
     def set_play_mode(self, playing: bool = True, *, test_save: bool = True,
                       seed: str | None = None, keep_running: bool = True,
@@ -1011,6 +1023,38 @@ class UnityEditorBridge(_CommandBuilder):
             return None
         return raw if isinstance(raw, dict) else None
 
+    def read_burst(self, manifest: str | os.PathLike) -> dict | None:
+        """A burst's list of shots, with sheetPath and each shot's absolutePath added; None if absent."""
+        path = Path(manifest)
+        if not path.is_absolute():
+            path = self.project_root / path
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(raw, dict):
+            return None
+        if raw.get("sheet"):
+            raw["sheetPath"] = str(self.project_root / raw["sheet"])
+        for shot in raw.get("shots") or []:
+            if isinstance(shot, dict) and shot.get("path"):
+                shot["absolutePath"] = str(self.project_root / shot["path"])
+        return raw
+
+    def wait_for_burst(self, timeout: float | None = None) -> dict | None:
+        """Wait until a burst has been taken, then return its list of shots."""
+        limit = self.timeout if timeout is None else float(timeout)
+        deadline = time.monotonic() + limit
+        while True:
+            data = self.ping() or {}
+            if not data.get("burstPending"):
+                return self.read_burst(data["lastBurst"]) if data.get("lastBurst") else None
+            if time.monotonic() >= deadline:
+                raise UnityBridgeTimeout(
+                    f"{data.get('burstPending')} shot(s) were still to take after {limit:g}s, at frame "
+                    f"{data.get('frame')}. Is the game advancing?")
+            time.sleep(self.poll_interval)
+
     def wait_for_input(self, timeout: float | None = None) -> dict:
         """Wait until everything send_input queued has played; returns the last ping.
 
@@ -1246,6 +1290,13 @@ def read_screen(targets: Iterable[str] | str | None = None, **extra: Any) -> dic
 
 def get_log(since: int | None = None, **extra: Any) -> dict | None:
     return get_bridge().get_log(since, **extra)
+
+
+def screenshot_burst(count: int = 8, path: str | None = None, **extra: Any) -> dict | None:
+    """Take a burst while the game plays, wait for it, and return its list of shots."""
+    bridge = get_bridge()
+    bridge.screenshot(path, count=count, **extra)
+    return bridge.wait_for_burst() if bridge.wait else None
 
 
 def install_bridge(project_root: str | os.PathLike | None = None) -> Path:

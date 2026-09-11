@@ -864,6 +864,63 @@ def test_chatter_cannot_push_a_fault_out_of_the_log():
     assert "foreach (LogEntry entry in _faults)" in _csharp_method(source, "private static int ErrorsSince(")
 
 
+def test_a_burst_is_a_screenshot_with_a_count(bridge):
+    def reply(commands):
+        assert commands[0] == {"command": "Screenshot", "args": {
+            "path": "ARIA/shots/charm", "count": 8, "everySeconds": 0.15, "columns": 4}}
+        return [ok("Screenshot", burst=True, manifest="ARIA/shots/charm.json")]
+
+    with FakeUnity(bridge, reply):
+        data = bridge.screenshot("ARIA/shots/charm", count=8, every_seconds=0.15, columns=4)
+
+    assert data["burst"] is True
+
+
+def test_wait_for_burst_reads_the_list_of_shots(bridge, monkeypatch):
+    shots = bridge.project_root / "ARIA" / "shots"
+    shots.mkdir(parents=True)
+    (shots / "charm.json").write_text(json.dumps({
+        "taken": 2, "count": 2, "sheet": "ARIA/shots/charm_sheet.png",
+        "shots": [{"path": "ARIA/shots/charm_00.png", "frame": 10},
+                  {"path": "ARIA/shots/charm_01.png", "frame": 40}]}), encoding="utf-8")
+
+    pings = iter([{"burstPending": 1, "lastBurst": ""},
+                  {"burstPending": 0, "lastBurst": "ARIA/shots/charm.json"}])
+    monkeypatch.setattr(bridge, "ping", lambda: next(pings))
+
+    manifest = bridge.wait_for_burst(timeout=2)
+    assert manifest["taken"] == 2
+    assert manifest["sheetPath"].endswith("charm_sheet.png")
+    assert manifest["shots"][1]["absolutePath"].endswith("charm_01.png")
+
+
+def test_a_burst_needs_a_playing_game_and_takes_turns():
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    start = source[source.index("private static CommandResult StartBurst("):]
+    start = start[:start.index("private static void PumpBurst()")]
+    assert start.index("if (!EditorApplication.isPlaying)") < start.index("_burst = new Burst")
+    assert start.index("if (_burst != null)") < start.index("_burst = new Burst"), "one burst at a time"
+
+    pump = _csharp_method(source, "private static void Pump()")
+    assert pump.index("PumpBurst();") < pump.index("#if ENABLE_INPUT_SYSTEM"), \
+        "bursts run in a project without the Input System too"
+
+    finish = _csharp_method(source, "private static void FinishBurst()")
+    assert "Object.DestroyImmediate(frame)" in finish, "the textures are let go"
+
+
+def test_a_single_screenshot_and_a_burst_are_taken_the_same_way():
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    single = source[source.index("private static CommandResult Screenshot("):]
+    single = single[:single.index("private static Camera FindCaptureCamera(")]
+    assert "CaptureFrame(camera, width, height, wantsScene, out canvases)" in single
+    assert single.index("path += \".png\"") < single.index("FindCaptureCamera("), \
+        "a refused path cannot leave a borrowed camera behind"
+
+    pump = _csharp_method(source, "private static void PumpBurst()")
+    assert "CaptureFrame(" in pump and "FindCaptureCamera(" in pump
+
+
 def test_a_session_report_says_whether_anything_went_wrong():
     source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
     end = _csharp_method(source, "private static void EndSession()")

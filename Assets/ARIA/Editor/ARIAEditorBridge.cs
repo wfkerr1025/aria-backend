@@ -631,6 +631,8 @@ namespace ARIA.Bridge
             data["inputPending"] = PendingInput;
             data["logNext"] = LogNext;
             data["sessionErrors"] = ErrorsSince(SessionLogStart());
+            data["burstPending"] = PendingShots;
+            data["lastBurst"] = _lastBurst;
 #if ENABLE_INPUT_SYSTEM
             // Whether a test session's input routing and devices are in place
             // -- and, once it has ended, that they are gone again.
@@ -1381,6 +1383,9 @@ namespace ARIA.Bridge
         {
             if (scope.InPrefab) return Fail("Screenshot is not allowed inside ModifyPrefab.");
 
+            int count = (int)Num(args, 1, "count");
+            if (count > 1) return StartBurst(args, count);
+
             int width = (int)Num(args, 1280, "width");
             int height = (int)Num(args, 720, "height");
 
@@ -1390,41 +1395,6 @@ namespace ARIA.Bridge
             string view = Str(args, "view", "camera", "source");
             bool wantsScene = !string.IsNullOrEmpty(view) &&
                               Normalise(view) == Normalise("scene");
-
-            Camera camera = null;
-            GameObject borrowed = null;
-
-            if (wantsScene)
-            {
-                SceneView sceneView = SceneView.lastActiveSceneView;
-                if (sceneView == null) return Fail("There is no Scene view open to capture.");
-                camera = sceneView.camera;
-            }
-            else
-            {
-                camera = Camera.main;
-                if (camera == null)
-                {
-                    Camera[] all = FindAll<Camera>();
-                    for (int index = 0; index < all.Length; index++)
-                    {
-                        if (!all[index].enabled || !all[index].gameObject.activeInHierarchy) continue;
-                        camera = all[index];
-                        break;
-                    }
-                }
-            }
-
-            // No camera anywhere is still worth a picture: the UI is the usual
-            // reason for asking, and it does not need one of its own.
-            if (camera == null)
-            {
-                borrowed = new GameObject("ARIA Screenshot Camera");
-                borrowed.hideFlags = HideFlags.HideAndDontSave;
-                camera = borrowed.AddComponent<Camera>();
-                camera.clearFlags = CameraClearFlags.SolidColor;
-                camera.backgroundColor = new Color(0.08f, 0.08f, 0.10f, 1f);
-            }
 
             string path = Str(args, "path", "file", "output");
             if (string.IsNullOrEmpty(path))
@@ -1439,36 +1409,17 @@ namespace ARIA.Bridge
             }
             if (!path.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) path += ".png";
 
-            RenderTexture texture = null;
-            RenderTexture wasActive = RenderTexture.active;
-            RenderTexture wasTarget = camera.targetTexture;
-
-            List<Canvas> moved = new List<Canvas>();
-            List<RenderMode> wereModes = new List<RenderMode>();
-            List<Camera> wereCameras = new List<Camera>();
-            List<float> wereDistances = new List<float>();
+            // After the path is known to be good, so a refused path cannot
+            // leave a borrowed camera behind.
+            GameObject borrowed;
+            string cameraError;
+            Camera camera = FindCaptureCamera(wantsScene, out borrowed, out cameraError);
+            if (camera == null) return Fail(cameraError);
 
             try
             {
-                texture = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
-                texture.antiAliasing = 1;
-                texture.Create();
-
-                // Screen Space - Overlay draws straight to the display and
-                // appears in no camera's render, so a screenshot of a game
-                // whose entire interface is built at runtime comes back as an
-                // empty room. Borrowing each canvas onto the capture camera
-                // for one render is what puts the interface in the picture;
-                // the finally below hands them all back.
-                if (!wantsScene) BorrowCanvases(camera, moved, wereModes, wereCameras, wereDistances);
-
-                Render(camera, texture);
-
-                Texture2D flat = new Texture2D(width, height, TextureFormat.RGB24, false);
-                RenderTexture.active = texture;
-                flat.ReadPixels(new Rect(0, 0, width, height), 0, 0);
-                flat.Apply();
-
+                int canvases;
+                Texture2D flat = CaptureFrame(camera, width, height, wantsScene, out canvases);
                 byte[] png = flat.EncodeToPNG();
                 Object.DestroyImmediate(flat);
 
@@ -1486,12 +1437,12 @@ namespace ARIA.Bridge
                 data["bytes"] = png.Length;
                 data["camera"] = camera.name;
                 data["view"] = wantsScene ? "scene" : "game";
-                data["canvases"] = moved.Count;
+                data["canvases"] = canvases;
                 data["isPlaying"] = EditorApplication.isPlaying;
 
                 // Said out loud, because an empty-looking screenshot of this
                 // project is nearly always this and not a broken camera.
-                if (!EditorApplication.isPlaying && moved.Count == 0)
+                if (!EditorApplication.isPlaying && canvases == 0)
                 {
                     data["note"] = "Nothing is playing and no canvas was found. A game that builds "
                                  + "its interface at runtime has none to photograph until it runs: "
@@ -1508,6 +1459,93 @@ namespace ARIA.Bridge
             }
             finally
             {
+                if (borrowed != null) Object.DestroyImmediate(borrowed);
+            }
+        }
+
+        /// <summary>The camera a screenshot is taken through, or a borrowed one when the scene has none.</summary>
+        private static Camera FindCaptureCamera(bool wantsScene, out GameObject borrowed, out string error)
+        {
+            borrowed = null;
+            error = null;
+
+            if (wantsScene)
+            {
+                SceneView sceneView = SceneView.lastActiveSceneView;
+                if (sceneView == null)
+                {
+                    error = "There is no Scene view open to capture.";
+                    return null;
+                }
+                return sceneView.camera;
+            }
+
+            Camera found = Camera.main;
+            if (found == null)
+            {
+                Camera[] all = FindAll<Camera>();
+                for (int index = 0; index < all.Length; index++)
+                {
+                    if (!all[index].enabled || !all[index].gameObject.activeInHierarchy) continue;
+                    found = all[index];
+                    break;
+                }
+            }
+
+            // No camera anywhere is still worth a picture: the UI is the usual
+            // reason for asking, and it does not need one of its own.
+            if (found == null)
+            {
+                borrowed = new GameObject("ARIA Screenshot Camera");
+                borrowed.hideFlags = HideFlags.HideAndDontSave;
+                found = borrowed.AddComponent<Camera>();
+                found.clearFlags = CameraClearFlags.SolidColor;
+                found.backgroundColor = new Color(0.08f, 0.08f, 0.10f, 1f);
+            }
+
+            return found;
+        }
+
+        /// <summary>
+        /// One frame of a camera, as a texture the caller owns and destroys.
+        /// Shared by a single screenshot and every shot of a burst.
+        /// </summary>
+        private static Texture2D CaptureFrame(Camera camera, int width, int height, bool wantsScene, out int canvases)
+        {
+            RenderTexture picture = null;
+            RenderTexture wasActive = RenderTexture.active;
+            RenderTexture wasTarget = camera.targetTexture;
+
+            List<Canvas> moved = new List<Canvas>();
+            List<RenderMode> wereModes = new List<RenderMode>();
+            List<Camera> wereCameras = new List<Camera>();
+            List<float> wereDistances = new List<float>();
+
+            try
+            {
+                picture = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
+                picture.antiAliasing = 1;
+                picture.Create();
+
+                // Screen Space - Overlay draws straight to the display and
+                // appears in no camera's render, so a screenshot of a game
+                // whose entire interface is built at runtime comes back as an
+                // empty room. Borrowing each canvas onto the capture camera
+                // for one render is what puts the interface in the picture;
+                // the finally below hands them all back.
+                if (!wantsScene) BorrowCanvases(camera, moved, wereModes, wereCameras, wereDistances);
+                canvases = moved.Count;
+
+                Render(camera, picture);
+
+                Texture2D flat = new Texture2D(width, height, TextureFormat.RGB24, false);
+                RenderTexture.active = picture;
+                flat.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+                flat.Apply();
+                return flat;
+            }
+            finally
+            {
                 for (int index = 0; index < moved.Count; index++)
                 {
                     if (moved[index] == null) continue;
@@ -1519,13 +1557,307 @@ namespace ARIA.Bridge
                 RenderTexture.active = wasActive;
                 camera.targetTexture = wasTarget;
 
-                if (texture != null)
+                if (picture != null)
                 {
-                    texture.Release();
-                    Object.DestroyImmediate(texture);
+                    picture.Release();
+                    Object.DestroyImmediate(picture);
+                }
+            }
+        }
+
+        /// <summary>A run of screenshots taken while the game plays.</summary>
+        private sealed class Burst
+        {
+            public string BasePath;
+            public int Count;
+            public int Every;
+            public double EverySeconds;
+            public int Width;
+            public int Height;
+            public bool WantsScene;
+            public bool Sheet;
+            public int Columns;
+            public bool Started;
+            public int LastFrame;
+            public double LastTime;
+            public double StartTime;
+            public string Error;
+            public readonly List<Texture2D> Frames = new List<Texture2D>();
+            public readonly List<object> Shots = new List<object>();
+        }
+
+        private const int BurstMost = 64;
+        private static Burst _burst;
+        private static string _lastBurst = "";
+
+        /// <summary>Shots a burst still has to take; 0 when none is running.</summary>
+        private static int PendingShots
+        {
+            get { return _burst == null ? 0 : _burst.Count - _burst.Shots.Count; }
+        }
+
+        /// <summary>
+        /// Screenshot with a count: a run of shots while the game plays.
+        ///
+        /// A lot of what a game does moves -- a charm's sway, capsules
+        /// tumbling, a knob turning, a character's wave -- and one frame of it
+        /// says nothing about whether it moves right. Shots are taken every
+        /// everySeconds (0.1 unless every, in frames, is given instead), each
+        /// saved as base_00.png, base_01.png..., and laid out on one contact
+        /// sheet, base_sheet.png, left to right and top to bottom, so the
+        /// motion can be read from one picture. base.json lists every shot
+        /// with its frame and time. Returns before the first shot: Ping's
+        /// burstPending reaches 0 when the run is done.
+        /// </summary>
+        private static CommandResult StartBurst(Dictionary<string, object> args, int count)
+        {
+            if (!EditorApplication.isPlaying)
+            {
+                return Fail("A burst watches something move, and in edit mode nothing does. SetPlayMode first, " +
+                            "or take a single screenshot.");
+            }
+            if (_burst != null)
+            {
+                return Fail("A burst is already being taken, " + PendingShots + " shot(s) to go. Wait for " +
+                            "Ping's burstPending to reach 0.");
+            }
+            if (count > BurstMost) return Fail("A burst is at most " + BurstMost + " shots.");
+
+            int width = (int)Num(args, 640, "width");
+            int height = (int)Num(args, 360, "height");
+            if (width < 16 || height < 16 || width > 4096 || height > 4096)
+            {
+                return Fail("A burst's shots are 16 to 4096 pixels on a side.");
+            }
+
+            // Seconds unless frames are asked for: what a person watches -- a
+            // sway, a tumble -- happens in time, and at hundreds of frames a
+            // second "every 5 frames" is a blur of nearly identical pictures.
+            bool framesAsked = args.ContainsKey("every") || args.ContainsKey("everyFrames");
+            int every = Math.Max(1, (int)Num(args, 1, "every", "everyFrames"));
+            double everySeconds = Math.Max(0, Num(args, framesAsked ? 0 : 0.1, "everySeconds"));
+
+            string view = Str(args, "view", "camera", "source");
+            bool wantsScene = !string.IsNullOrEmpty(view) && Normalise(view) == Normalise("scene");
+
+            string path = Str(args, "path", "file", "output");
+            if (string.IsNullOrEmpty(path)) path = "ARIA/shots/burst_" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            path = path.Replace('\\', '/').Trim();
+            if (path.Contains("..") || Path.IsPathRooted(path))
+            {
+                return Fail("A screenshot path must be relative to the project and free of '..'.");
+            }
+            if (path.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) path = path.Substring(0, path.Length - 4);
+
+            int columns = (int)Num(args, Math.Ceiling(Math.Sqrt(count)), "columns");
+            columns = Math.Max(1, Math.Min(count, columns));
+            bool sheet = Bool(args, "sheet", true);
+
+            _burst = new Burst
+            {
+                BasePath = path,
+                Count = count,
+                Every = every,
+                EverySeconds = everySeconds,
+                Width = width,
+                Height = height,
+                WantsScene = wantsScene,
+                Sheet = sheet,
+                Columns = columns,
+                StartTime = EditorApplication.timeSinceStartup,
+            };
+
+            List<object> planned = new List<object>();
+            for (int index = 0; index < count; index++)
+            {
+                planned.Add(path + "_" + index.ToString("00", CultureInfo.InvariantCulture) + ".png");
+            }
+
+            Dictionary<string, object> data = new Dictionary<string, object>();
+            data["burst"] = true;
+            data["count"] = count;
+            data["every"] = every;
+            data["everySeconds"] = everySeconds;
+            data["width"] = width;
+            data["height"] = height;
+            data["shots"] = planned;
+            data["sheet"] = sheet ? path + "_sheet.png" : null;
+            data["manifest"] = path + ".json";
+            data["frame"] = Time.frameCount;
+
+            string spacing = everySeconds > 0
+                ? everySeconds.ToString("0.###", CultureInfo.InvariantCulture) + " s"
+                : every + " frame(s)";
+            return Ok("Taking " + count + " shots, one every " + spacing + ". Ping's burstPending reaches 0 " +
+                      "when they are done, and " + path + ".json lists them.", data);
+        }
+
+        /// <summary>Take the burst's next shot when its time has come. Called every editor update.</summary>
+        private static void PumpBurst()
+        {
+            if (_burst == null) return;
+
+            if (!EditorApplication.isPlaying)
+            {
+                _burst.Error = "play mode ended with " + PendingShots + " shot(s) still to take";
+                FinishBurst();
+                return;
+            }
+
+            int frame = Time.frameCount;
+            double now = EditorApplication.timeSinceStartup;
+            if (_burst.Started && (frame < _burst.LastFrame + _burst.Every || now < _burst.LastTime + _burst.EverySeconds))
+            {
+                return;
+            }
+
+            _burst.Started = true;
+            _burst.LastFrame = frame;
+            _burst.LastTime = now;
+
+            GameObject borrowed = null;
+            try
+            {
+                string error;
+                Camera camera = FindCaptureCamera(_burst.WantsScene, out borrowed, out error);
+                if (camera == null)
+                {
+                    _burst.Error = error;
+                    FinishBurst();
+                    return;
                 }
 
+                int canvases;
+                Texture2D flat = CaptureFrame(camera, _burst.Width, _burst.Height, _burst.WantsScene, out canvases);
+
+                string path = _burst.BasePath + "_" + _burst.Shots.Count.ToString("00", CultureInfo.InvariantCulture) + ".png";
+                string full = Path.Combine(ProjectRoot, path);
+                Directory.CreateDirectory(Path.GetDirectoryName(full));
+                File.WriteAllBytes(full, flat.EncodeToPNG());
+
+                if (_burst.Sheet) _burst.Frames.Add(flat);
+                else Object.DestroyImmediate(flat);
+
+                Dictionary<string, object> shot = new Dictionary<string, object>();
+                shot["path"] = path;
+                shot["frame"] = frame;
+                shot["seconds"] = Math.Round(now - _burst.StartTime, 3);
+                shot["canvases"] = canvases;
+                _burst.Shots.Add(shot);
+            }
+            catch (Exception failure)
+            {
+                _burst.Error = "shot " + (_burst.Shots.Count + 1) + " failed: " + failure.Message;
+                FinishBurst();
+                return;
+            }
+            finally
+            {
                 if (borrowed != null) Object.DestroyImmediate(borrowed);
+            }
+
+            if (_burst.Shots.Count >= _burst.Count) FinishBurst();
+        }
+
+        /// <summary>Lay out the contact sheet, write the manifest, and let the textures go.</summary>
+        private static void FinishBurst()
+        {
+            Burst done = _burst;
+            _burst = null;
+            if (done == null) return;
+
+            Dictionary<string, object> manifest = new Dictionary<string, object>();
+            manifest["shots"] = done.Shots;
+            manifest["count"] = done.Count;
+            manifest["taken"] = done.Shots.Count;
+            manifest["width"] = done.Width;
+            manifest["height"] = done.Height;
+            manifest["every"] = done.Every;
+            manifest["everySeconds"] = done.EverySeconds;
+            if (done.Error != null) manifest["error"] = done.Error;
+
+            try
+            {
+                if (done.Sheet && done.Frames.Count > 0)
+                {
+                    string sheetError;
+                    byte[] png = ComposeSheet(done.Frames, done.Columns, out sheetError);
+                    if (png != null)
+                    {
+                        string sheetPath = done.BasePath + "_sheet.png";
+                        File.WriteAllBytes(Path.Combine(ProjectRoot, sheetPath), png);
+                        manifest["sheet"] = sheetPath;
+                        manifest["columns"] = done.Columns;
+                    }
+                    else
+                    {
+                        manifest["sheetError"] = sheetError;
+                    }
+                }
+            }
+            catch (Exception failure)
+            {
+                manifest["sheetError"] = failure.Message;
+            }
+            finally
+            {
+                foreach (Texture2D frame in done.Frames)
+                {
+                    if (frame != null) Object.DestroyImmediate(frame);
+                }
+            }
+
+            string manifestPath = done.BasePath + ".json";
+            WriteReport(Path.Combine(ProjectRoot, manifestPath), manifest);
+            _lastBurst = manifestPath;
+        }
+
+        /// <summary>
+        /// Every shot on one picture, in reading order: left to right, then
+        /// down. A texture's rows count from the bottom, so the first row of
+        /// shots is laid at the top.
+        /// </summary>
+        private static byte[] ComposeSheet(List<Texture2D> frames, int columns, out string error)
+        {
+            error = null;
+            const int gap = 4;
+
+            int width = frames[0].width;
+            int height = frames[0].height;
+            int rows = (frames.Count + columns - 1) / columns;
+            int sheetWidth = columns * width + (columns + 1) * gap;
+            int sheetHeight = rows * height + (rows + 1) * gap;
+
+            if (sheetWidth > 8192 || sheetHeight > 8192)
+            {
+                error = "the sheet would be " + sheetWidth + "x" + sheetHeight + ", over 8192 a side; " +
+                        "take smaller or fewer shots";
+                return null;
+            }
+
+            Texture2D sheet = new Texture2D(sheetWidth, sheetHeight, TextureFormat.RGB24, false);
+            try
+            {
+                Color32[] ground = new Color32[sheetWidth * sheetHeight];
+                Color32 dark = new Color32(24, 24, 28, 255);
+                for (int index = 0; index < ground.Length; index++) ground[index] = dark;
+                sheet.SetPixels32(ground);
+
+                for (int index = 0; index < frames.Count; index++)
+                {
+                    int column = index % columns;
+                    int row = index / columns;
+                    int x = gap + column * (width + gap);
+                    int y = sheetHeight - (row + 1) * (height + gap);
+                    sheet.SetPixels32(x, y, width, height, frames[index].GetPixels32());
+                }
+
+                sheet.Apply();
+                return sheet.EncodeToPNG();
+            }
+            finally
+            {
+                Object.DestroyImmediate(sheet);
             }
         }
 
@@ -2706,6 +3038,8 @@ namespace ARIA.Bridge
         /// </summary>
         private static void Pump()
         {
+            PumpBurst();
+
 #if ENABLE_INPUT_SYSTEM
             if (_input.Count == 0) return;
 
