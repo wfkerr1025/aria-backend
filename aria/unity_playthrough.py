@@ -75,6 +75,7 @@ STEP_KINDS: dict[str, tuple[str, ...]] = {
     "console": ("expect",),
     "press": ("times", "hold", "action"),
     "click": ("times", "hold", "button", "viewport"),
+    "clickText": ("nth", "times", "hold", "button"),
     "move": ("viewport",),
     "scroll": (),
     "type": (),
@@ -87,8 +88,12 @@ STEP_KINDS: dict[str, tuple[str, ...]] = {
     "expectText": ("ignoreCase",),
     "expectNoText": ("ignoreCase",),
     "expectField": (),
+    "expectControl": (),
     "expectNoErrors": (),
 }
+
+# What an expectControl (or an until's "control") may say about a button.
+CONTROL_KEYS = ("label", "path", "interactable", "present")
 
 COMPARATORS = ("equals", "notEquals", "atLeast", "atMost", "contains")
 
@@ -167,10 +172,17 @@ def validate(script: Any) -> list[str]:
         if kind == "expectField":
             problems.extend(f"{where}: {problem}" for problem in _field_problems(value))
         if kind == "until":
-            if not isinstance(value, dict) or len([k for k in ("text", "noText", "field") if k in value]) != 1:
-                problems.append(f"{where}: until is {{\"text\": ...}}, {{\"noText\": ...}} or {{\"field\": {{...}}}}")
+            if not isinstance(value, dict) or len([k for k in ("text", "noText", "field", "control") if k in value]) != 1:
+                problems.append(f"{where}: until is {{\"text\": ...}}, {{\"noText\": ...}}, "
+                                f"{{\"field\": {{...}}}} or {{\"control\": {{...}}}}")
             elif "field" in value:
                 problems.extend(f"{where}: {problem}" for problem in _field_problems(value["field"]))
+            elif "control" in value:
+                problems.extend(f"{where}: {problem}" for problem in _control_problems(value["control"]))
+        if kind == "expectControl":
+            problems.extend(f"{where}: {problem}" for problem in _control_problems(value))
+        if kind == "clickText" and not (isinstance(value, str) and value.strip()):
+            problems.append(f"{where}: clickText is the text on the button to click")
         if kind == "input" and not (isinstance(value, list) and value and all(isinstance(v, dict) for v in value)):
             problems.append(f"{where}: input is a list of send_input actions")
 
@@ -190,6 +202,46 @@ def _field_problems(spec: Any) -> list[str]:
     if extra:
         problems.append(f"a field check does not take {', '.join(extra)}")
     return problems
+
+
+def _control_problems(spec: Any) -> list[str]:
+    if not isinstance(spec, dict):
+        return ["a control check is an object with a label or a path"]
+    problems = []
+    if not spec.get("label") and not spec.get("path"):
+        problems.append("a control check needs a label (its text) or a path (the end of its name)")
+    extra = sorted(set(spec) - set(CONTROL_KEYS))
+    if extra:
+        problems.append(f"a control check does not take {', '.join(extra)}")
+    return problems
+
+
+def _matching_controls(controls: list[dict], spec: dict) -> list[dict]:
+    """Controls whose label is the given text, or whose path ends with the given name, top of the screen first."""
+    found = []
+    for control in controls:
+        if spec.get("label") is not None and (control.get("label") or "").strip() != str(spec["label"]).strip():
+            continue
+        if spec.get("path") and not str(control.get("path", "")).endswith(str(spec["path"])):
+            continue
+        found.append(control)
+    return sorted(found, key=lambda control: (-(control.get("center") or [0, 0])[1],
+                                              (control.get("center") or [0, 0])[0]))
+
+
+def _control_check(controls: list[dict], spec: dict) -> tuple[bool, str]:
+    """Whether a control is there (or not) and interactable (or not), and the sentence that says so."""
+    name = spec.get("label") or spec.get("path")
+    found = _matching_controls(controls, spec)
+    if spec.get("present") is False:
+        return not found, f"{name!r} is {'still ' if found else 'not '}on screen"
+    if not found:
+        return False, f"no control {name!r} on screen"
+    if "interactable" in spec:
+        state = bool(found[0].get("interactable"))
+        wanted = bool(spec["interactable"])
+        return state == wanted, f"{name!r} is {'enabled' if state else 'disabled'}"
+    return True, f"{name!r} is on screen"
 
 
 def _compare(value: Any, spec: dict) -> tuple[bool, str]:
@@ -520,6 +572,8 @@ class PlaythroughRunner:
             self.sleep(every)
 
     def _condition(self, condition: dict, evidence: dict) -> tuple[bool, str]:
+        if "control" in condition:
+            return _control_check(self._controls(), condition["control"])
         if "field" in condition:
             spec = condition["field"]
             value = self._field(spec)
@@ -557,6 +611,37 @@ class PlaythroughRunner:
         self._send(ueb.Inputs.click(step["click"], button=step.get("button"), hold=step.get("hold"),
                                     times=step.get("times"), viewport=bool(step.get("viewport"))))
         return f"clicked {step['click']}"
+
+    def _do_clickText(self, step: dict, evidence: dict) -> str:
+        """Click a button by the text on it.
+
+        A game's buttons are usually all called "Button"; what tells them
+        apart is what they say. nth picks among buttons with the same text,
+        counting from the top of the screen.
+        """
+        want = str(step["clickText"])
+        found = _matching_controls(self._controls(), {"label": want})
+        nth = int(step.get("nth", 0))
+        if len(found) <= nth:
+            raise StepFailed(f"no button reads {want!r}" + (f" (wanted number {nth + 1}, found {len(found)})"
+                                                               if found else ""))
+        target = found[nth]
+        evidence["at"] = target.get("center")
+        evidence["path"] = target.get("path")
+        if not target.get("interactable", True):
+            raise StepFailed(f"{want!r} is on screen but disabled")
+        self._send(ueb.Inputs.click(target["center"], button=step.get("button"), hold=step.get("hold"),
+                                    times=step.get("times")))
+        return f"clicked {want!r} at {target.get('center')}"
+
+    def _controls(self) -> list[dict]:
+        return list((self.bridge.read_screen() or {}).get("controls") or [])
+
+    def _do_expectControl(self, step: dict, evidence: dict) -> str:
+        passed, said = _control_check(self._controls(), step["expectControl"])
+        if not passed:
+            raise StepFailed(said)
+        return said
 
     def _do_move(self, step: dict, evidence: dict) -> str:
         self._send(ueb.Inputs.move(step["move"], viewport=bool(step.get("viewport"))))
@@ -619,7 +704,9 @@ class PlaythroughRunner:
         fold = (lambda text: text.lower()) if step.get("ignoreCase") else (lambda text: text)
         if any(fold(want) in fold(line) for line in lines):
             return f"found {want!r}"
-        raise StepFailed(f"no visible line reads {want!r}; the screen says {lines[:12]!r}")
+        # Thirty lines, not a dozen: the HUD alone is a dozen, and a report
+        # that stops before the room's own text looks like the room was blank.
+        raise StepFailed(f"no visible line reads {want!r}; the screen says {lines[:30]!r}")
 
     def _do_expectNoText(self, step: dict, evidence: dict) -> str:
         lines = self._lines()

@@ -74,7 +74,14 @@ class FakeBridge:
 
     def read_screen(self, targets=None, **kwargs):
         self._record("read_screen")
-        return {"lines": [f"Score: {self.score}", "Add"]}
+        controls = [
+            {"label": "Add", "path": "Canvas/Row/Button", "center": [100.0, 50.0], "interactable": True},
+            {"label": "Add", "path": "Canvas/Top/Button", "center": [100.0, 400.0], "interactable": True},
+            {"label": "Pull", "path": "Canvas/Machine/Button", "center": [300.0, 200.0],
+             "interactable": self.score < 5},
+            {"label": None, "path": "HUD/MinerButton", "center": [20.0, 20.0], "interactable": True},
+        ]
+        return {"lines": [f"Score: {self.score}", "Add"], "controls": controls}
 
     def get_field(self, target, component, field_name):
         self._record("get_field", target, component, field_name)
@@ -269,6 +276,54 @@ def test_a_game_already_playing_is_stopped_first(tmp_path):
     runner(bridge).run({"steps": [{"wait": 0}]})
     names = [(name, args) for name, args, _ in bridge.sent if name == "set_play_mode"]
     assert names[:2] == [("set_play_mode", (False,)), ("set_play_mode", (True,))]
+
+
+def test_click_text_finds_a_button_by_what_it_says(tmp_path):
+    """A game's buttons are all called Button; their text is what tells them apart."""
+    bridge = FakeBridge(tmp_path)
+    result = runner(bridge).run({"steps": [
+        {"clickText": "Add"},
+        {"clickText": "Add", "nth": 1, "times": 2},
+    ]})
+
+    assert result.ok, result.summary()
+    sent = [args for name, args, _ in bridge.sent if name == "send_input"]
+    assert sent[0][0]["click"] == [100.0, 400.0], "nth 0 is the top of the screen"
+    assert sent[1][0]["click"] == [100.0, 50.0] and sent[1][0]["times"] == 2
+
+
+def test_click_text_fails_on_a_missing_or_disabled_button(tmp_path):
+    bridge = FakeBridge(tmp_path)
+    bridge.score = 9
+    result = runner(bridge, stop_on_failure=False).run({"steps": [
+        {"clickText": "Sell"}, {"clickText": "Pull"}, {"clickText": "Add", "nth": 5}]})
+
+    messages = [step.message for step in result.steps]
+    assert "no button reads 'Sell'" in messages[0]
+    assert "disabled" in messages[1]
+    assert "wanted number 6, found 2" in messages[2]
+
+
+def test_expect_control_checks_presence_and_state(tmp_path):
+    bridge = FakeBridge(tmp_path)
+    result = runner(bridge, stop_on_failure=False).run({"steps": [
+        {"expectControl": {"label": "Pull", "interactable": True}},
+        {"expectControl": {"path": "MinerButton"}},
+        {"expectControl": {"path": "MinerButton", "present": False}},
+        {"expectControl": {"label": "Cannot afford"}},
+        {"until": {"control": {"label": "Pull"}}, "timeout": 1},
+    ]})
+
+    assert [step.ok for step in result.steps] == [True, True, False, False, True]
+    assert "still on screen" in result.steps[2].message
+
+
+def test_a_control_check_needs_a_label_or_a_path():
+    problems = up.validate({"steps": [{"expectControl": {"interactable": True}}, {"clickText": ""},
+                                      {"expectControl": {"label": "x", "colour": "red"}}]})
+    assert any("needs a label" in problem for problem in problems)
+    assert any("clickText is the text" in problem for problem in problems)
+    assert any("does not take colour" in problem for problem in problems)
 
 
 @pytest.mark.parametrize("value, spec, passed", [

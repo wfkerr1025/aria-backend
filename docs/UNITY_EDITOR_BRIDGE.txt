@@ -496,6 +496,9 @@ Steps (each exactly one kind, plus an optional "label"):
     {"console": "coins 1000", "expect": "coins: "}   line or list; expect? text in the answer
     {"press": "space", "times": 3}                    hold?, action? tap/down/up
     {"click": "Canvas/Buy" | [x, y]}                  button?, hold?, times?, viewport?
+    {"clickText": "Sell duplicates", "nth": 0}        a button by its text; nth counts from the top
+    {"expectControl": {"label": "Pull", "interactable": false}}   or {"path": "MinerButton",
+                                                      "present": false}; also an until condition
     {"move": ...}  {"scroll": -120}  {"type": "hi"}  {"input": [raw SendInput actions]}
     {"wait": 0.5}                                     seconds
     {"waitFrames": 30}                                timeout?
