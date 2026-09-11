@@ -96,6 +96,7 @@ __all__ = [
     "Inputs",
     "send_input",
     "read_screen",
+    "get_log",
     "install_bridge",
 ]
 
@@ -156,6 +157,7 @@ COMMANDS = frozenset({
     "SetPlayMode",
     "SendInput",
     "ReadScreen",
+    "GetLog",
 })
 
 # What the editor will run while the game is PLAYING. Anything else is left
@@ -171,6 +173,7 @@ PLAY_SAFE_COMMANDS = frozenset({
     "SetPlayMode",
     "SendInput",
     "ReadScreen",
+    "GetLog",
 })
 
 
@@ -773,6 +776,30 @@ class _CommandBuilder:
             "ReadScreen", targets=list(targets) if targets is not None else None,
             includeHidden=True if include_hidden else None, limit=limit))
 
+    def get_log(self, since: int | None = None, *, session: bool = False,
+                types: str | Iterable[str] | None = None, contains: str | None = None,
+                limit: int | None = None, stack: bool | None = None) -> Any:
+        """What the Unity console has said: the game's messages and the compiler's errors.
+
+        since takes data["next"] from an earlier call, so each read is only
+        what is new; session=True starts from the last bridge-started play
+        session. types narrows it -- "errors" is every kind of fault (error,
+        exception, assert, compileError); the others are log, warning,
+        error, exception, assert, compile and compileError. Errors carry the
+        first lines of their stack unless stack=False.
+
+        Compile errors are the ones worth knowing about first: a script
+        that does not compile leaves the editor running the last scripts
+        that did, this bridge among them, so everything else goes on
+        answering as if nothing were wrong.
+        """
+        if isinstance(types, str):
+            types = [types]
+        return self._submit(make_command(
+            "GetLog", since=since, session=True if session else None,
+            types=list(types) if types is not None else None,
+            contains=contains, limit=limit, stack=stack))
+
 
 class Batch(_CommandBuilder):
     """Commands collected to be sent together, in one file and one editor pass.
@@ -1215,6 +1242,10 @@ def send_input(*actions: dict, wait: bool = True, **extra: Any) -> dict | None:
 
 def read_screen(targets: Iterable[str] | str | None = None, **extra: Any) -> dict | None:
     return get_bridge().read_screen(targets, **extra)
+
+
+def get_log(since: int | None = None, **extra: Any) -> dict | None:
+    return get_bridge().get_log(since, **extra)
 
 
 def install_bridge(project_root: str | os.PathLike | None = None) -> Path:

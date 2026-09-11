@@ -129,6 +129,16 @@ namespace ARIA.Bridge
             EditorApplication.update += Pump;
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
 
+            // The console, kept where a caller outside the editor can read it,
+            // and carried across the reload that entering play mode causes.
+            RestoreLog();
+            _mainThread = System.Threading.Thread.CurrentThread.ManagedThreadId;
+            Application.logMessageReceivedThreaded += OnLogMessage;
+            AssemblyReloadEvents.beforeAssemblyReload += SaveLog;
+            UnityEditor.Compilation.CompilationPipeline.compilationStarted += OnCompilationStarted;
+            UnityEditor.Compilation.CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompiled;
+            UnityEditor.Compilation.CompilationPipeline.compilationFinished += OnCompilationFinished;
+
 #if ENABLE_INPUT_SYSTEM
             // Devices a session added and a reload orphaned before it could
             // take them away. Left a moment, because the Input System may not
@@ -165,7 +175,7 @@ namespace ARIA.Bridge
             new HashSet<string>(StringComparer.Ordinal)
         {
             "Ping", "Screenshot", "GetField", "GetHierarchy", "SetPlayMode",
-            "SendInput", "ReadScreen",
+            "SendInput", "ReadScreen", "GetLog",
         };
 
         /// <summary>The commands file last left waiting for play to stop, by write time.</summary>
@@ -576,6 +586,7 @@ namespace ARIA.Bridge
                 case "SetPlayMode": return SetPlayMode(args, scope);
                 case "SendInput": return SendInput(args, scope);
                 case "ReadScreen": return ReadScreen(args, scope);
+                case "GetLog": return GetLog(args, scope);
                 default:
                     return Fail("'" + command + "' is not a bridge command.");
             }
@@ -618,6 +629,8 @@ namespace ARIA.Bridge
             data["runInBackground"] = Application.runInBackground;
             data["playerSettingsRunInBackground"] = PlayerSettings.runInBackground;
             data["inputPending"] = PendingInput;
+            data["logNext"] = LogNext;
+            data["sessionErrors"] = ErrorsSince(SessionLogStart());
 #if ENABLE_INPUT_SYSTEM
             // Whether a test session's input routing and devices are in place
             // -- and, once it has ended, that they are gone again.
@@ -1877,6 +1890,13 @@ namespace ARIA.Bridge
             report["realSaveTouched"] = touched;
             report["realSaveSafe"] = touched.Count == 0;
 
+            // What went wrong while it played, so the first question after a
+            // session -- did anything throw? -- is answered without asking.
+            long logStart = SessionLogStart();
+            report["errors"] = ErrorsSince(logStart);
+            report["firstErrors"] = FirstErrorsSince(logStart, 5);
+            report["logFrom"] = logStart;
+
             if (touched.Count > 0)
             {
                 Debug.LogError("[ARIA] The game changed its REAL save folder during a test session (" +
@@ -2187,6 +2207,7 @@ namespace ARIA.Bridge
             }
 
             SessionState.SetString(StartedAtKey, DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+            SessionState.SetString(SessionLogStartKey, LogNext.ToString(CultureInfo.InvariantCulture));
             SessionState.SetString(PendingStartKey,
                 EditorApplication.timeSinceStartup.ToString("R", CultureInfo.InvariantCulture));
 
@@ -2194,6 +2215,452 @@ namespace ARIA.Bridge
 
             return Ok("Entering play mode" + (testSave ? " on the test save" : " on the REAL save") +
                       ". A domain reload follows, so send the next command separately.", data);
+        }
+
+        #endregion
+
+        #region Console log
+
+        /// <summary>One console message, kept so a caller outside the editor can read it.</summary>
+        private sealed class LogEntry
+        {
+            public long Seq;
+            public string Type;
+            public string Message;
+            public string Stack;
+            public int Frame;
+            public bool Playing;
+            public string At;
+            public int Repeat = 1;
+            public int LastFrame;
+            public string LastAt;
+        }
+
+        private const int LogKept = 500;
+        private const int FaultsKept = 200;
+        private const int LogCarried = 300;
+        private const int StackLines = 12;
+        private const string LogStoreKey = "ARIA.Bridge.Log";
+        private const string SessionLogStartKey = "ARIA.Bridge.SessionLogStart";
+
+        /// <summary>What "errors" means: anything that is a fault, from the game or the compiler.</summary>
+        private static readonly string[] ErrorTypes = { "error", "exception", "assert", "compileerror" };
+
+        private static readonly string[] AllLogTypes =
+            { "log", "warning", "error", "exception", "assert", "compile", "compileerror" };
+
+        private static readonly object _logLock = new object();
+        private static readonly List<LogEntry> _log = new List<LogEntry>();
+        private static readonly List<LogEntry> _faults = new List<LogEntry>();
+        private static long _logSeq;
+        private static int _mainThread;
+        private static int _compileErrors;
+
+        /// <summary>The sequence number the next message will be given; "since" it, nothing has happened yet.</summary>
+        private static long LogNext
+        {
+            get { lock (_logLock) { return _logSeq; } }
+        }
+
+        /// <summary>
+        /// Every message the editor logs, the game's and Unity's alike.
+        ///
+        /// Several of the faults a person once had to find by playing were
+        /// silent -- a null reference in a panel that simply never opened.
+        /// They were in the console the whole time, where nothing outside the
+        /// editor could see them. The threaded event, because a game logs
+        /// from other threads too; frame and play state are only read on the
+        /// main thread, where reading them is allowed.
+        /// </summary>
+        private static void OnLogMessage(string message, string stack, LogType type)
+        {
+            // The bridge's own progress lines are not the game's log.
+            if (type == LogType.Log && message != null && message.StartsWith("[ARIA] ", StringComparison.Ordinal)) return;
+
+            string kind = type == LogType.Exception ? "exception"
+                        : type == LogType.Error ? "error"
+                        : type == LogType.Assert ? "assert"
+                        : type == LogType.Warning ? "warning"
+                        : "log";
+
+            bool main = System.Threading.Thread.CurrentThread.ManagedThreadId == _mainThread;
+            bool fault = kind == "exception" || kind == "error" || kind == "assert";
+
+            AddLog(kind, message, fault ? TrimStack(stack) : null,
+                   main ? Time.frameCount : -1, main && EditorApplication.isPlaying);
+        }
+
+        private static void AddLog(string kind, string message, string stack, int frame, bool playing)
+        {
+            string text = message ?? "";
+            string now = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+
+            lock (_logLock)
+            {
+                _logSeq++;
+
+                // The same message again, straight after itself, is one entry
+                // counted again. Measured in the lab: a scene with two audio
+                // listeners said so every frame, 500 times in under a second,
+                // and the exception thrown in the middle of it was out of the
+                // buffer before anything could ask for it.
+                LogEntry last = _log.Count > 0 ? _log[_log.Count - 1] : null;
+                if (last != null && last.Type == kind && last.Message == text && last.Stack == stack)
+                {
+                    last.Repeat++;
+                    last.Seq = _logSeq;
+                    last.LastFrame = frame;
+                    last.LastAt = now;
+                    return;
+                }
+
+                LogEntry entry = new LogEntry
+                {
+                    Seq = _logSeq,
+                    Type = kind,
+                    Message = text,
+                    Stack = stack,
+                    Frame = frame,
+                    Playing = playing,
+                    At = now,
+                };
+
+                _log.Add(entry);
+                if (_log.Count > LogKept) _log.RemoveRange(0, _log.Count - LogKept);
+
+                // Faults are kept apart as well, so no amount of ordinary
+                // chatter, alternating or not, can push the one that matters out.
+                if (IsError(kind))
+                {
+                    _faults.Add(entry);
+                    if (_faults.Count > FaultsKept) _faults.RemoveRange(0, _faults.Count - FaultsKept);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Every kept entry, oldest first: the faults ordinary messages have
+        /// pushed out of the log, then the log. Called holding the lock.
+        /// </summary>
+        private static List<LogEntry> KeptEntries()
+        {
+            List<LogEntry> all = new List<LogEntry>();
+            long head = _log.Count > 0 ? _log[0].Seq : long.MaxValue;
+
+            foreach (LogEntry fault in _faults)
+            {
+                if (fault.Seq < head) all.Add(fault);
+            }
+
+            all.AddRange(_log);
+            return all;
+        }
+
+        private static string TrimStack(string stack)
+        {
+            if (string.IsNullOrEmpty(stack)) return null;
+
+            string[] lines = stack.TrimEnd().Split('\n');
+            int keep = Math.Min(lines.Length, StackLines);
+            string kept = string.Join("\n", lines, 0, keep).TrimEnd();
+            return lines.Length > StackLines ? kept + "\n..." : kept;
+        }
+
+        private static void OnCompilationStarted(object context)
+        {
+            _compileErrors = 0;
+        }
+
+        /// <summary>
+        /// Compiler errors, which never reach the console as log messages.
+        ///
+        /// The case that matters most: a script that does not compile leaves
+        /// the editor running the last scripts that did -- the bridge among
+        /// them -- so the old bridge answers as if nothing were wrong. Kept
+        /// here, it can say what was wrong instead.
+        /// </summary>
+        private static void OnAssemblyCompiled(string assembly, UnityEditor.Compilation.CompilerMessage[] messages)
+        {
+            if (messages == null) return;
+
+            foreach (UnityEditor.Compilation.CompilerMessage message in messages)
+            {
+                if (message.type != UnityEditor.Compilation.CompilerMessageType.Error) continue;
+
+                _compileErrors++;
+                AddLog("compileerror", message.message, null, -1, false);
+            }
+        }
+
+        private static void OnCompilationFinished(object context)
+        {
+            AddLog("compile", _compileErrors == 0
+                ? "Compilation finished with no errors."
+                : "Compilation finished with " + _compileErrors + " error(s). The editor keeps running the " +
+                  "scripts that last compiled, this bridge among them, until they are fixed.", null, -1, false);
+        }
+
+        /// <summary>Carry the newest messages across a domain reload, which empties every static.</summary>
+        private static void SaveLog()
+        {
+            List<object> carried = new List<object>();
+            long seq;
+
+            lock (_logLock)
+            {
+                seq = _logSeq;
+
+                // Every fault, and the newest of everything else.
+                List<LogEntry> all = KeptEntries();
+                for (int index = 0; index < all.Count; index++)
+                {
+                    if (IsError(all[index].Type) || index >= all.Count - LogCarried)
+                    {
+                        carried.Add(DescribeLog(all[index], true));
+                    }
+                }
+            }
+
+            Dictionary<string, object> store = new Dictionary<string, object>();
+            store["seq"] = seq;
+            store["entries"] = carried;
+            SessionState.SetString(LogStoreKey, Json.Serialize(store, false));
+        }
+
+        private static void RestoreLog()
+        {
+            string text = SessionState.GetString(LogStoreKey, "");
+            if (string.IsNullOrEmpty(text)) return;
+
+            object parsed;
+            string error;
+            Dictionary<string, object> store = Json.TryParse(text, out parsed, out error)
+                ? parsed as Dictionary<string, object>
+                : null;
+            if (store == null) return;
+
+            object raw;
+            double number;
+
+            lock (_logLock)
+            {
+                if (store.TryGetValue("seq", out raw) && TryNumber(raw, out number)) _logSeq = (long)number;
+
+                List<object> entries = store.TryGetValue("entries", out raw) ? raw as List<object> : null;
+                if (entries == null) return;
+
+                _log.Clear();
+                _faults.Clear();
+
+                foreach (object item in entries)
+                {
+                    Dictionary<string, object> entry = item as Dictionary<string, object>;
+                    if (entry == null) continue;
+
+                    object stack;
+                    LogEntry restored = new LogEntry
+                    {
+                        Seq = TryNumber(LogValue(entry, "seq"), out number) ? (long)number : 0,
+                        Type = Text(LogValue(entry, "type")),
+                        Message = Text(LogValue(entry, "message")),
+                        Stack = entry.TryGetValue("stack", out stack) && stack != null ? Text(stack) : null,
+                        Frame = TryNumber(LogValue(entry, "frame"), out number) ? (int)number : -1,
+                        Playing = LogValue(entry, "playing") is bool && (bool)LogValue(entry, "playing"),
+                        At = Text(LogValue(entry, "at")),
+                        Repeat = TryNumber(LogValue(entry, "repeat"), out number) ? Math.Max(1, (int)number) : 1,
+                        LastFrame = TryNumber(LogValue(entry, "lastFrame"), out number) ? (int)number : -1,
+                        LastAt = LogValue(entry, "lastAt") != null ? Text(LogValue(entry, "lastAt")) : null,
+                    };
+
+                    _log.Add(restored);
+                    if (IsError(restored.Type)) _faults.Add(restored);
+                }
+
+                if (_log.Count > LogKept) _log.RemoveRange(0, _log.Count - LogKept);
+                if (_faults.Count > FaultsKept) _faults.RemoveRange(0, _faults.Count - FaultsKept);
+            }
+        }
+
+        private static object LogValue(Dictionary<string, object> entry, string key)
+        {
+            object value;
+            return entry.TryGetValue(key, out value) ? value : null;
+        }
+
+        private static Dictionary<string, object> DescribeLog(LogEntry entry, bool withStack)
+        {
+            Dictionary<string, object> described = new Dictionary<string, object>();
+            described["seq"] = entry.Seq;
+            described["type"] = entry.Type;
+            described["message"] = entry.Message;
+            if (withStack && entry.Stack != null) described["stack"] = entry.Stack;
+            described["frame"] = entry.Frame;
+            described["playing"] = entry.Playing;
+            described["at"] = entry.At;
+
+            if (entry.Repeat > 1)
+            {
+                described["repeat"] = entry.Repeat;
+                described["lastFrame"] = entry.LastFrame;
+                described["lastAt"] = entry.LastAt;
+            }
+
+            return described;
+        }
+
+        /// <summary>Where the log stood as the last bridge-started session began.</summary>
+        private static long SessionLogStart()
+        {
+            long start;
+            return long.TryParse(SessionState.GetString(SessionLogStartKey, "0"), NumberStyles.Integer,
+                                 CultureInfo.InvariantCulture, out start) ? start : 0;
+        }
+
+        private static bool IsError(string type)
+        {
+            return Array.IndexOf(ErrorTypes, type) >= 0;
+        }
+
+        /// <summary>How many times something went wrong since a point in the log, repeats included.</summary>
+        private static int ErrorsSince(long since)
+        {
+            int errors = 0;
+            lock (_logLock)
+            {
+                foreach (LogEntry entry in _faults)
+                {
+                    if (entry.Seq > since) errors += entry.Repeat;
+                }
+            }
+            return errors;
+        }
+
+        private static List<object> FirstErrorsSince(long since, int most)
+        {
+            List<object> first = new List<object>();
+            lock (_logLock)
+            {
+                foreach (LogEntry entry in _faults)
+                {
+                    if (first.Count >= most) break;
+                    if (entry.Seq <= since) continue;
+
+                    Dictionary<string, object> described = DescribeLog(entry, false);
+                    string line = entry.Message.Split('\n')[0];
+                    described["message"] = line.Length > 300 ? line.Substring(0, 300) + "..." : line;
+                    first.Add(described);
+                }
+            }
+            return first;
+        }
+
+        /// <summary>Which types a GetLog asked for: null for all of them, empty when it named none that exist.</summary>
+        private static HashSet<string> LogTypes(Dictionary<string, object> args)
+        {
+            object raw;
+            if (!args.TryGetValue("types", out raw) && !args.TryGetValue("type", out raw)) return null;
+            if (raw == null) return null;
+
+            List<object> asked = new List<object>();
+            IList many = raw as IList;
+            if (many != null) foreach (object one in many) asked.Add(one);
+            else foreach (string one in Text(raw).Split(',')) asked.Add(one);
+
+            HashSet<string> types = new HashSet<string>(StringComparer.Ordinal);
+            foreach (object one in asked)
+            {
+                string name = Normalise(Text(one));
+                if (name.EndsWith("s", StringComparison.Ordinal) && name != "errors" &&
+                    Array.IndexOf(AllLogTypes, name.Substring(0, name.Length - 1)) >= 0)
+                {
+                    name = name.Substring(0, name.Length - 1);
+                }
+
+                if (name == "errors") types.UnionWith(ErrorTypes);
+                else if (Array.IndexOf(AllLogTypes, name) >= 0) types.Add(name);
+            }
+            return types;
+        }
+
+        /// <summary>
+        /// What the console has said: the game's logs, warnings, errors and
+        /// exceptions, and the compiler's errors, oldest first.
+        ///
+        /// since takes the "next" a previous call returned, so a caller reads
+        /// only what is new; session:true starts from the last bridge-started
+        /// play session. types narrows it ("errors" is every kind of fault),
+        /// contains searches the text, limit keeps the newest. Errors carry
+        /// the first lines of their stack. The newest 500 are kept, and the
+        /// newest 300 survive a domain reload.
+        /// </summary>
+        private static CommandResult GetLog(Dictionary<string, object> args, Scope scope)
+        {
+            long since = (long)Num(args, 0, "since");
+            if (Bool(args, "session", false)) since = Math.Max(since, SessionLogStart());
+
+            int limit = Math.Max(1, Math.Min(LogKept, (int)Num(args, 100, "limit")));
+            bool withStack = Bool(args, "stack", true);
+            string contains = Str(args, "contains");
+
+            HashSet<string> types = LogTypes(args);
+            if (types != null && types.Count == 0)
+            {
+                return Fail("types named none of: log, warning, error, exception, assert, compile, " +
+                            "compileError, or errors for every kind of fault.");
+            }
+
+            List<LogEntry> picked = new List<LogEntry>();
+            Dictionary<string, object> counts = new Dictionary<string, object>();
+            long next;
+            long oldest;
+
+            lock (_logLock)
+            {
+                next = _logSeq;
+                List<LogEntry> kept = KeptEntries();
+                oldest = kept.Count > 0 ? kept[0].Seq : next + 1;
+
+                foreach (LogEntry entry in kept)
+                {
+                    if (entry.Seq <= since) continue;
+
+                    // Counted by occurrence, so a message said a thousand
+                    // times reads as a thousand, not as one.
+                    object seen;
+                    counts[entry.Type] = (counts.TryGetValue(entry.Type, out seen) ? (int)seen : 0) + entry.Repeat;
+
+                    if (types != null && !types.Contains(entry.Type)) continue;
+                    if (!string.IsNullOrEmpty(contains) &&
+                        entry.Message.IndexOf(contains, StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+                    picked.Add(entry);
+                }
+            }
+
+            int skipped = Math.Max(0, picked.Count - limit);
+            List<object> entries = new List<object>();
+            for (int index = skipped; index < picked.Count; index++) entries.Add(DescribeLog(picked[index], withStack));
+
+            int errors = 0;
+            foreach (string type in ErrorTypes)
+            {
+                object count;
+                if (counts.TryGetValue(type, out count)) errors += (int)count;
+            }
+
+            Dictionary<string, object> data = new Dictionary<string, object>();
+            data["entries"] = entries;
+            data["since"] = since;
+            data["next"] = next;
+            data["counts"] = counts;
+            data["errors"] = errors;
+            data["skipped"] = skipped;
+
+            // Asking from before the oldest kept message cannot be answered in
+            // full; saying so is better than a list that looks complete.
+            if (since + 1 < oldest) data["dropped"] = "Messages before " + oldest + " are no longer kept.";
+
+            return Ok(entries.Count + " message(s), " + errors + " error(s) since " + since + ".", data);
         }
 
         #endregion

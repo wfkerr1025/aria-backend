@@ -808,6 +808,74 @@ def test_input_reaches_the_game_whatever_has_focus_and_only_for_a_test():
     assert "StartsWith(AriaDevicePrefix" in remove, "only the bridge's own devices are ever removed"
 
 
+def test_get_log_reads_what_is_new_and_narrows_it(bridge):
+    def reply(commands):
+        assert commands[0]["args"] == {"since": 41, "types": ["errors"], "contains": "Null"}
+        return [ok("GetLog", entries=[{"seq": 42, "type": "exception", "message": "NullReferenceException"}],
+                   next=42, errors=1)]
+
+    with FakeUnity(bridge, reply):
+        data = bridge.get_log(41, types="errors", contains="Null")
+
+    assert data["next"] == 42 and data["errors"] == 1
+
+
+def test_get_log_can_start_from_the_play_session(bridge):
+    def reply(commands):
+        assert commands[0]["args"] == {"session": True, "stack": False}
+        return [ok("GetLog", entries=[], next=7, errors=0)]
+
+    with FakeUnity(bridge, reply):
+        bridge.get_log(session=True, stack=False)
+
+
+def test_the_console_is_heard_from_the_start_and_carried_across_reloads():
+    """A null reference in a panel that never opened was in the console all
+    along, where nothing outside the editor could see it."""
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    start = source[source.index("static ARIAEditorBridge()"):]
+    start = start[:start.index("\n        }\n")]
+
+    assert "Application.logMessageReceivedThreaded += OnLogMessage" in start, \
+        "threaded: a game logs from other threads too"
+    assert "AssemblyReloadEvents.beforeAssemblyReload += SaveLog" in start
+    assert start.index("RestoreLog()") < start.index("logMessageReceivedThreaded"), \
+        "what was carried over is put back before anything new arrives"
+    assert "CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompiled" in start, \
+        "compile errors never reach the console as log messages"
+
+    handler = _csharp_method(source, "private static void OnLogMessage(")
+    assert handler.index("bool main =") < handler.index("Time.frameCount"), \
+        "frame and play state are only read on the main thread"
+
+
+def test_chatter_cannot_push_a_fault_out_of_the_log():
+    """Measured: two audio listeners, reported every frame, pushed an
+    exception out of a 500-entry buffer in under a second."""
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    add = _csharp_method(source, "private static void AddLog(")
+    assert "last.Repeat++" in add, "the same message straight after itself is counted, not kept twice"
+    assert add.index("if (IsError(kind))") < add.index("_faults.Add(entry)"), "faults are kept apart"
+
+    get = source[source.index("private static CommandResult GetLog("):]
+    get = get[:get.index("#endregion")]
+    assert "KeptEntries()" in get, "a read sees the faults the log has let go of"
+
+    assert "foreach (LogEntry entry in _faults)" in _csharp_method(source, "private static int ErrorsSince(")
+
+
+def test_a_session_report_says_whether_anything_went_wrong():
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    end = _csharp_method(source, "private static void EndSession()")
+    assert 'report["errors"] = ErrorsSince(logStart)' in end
+    assert 'report["firstErrors"]' in end
+
+    handler = source[source.index("private static CommandResult SetPlayMode("):]
+    handler = handler[:handler.index("#endregion")]
+    assert handler.index("SessionLogStartKey") < handler.index("EditorApplication.EnterPlaymode()"), \
+        "where the log stood is recorded before the game can say anything"
+
+
 def test_emptying_the_test_folder_is_confined_to_the_bridge_folder():
     source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
     prepare = source[source.index("private static Dictionary<string, object> PrepareTestSave("):]

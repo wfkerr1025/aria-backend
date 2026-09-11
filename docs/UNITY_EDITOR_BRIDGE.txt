@@ -330,6 +330,27 @@ COMMANDS
                      neither package. IMGUI (OnGUI) cannot be read back:
                      Screenshot it.
 
+  GetLog             since?, session?, types?, contains?, limit? (100), stack? (true)
+                     What the console has said, oldest first: the game's
+                     log, warning, error, exception and assert messages, and
+                     compiler errors (compileError) with a summary line per
+                     compile (compile). data.next is what to pass as since
+                     next time, so each read is only what is new;
+                     session:true starts from the last bridge-started play
+                     session. types "errors" is every kind of fault. Errors
+                     carry the first twelve lines of their stack. The newest
+                     500 messages are kept and the newest 300 survive a
+                     domain reload; asking from before that says so.
+                     The bridge's own "[ARIA]" progress lines are left out.
+                     Compile errors matter most: a script that does not
+                     compile leaves the editor running the scripts that last
+                     compiled, this bridge among them, which then answers as
+                     if nothing were wrong. Ping reports logNext and
+                     sessionErrors; ARIA/last_play.json reports errors and
+                     the first five for the session it describes.
+                     (ReadScreen, unlike SendInput, reads a session on the
+                     real save as well: it only looks.)
+
 Asset paths must start with Assets/ and contain no "..": the bridge does
 not write outside the project. A screenshot path is relative to the project
 rather than to Assets/, for the same reason it defaults outside it.

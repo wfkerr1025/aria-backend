@@ -108,6 +108,7 @@ ARGUMENTS: dict[str, tuple[str, ...]] = {
                     "skipSnapshot"),
     "SendInput": ("actions", "allowRealSave"),
     "ReadScreen": ("targets", "includeHidden", "limit"),
+    "GetLog": ("since", "session", "types", "contains", "limit", "stack"),
 }
 
 POSITIONAL: dict[str, tuple[str, ...]] = {
@@ -157,6 +158,9 @@ POSITIONAL: dict[str, tuple[str, ...]] = {
     "SetPlayMode": ("playing",),
     "SendInput": ("actions",),
     "ReadScreen": ("targets",),
+    # GetLog("errors") reads as one instruction; a sequence number rarely
+    # comes first.
+    "GetLog": ("types", "since"),
 }
 
 
