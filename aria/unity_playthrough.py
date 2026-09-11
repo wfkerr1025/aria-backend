@@ -474,6 +474,13 @@ class PlaythroughRunner:
             self.bridge.set_play_mode(False)
             self._wait_playing(False)
 
+        # A breath after the last session, because a start asked for while the
+        # editor is still closing one can be disowned by it -- and a disowned
+        # start plays against the player's real save. The bridge refuses such a
+        # request as well; this is so a run does not have to be retried to
+        # discover that.
+        self.sleep(1.0)
+
         answer = self.bridge.set_play_mode(True, seed=seed) or {}
         if answer.get("changed") is False:
             raise StepFailed("the editor was already playing when the run asked to start -- a session "
