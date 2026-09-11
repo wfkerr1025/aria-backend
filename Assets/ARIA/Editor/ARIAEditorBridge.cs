@@ -70,7 +70,7 @@ namespace ARIA.Bridge
     [InitializeOnLoad]
     public static class ARIAEditorBridge
     {
-        public const string Version = "1.5.0";
+        public const string Version = "1.5.1";
 
         /// <summary>Folder beside Assets/ that holds the two RPC files.</summary>
         public const string FolderName = "ARIA";
@@ -1393,15 +1393,17 @@ namespace ARIA.Bridge
             int count = (int)Num(args, 1, "count");
             if (count > 1) return StartBurst(args, count);
 
-            int width = (int)Num(args, 1280, "width");
-            int height = (int)Num(args, 720, "height");
-
-            if (width < 16 || height < 16) return Fail("A screenshot must be at least 16x16.");
-            if (width > 8192 || height > 8192) return Fail("A screenshot must be at most 8192x8192.");
-
             string view = Str(args, "view", "camera", "source");
             bool wantsScene = !string.IsNullOrEmpty(view) &&
                               Normalise(view) == Normalise("scene");
+
+            int width;
+            int height;
+            ShotSize(args, wantsScene ? new Vector2(1280f, 720f) : NaturalShotSize(), int.MaxValue,
+                     out width, out height);
+
+            if (width < 16 || height < 16) return Fail("A screenshot must be at least 16x16.");
+            if (width > 8192 || height > 8192) return Fail("A screenshot must be at most 8192x8192.");
 
             string path = Str(args, "path", "file", "output");
             if (string.IsNullOrEmpty(path))
@@ -1467,6 +1469,55 @@ namespace ARIA.Bridge
             finally
             {
                 if (borrowed != null) Object.DestroyImmediate(borrowed);
+            }
+        }
+
+        /// <summary>
+        /// The shape a game-view picture should have: the Game view's own.
+        ///
+        /// The interface is laid out for the Game view, and a picture of any
+        /// other shape crops it. Measured on Ore and Odds: a 1280x720 shot of
+        /// a 1920x889 Game view cut the level panel and two of the three
+        /// buttons off the left of the screen, which read exactly like a
+        /// layout bug the game did not have.
+        /// </summary>
+        private static Vector2 NaturalShotSize()
+        {
+            Vector2 size = GameScreenSize();
+            if (size.x < 16f || size.y < 16f || size.x > 8192f || size.y > 8192f) return new Vector2(1280f, 720f);
+            return new Vector2(Mathf.Round(size.x), Mathf.Round(size.y));
+        }
+
+        /// <summary>
+        /// Width and height from what was asked, keeping the natural shape for
+        /// whichever is left out. With neither, the natural size, no wider than widest.
+        /// </summary>
+        private static void ShotSize(Dictionary<string, object> args, Vector2 natural, int widest,
+                                     out int width, out int height)
+        {
+            bool hasWidth = args.ContainsKey("width");
+            bool hasHeight = args.ContainsKey("height");
+            double aspect = natural.y / natural.x;
+
+            if (hasWidth && hasHeight)
+            {
+                width = (int)Num(args, 0, "width");
+                height = (int)Num(args, 0, "height");
+            }
+            else if (hasWidth)
+            {
+                width = (int)Num(args, 0, "width");
+                height = (int)Math.Round(width * aspect);
+            }
+            else if (hasHeight)
+            {
+                height = (int)Num(args, 0, "height");
+                width = (int)Math.Round(height / aspect);
+            }
+            else
+            {
+                width = Math.Min(widest, (int)natural.x);
+                height = (int)Math.Round(width * aspect);
             }
         }
 
@@ -1630,8 +1681,12 @@ namespace ARIA.Bridge
             }
             if (count > BurstMost) return Fail("A burst is at most " + BurstMost + " shots.");
 
-            int width = (int)Num(args, 640, "width");
-            int height = (int)Num(args, 360, "height");
+            string burstView = Str(args, "view", "camera", "source");
+            bool burstOfScene = !string.IsNullOrEmpty(burstView) && Normalise(burstView) == Normalise("scene");
+
+            int width;
+            int height;
+            ShotSize(args, burstOfScene ? new Vector2(1280f, 720f) : NaturalShotSize(), 640, out width, out height);
             if (width < 16 || height < 16 || width > 4096 || height > 4096)
             {
                 return Fail("A burst's shots are 16 to 4096 pixels on a side.");

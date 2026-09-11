@@ -894,6 +894,24 @@ def test_wait_for_burst_reads_the_list_of_shots(bridge, monkeypatch):
     assert manifest["shots"][1]["absolutePath"].endswith("charm_01.png")
 
 
+def test_a_game_view_picture_takes_the_game_views_shape():
+    """Measured: a 1280x720 shot of a 1920x889 Game view cropped the HUD's left."""
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    single = source[source.index("private static CommandResult Screenshot("):]
+    single = single[:single.index("private static Vector2 NaturalShotSize()")]
+    assert "NaturalShotSize()" in single
+    assert single.index("ShotSize(") < single.index("A screenshot must be at least 16x16"), \
+        "the size is settled before it is checked"
+    assert 'Num(args, 1280, "width")' not in source, "no fixed default width is left"
+
+    burst = source[source.index("private static CommandResult StartBurst("):]
+    burst = burst[:burst.index("private static void PumpBurst()")]
+    assert "NaturalShotSize()" in burst
+
+    size = _csharp_method(source, "private static void ShotSize(")
+    assert "height = (int)Math.Round(width * aspect)" in size, "one side given keeps the shape"
+
+
 def test_a_burst_needs_a_playing_game_and_takes_turns():
     source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
     start = source[source.index("private static CommandResult StartBurst("):]

@@ -192,7 +192,13 @@ COMMANDS
                      unit and readability. Written for the case where a tool
                      put a .png and a hand-rolled .meta on disk and nothing
                      had yet asked Unity what the pair became.
-  Screenshot         path?, width? (1280), height? (720), view? (game/scene)
+  Screenshot         path?, width?, height?, view? (game/scene)
+                     A game-view shot is the Game view's own size unless
+                     sized; with only width or only height the other keeps
+                     that shape. The interface is laid out for the Game
+                     view, and a picture of another shape crops it: a
+                     1280x720 shot of a 1920x889 view lost the left of the
+                     HUD. The Scene view defaults to 1280x720.
                      Renders through a RenderTexture, not ScreenCapture, so it
                      returns a file that exists rather than one that will. A
                      Screen Space - Overlay canvas draws to the display and
@@ -203,7 +209,8 @@ COMMANDS
                      BURST: count? (>1), every? (frames), everySeconds? (0.1
                      unless every is given), sheet? (true), columns?
                      (square-ish). While the game plays, takes count shots
-                     (at most 64, 640x360 unless sized), saves each as
+                     (at most 64, 640 wide at the Game view's shape unless
+                     sized), saves each as
                      <path>_00.png, _01.png..., lays them out on one contact
                      sheet <path>_sheet.png left to right and top to bottom,
                      and lists them with frame and seconds in <path>.json.

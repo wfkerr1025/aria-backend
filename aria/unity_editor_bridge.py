@@ -678,6 +678,12 @@ class _CommandBuilder:
         view. Paths are relative to the project and default under ARIA/, so
         a screenshot is not filed as a game asset.
 
+        A game-view shot is the Game view's own size unless sized: the
+        interface is laid out for the Game view, and a picture of another
+        shape crops it (a 1280x720 shot of a 1920x889 view lost the left of
+        the HUD). Give only width or only height and the other keeps that
+        shape. The Scene view defaults to 1280x720.
+
         An overlay canvas draws to the display and appears in no camera's
         render, so the game view capture borrows every one of them onto the
         capture camera for the single frame and hands them back afterwards.
@@ -688,7 +694,8 @@ class _CommandBuilder:
         every_seconds (0.1 unless every, in frames, is given), saved as
         <path>_00.png, _01.png..., laid out on one contact sheet
         <path>_sheet.png in reading order, and listed with frame and time in
-        <path>.json. Shots default to 640x360 in a burst. It returns before
+        <path>.json. Shots default to 640 wide at the Game view's shape in
+        a burst. It returns before
         the first shot; wait_for_burst() waits and reads the list, and the
         module-level screenshot_burst() does both.
         """
