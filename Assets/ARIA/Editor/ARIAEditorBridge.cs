@@ -48,7 +48,9 @@ using System.Reflection;
 using System.Text;
 using UnityEditor;
 using UnityEditor.SceneManagement;
+using UnityEditorInternal;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 using Object = UnityEngine.Object;
 
@@ -61,7 +63,7 @@ namespace ARIA.Bridge
     [InitializeOnLoad]
     public static class ARIAEditorBridge
     {
-        public const string Version = "1.0.0";
+        public const string Version = "1.3.0";
 
         /// <summary>Folder beside Assets/ that holds the two RPC files.</summary>
         public const string FolderName = "ARIA";
@@ -124,6 +126,28 @@ namespace ARIA.Bridge
 
         #region Triggers
 
+        /// <summary>
+        /// What a playing editor will run: nothing that can change a scene.
+        ///
+        /// Play mode throws away every edit made during it, so a SetField sent
+        /// while the game runs would report success for work about to vanish.
+        /// That was the reason for refusing everything while playing -- and it
+        /// also meant a bridge that had just been told to START the game could
+        /// no longer be pinged, photographed, or told to stop. These can be:
+        /// they read, they draw, or they end play mode.
+        ///
+        /// Mirrored as PLAY_SAFE_COMMANDS in aria/unity_editor_bridge.py, and a
+        /// test holds the two lists together.
+        /// </summary>
+        private static readonly HashSet<string> PlaySafeCommands =
+            new HashSet<string>(StringComparer.Ordinal)
+        {
+            "Ping", "Screenshot", "GetField", "GetHierarchy", "SetPlayMode",
+        };
+
+        /// <summary>The commands file last left waiting for play to stop, by write time.</summary>
+        private static DateTime _deferredStamp = DateTime.MinValue;
+
         private static void Poll()
         {
             if (!Watching) return;
@@ -132,11 +156,91 @@ namespace ARIA.Bridge
             if (now - _lastPoll < PollIntervalSeconds) return;
             _lastPoll = now;
 
-            if (EditorApplication.isPlayingOrWillChangePlaymode) return;
+            // Between modes the domain is about to be torn down, and anything
+            // started now would be run by an editor that is not there to finish.
+            bool playing = EditorApplication.isPlaying;
+            if (EditorApplication.isPlayingOrWillChangePlaymode != playing) return;
+
             if (EditorApplication.isCompiling || EditorApplication.isUpdating) return;
             if (!File.Exists(CommandsPath)) return;
 
+            if (playing)
+            {
+                // A batch that edits a scene is LEFT, not refused: it runs the
+                // moment the game stops, which is what whoever sent it meant.
+                // Read once per version of the file rather than once per poll.
+                DateTime stamp = File.GetLastWriteTimeUtc(CommandsPath);
+                if (stamp == _deferredStamp) return;
+
+                string text;
+                try
+                {
+                    text = File.ReadAllText(CommandsPath);
+                }
+                catch (IOException)
+                {
+                    return;
+                }
+
+                string blocked;
+                if (!PlaySafe(text, out blocked))
+                {
+                    _deferredStamp = stamp;
+                    return;
+                }
+            }
+
             RunPendingCommands();
+        }
+
+        /// <summary>Whether every command in a commands document may run while the game plays.</summary>
+        private static bool PlaySafe(string text, out string blocked)
+        {
+            blocked = null;
+
+            object parsed;
+            string parseError;
+            if (!Json.TryParse(text, out parsed, out parseError))
+            {
+                blocked = "an unreadable commands file";
+                return false;
+            }
+
+            List<object> commands = parsed as List<object>;
+            Dictionary<string, object> envelope = parsed as Dictionary<string, object>;
+
+            if (envelope != null)
+            {
+                object list;
+                if (envelope.TryGetValue("commands", out list) && list is List<object>)
+                {
+                    commands = (List<object>)list;
+                }
+                else if (envelope.ContainsKey("command"))
+                {
+                    commands = new List<object> { envelope };
+                }
+            }
+
+            if (commands == null)
+            {
+                blocked = "a commands file with no commands";
+                return false;
+            }
+
+            foreach (object entry in commands)
+            {
+                Dictionary<string, object> one = entry as Dictionary<string, object>;
+                string name = one == null ? null : Str(one, "command");
+
+                if (string.IsNullOrEmpty(name) || !PlaySafeCommands.Contains(name))
+                {
+                    blocked = string.IsNullOrEmpty(name) ? "an unnamed command" : name;
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         [MenuItem(MenuWatch)]
@@ -172,10 +276,10 @@ namespace ARIA.Bridge
             bool ok;
             string message;
 
-            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            if (EditorApplication.isPlayingOrWillChangePlaymode != EditorApplication.isPlaying)
             {
                 ok = false;
-                message = "Refusing to run bridge commands in play mode. Stop the game first.";
+                message = "Play mode is changing. Send the commands again once it has settled.";
             }
             else if (!File.Exists(CommandsPath))
             {
@@ -198,16 +302,28 @@ namespace ARIA.Bridge
                     return;
                 }
 
-                try
+                string blocked;
+                if (EditorApplication.isPlaying && !PlaySafe(text, out blocked))
                 {
-                    File.Delete(CommandsPath);
+                    // Refused, and the file KEPT: it runs when the game stops.
+                    ok = false;
+                    message = "Not while the game is playing: " + blocked + " can change the scene, " +
+                              "and play mode throws such changes away. It will run when the game stops. " +
+                              "While playing, only " + string.Join(", ", PlaySafeCommands) + " run.";
                 }
-                catch (IOException error)
+                else
                 {
-                    Debug.LogWarning("[ARIA] Could not remove the commands file: " + error.Message);
-                }
+                    try
+                    {
+                        File.Delete(CommandsPath);
+                    }
+                    catch (IOException error)
+                    {
+                        Debug.LogWarning("[ARIA] Could not remove the commands file: " + error.Message);
+                    }
 
-                ok = RunCommandText(text, results, out requestId, out message);
+                    ok = RunCommandText(text, results, out requestId, out message);
+                }
             }
 
             WriteResults(requestId, ok, message, results);
@@ -432,6 +548,9 @@ namespace ARIA.Bridge
                 case "InstantiatePrefab": return InstantiatePrefab(args, scope);
                 case "CreateLight": return CreateLight(args, scope);
                 case "CreateCamera": return CreateCamera(args, scope);
+                case "RefreshAssets": return RefreshAssets(args, scope);
+                case "Screenshot": return Screenshot(args, scope);
+                case "SetPlayMode": return SetPlayMode(args, scope);
                 default:
                     return Fail("'" + command + "' is not a bridge command.");
             }
@@ -460,6 +579,7 @@ namespace ARIA.Bridge
             data["project"] = ProjectRoot;
             data["batchMode"] = Application.isBatchMode;
             data["isPlaying"] = EditorApplication.isPlaying;
+            data["focused"] = InternalEditorUtility.isApplicationActive;
             Scene active = SceneManager.GetActiveScene();
             data["activeScene"] = active.path ?? "";
             data["activeSceneName"] = active.name ?? "";
@@ -1083,6 +1203,513 @@ namespace ARIA.Bridge
                 if (listener != null && listener.gameObject.scene == scene) return true;
             }
             return false;
+        }
+
+        #endregion
+
+        #region Commands: looking at the result
+
+        /// <summary>
+        /// Import what has changed on disk, and say what Unity made of it.
+        ///
+        /// The reporting half is the point. A tool that writes a .png and a
+        /// hand-rolled .meta beside it has no idea whether the pair imported
+        /// as a Sprite, as a plain Texture, or at all -- the file is there
+        /// either way and the mistake only shows up as an empty square in a
+        /// running game. Asking the AssetDatabase turns that into an answer.
+        /// </summary>
+        private static CommandResult RefreshAssets(Dictionary<string, object> args, Scope scope)
+        {
+            if (scope.InPrefab) return Fail("RefreshAssets is not allowed inside ModifyPrefab.");
+
+            ImportAssetOptions options = ImportAssetOptions.Default;
+            if (Bool(args, "force", false)) options |= ImportAssetOptions.ForceUpdate;
+            if (Bool(args, "recursive", false)) options |= ImportAssetOptions.ImportRecursive;
+
+            string path = Str(args, "path", "assetPath", "asset");
+
+            Dictionary<string, object> data = new Dictionary<string, object>();
+
+            if (string.IsNullOrEmpty(path))
+            {
+                AssetDatabase.Refresh(options);
+                data["scope"] = "all";
+                return Ok("Refreshed the asset database.", data);
+            }
+
+            string error;
+            if (!SafeAssetPath(path, null, out error)) return Fail(error);
+
+            string full = Path.Combine(ProjectRoot, path);
+            if (!File.Exists(full) && !Directory.Exists(full))
+            {
+                return Fail("Nothing at " + path + " to import.");
+            }
+
+            AssetDatabase.ImportAsset(path, options);
+
+            data["scope"] = "path";
+            data["path"] = path;
+            data["guid"] = AssetDatabase.AssetPathToGUID(path);
+
+            Describe(path, data);
+
+            return Ok("Imported " + path + ".", data);
+        }
+
+        /// <summary>What one asset turned into, in the terms its caller cares about.</summary>
+        private static void Describe(string path, Dictionary<string, object> data)
+        {
+            if (AssetDatabase.IsValidFolder(path))
+            {
+                data["type"] = "Folder";
+                return;
+            }
+
+            Object main = AssetDatabase.LoadMainAssetAtPath(path);
+            data["type"] = main == null ? "" : main.GetType().Name;
+            data["loaded"] = main != null;
+
+            AssetImporter importer = AssetImporter.GetAtPath(path);
+            data["importer"] = importer == null ? "" : importer.GetType().Name;
+
+            // Sub-assets are how a Sprite arrives: a texture importer set to
+            // Sprite mode leaves a Texture2D as the main asset and hangs the
+            // Sprite off it, so "is it a sprite" cannot be answered by the
+            // main asset's type alone. This is the question I have been
+            // answering by trusting a copied template.
+            Object[] all = AssetDatabase.LoadAllAssetsAtPath(path);
+            List<object> sprites = new List<object>();
+            for (int index = 0; index < all.Length; index++)
+            {
+                Sprite sprite = all[index] as Sprite;
+                if (sprite == null) continue;
+
+                Dictionary<string, object> one = new Dictionary<string, object>();
+                one["name"] = sprite.name;
+                one["rect"] = sprite.rect.width + "x" + sprite.rect.height;
+                one["pixelsPerUnit"] = sprite.pixelsPerUnit;
+                sprites.Add(one);
+            }
+            data["sprites"] = sprites;
+
+            TextureImporter texture = importer as TextureImporter;
+            if (texture == null) return;
+
+            data["textureType"] = texture.textureType.ToString();
+            data["spriteMode"] = texture.spriteImportMode.ToString();
+            data["spritePixelsPerUnit"] = texture.spritePixelsPerUnit;
+            data["alphaIsTransparency"] = texture.alphaIsTransparency;
+            data["readable"] = texture.isReadable;
+            data["maxTextureSize"] = texture.maxTextureSize;
+        }
+
+        /// <summary>
+        /// Render a camera to a PNG and say where it landed.
+        ///
+        /// Through a RenderTexture rather than ScreenCapture, because
+        /// ScreenCapture writes at the end of a frame and this has to return
+        /// an answer inside one command -- a path handed back before the file
+        /// exists is worse than no command at all.
+        ///
+        /// Writes under ARIA/ by default rather than under Assets/, since a
+        /// screenshot is evidence, not content, and one dropped in Assets/ is
+        /// a new asset to import, re-import and eventually explain.
+        /// </summary>
+        private static CommandResult Screenshot(Dictionary<string, object> args, Scope scope)
+        {
+            if (scope.InPrefab) return Fail("Screenshot is not allowed inside ModifyPrefab.");
+
+            int width = (int)Num(args, 1280, "width");
+            int height = (int)Num(args, 720, "height");
+
+            if (width < 16 || height < 16) return Fail("A screenshot must be at least 16x16.");
+            if (width > 8192 || height > 8192) return Fail("A screenshot must be at most 8192x8192.");
+
+            string view = Str(args, "view", "camera", "source");
+            bool wantsScene = !string.IsNullOrEmpty(view) &&
+                              Normalise(view) == Normalise("scene");
+
+            Camera camera = null;
+            GameObject borrowed = null;
+
+            if (wantsScene)
+            {
+                SceneView sceneView = SceneView.lastActiveSceneView;
+                if (sceneView == null) return Fail("There is no Scene view open to capture.");
+                camera = sceneView.camera;
+            }
+            else
+            {
+                camera = Camera.main;
+                if (camera == null)
+                {
+                    Camera[] all = FindAll<Camera>();
+                    for (int index = 0; index < all.Length; index++)
+                    {
+                        if (!all[index].enabled || !all[index].gameObject.activeInHierarchy) continue;
+                        camera = all[index];
+                        break;
+                    }
+                }
+            }
+
+            // No camera anywhere is still worth a picture: the UI is the usual
+            // reason for asking, and it does not need one of its own.
+            if (camera == null)
+            {
+                borrowed = new GameObject("ARIA Screenshot Camera");
+                borrowed.hideFlags = HideFlags.HideAndDontSave;
+                camera = borrowed.AddComponent<Camera>();
+                camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = new Color(0.08f, 0.08f, 0.10f, 1f);
+            }
+
+            string path = Str(args, "path", "file", "output");
+            if (string.IsNullOrEmpty(path))
+            {
+                path = "ARIA/shots/shot_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".png";
+            }
+
+            path = path.Replace('\\', '/').Trim();
+            if (path.Contains("..") || Path.IsPathRooted(path))
+            {
+                return Fail("A screenshot path must be relative to the project and free of '..'.");
+            }
+            if (!path.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) path += ".png";
+
+            RenderTexture texture = null;
+            RenderTexture wasActive = RenderTexture.active;
+            RenderTexture wasTarget = camera.targetTexture;
+
+            List<Canvas> moved = new List<Canvas>();
+            List<RenderMode> wereModes = new List<RenderMode>();
+            List<Camera> wereCameras = new List<Camera>();
+            List<float> wereDistances = new List<float>();
+
+            try
+            {
+                texture = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
+                texture.antiAliasing = 1;
+                texture.Create();
+
+                // Screen Space - Overlay draws straight to the display and
+                // appears in no camera's render, so a screenshot of a game
+                // whose entire interface is built at runtime comes back as an
+                // empty room. Borrowing each canvas onto the capture camera
+                // for one render is what puts the interface in the picture;
+                // the finally below hands them all back.
+                if (!wantsScene) BorrowCanvases(camera, moved, wereModes, wereCameras, wereDistances);
+
+                Render(camera, texture);
+
+                Texture2D flat = new Texture2D(width, height, TextureFormat.RGB24, false);
+                RenderTexture.active = texture;
+                flat.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+                flat.Apply();
+
+                byte[] png = flat.EncodeToPNG();
+                Object.DestroyImmediate(flat);
+
+                string full = Path.Combine(ProjectRoot, path);
+                string folder = Path.GetDirectoryName(full);
+                if (!string.IsNullOrEmpty(folder)) Directory.CreateDirectory(folder);
+
+                File.WriteAllBytes(full, png);
+
+                Dictionary<string, object> data = new Dictionary<string, object>();
+                data["path"] = path;
+                data["absolutePath"] = full.Replace('\\', '/');
+                data["width"] = width;
+                data["height"] = height;
+                data["bytes"] = png.Length;
+                data["camera"] = camera.name;
+                data["view"] = wantsScene ? "scene" : "game";
+                data["canvases"] = moved.Count;
+                data["isPlaying"] = EditorApplication.isPlaying;
+
+                // Said out loud, because an empty-looking screenshot of this
+                // project is nearly always this and not a broken camera.
+                if (!EditorApplication.isPlaying && moved.Count == 0)
+                {
+                    data["note"] = "Nothing is playing and no canvas was found. A game that builds "
+                                 + "its interface at runtime has none to photograph until it runs: "
+                                 + "SetPlayMode first.";
+                }
+
+                if (path.StartsWith("Assets/", StringComparison.Ordinal)) AssetDatabase.ImportAsset(path);
+
+                return Ok("Wrote " + path + ".", data);
+            }
+            catch (Exception error)
+            {
+                return Fail("Screenshot failed: " + error.Message);
+            }
+            finally
+            {
+                for (int index = 0; index < moved.Count; index++)
+                {
+                    if (moved[index] == null) continue;
+                    moved[index].renderMode = wereModes[index];
+                    moved[index].worldCamera = wereCameras[index];
+                    moved[index].planeDistance = wereDistances[index];
+                }
+
+                RenderTexture.active = wasActive;
+                camera.targetTexture = wasTarget;
+
+                if (texture != null)
+                {
+                    texture.Release();
+                    Object.DestroyImmediate(texture);
+                }
+
+                if (borrowed != null) Object.DestroyImmediate(borrowed);
+            }
+        }
+
+        /// <summary>Put every overlay canvas in front of one camera, remembering where it was.</summary>
+        private static void BorrowCanvases(Camera camera, List<Canvas> moved, List<RenderMode> modes,
+                                           List<Camera> cameras, List<float> distances)
+        {
+            Canvas[] all = FindAll<Canvas>();
+
+            for (int index = 0; index < all.Length; index++)
+            {
+                Canvas canvas = all[index];
+                if (canvas == null || !canvas.isActiveAndEnabled) continue;
+                if (canvas.renderMode != RenderMode.ScreenSpaceOverlay) continue;
+
+                // Only the roots. A nested canvas inherits its parent's mode
+                // and setting it here would detach it from the one above.
+                if (canvas.transform.parent != null &&
+                    canvas.transform.parent.GetComponentInParent<Canvas>() != null) continue;
+
+                moved.Add(canvas);
+                modes.Add(canvas.renderMode);
+                cameras.Add(canvas.worldCamera);
+                distances.Add(canvas.planeDistance);
+
+                canvas.renderMode = RenderMode.ScreenSpaceCamera;
+                canvas.worldCamera = camera;
+                canvas.planeDistance = Mathf.Max(camera.nearClipPlane + 0.01f, 0.5f);
+            }
+        }
+
+        /// <summary>Draw one camera into one texture, whichever pipeline is installed.</summary>
+        private static void Render(Camera camera, RenderTexture texture)
+        {
+            // Camera.Render is the built-in pipeline's call and is unsupported
+            // under URP and HDRP, where the render request is the way in. Ask
+            // first: the answer depends on the project this was installed in,
+            // not on the version it was written against.
+#if UNITY_2023_1_OR_NEWER
+            // Render requests arrived in 2023.1. Before that there is only
+            // Camera.Render, and a URP project on an older editor gets the
+            // warning Unity gives for it instead of a picture.
+            RenderPipeline.StandardRequest request = new RenderPipeline.StandardRequest();
+            request.destination = texture;
+
+            if (RenderPipelineManager.currentPipeline != null &&
+                RenderPipeline.SupportsRenderRequest(camera, request))
+            {
+                camera.SubmitRenderRequest(request);
+                return;
+            }
+#endif
+
+            camera.targetTexture = texture;
+            camera.Render();
+        }
+
+        /// <summary>Every live object of a type, through whichever API this editor has.</summary>
+        private static T[] FindAll<T>() where T : Object
+        {
+#if UNITY_2022_2_OR_NEWER
+            return Object.FindObjectsByType<T>(FindObjectsSortMode.None);
+#else
+            return Object.FindObjectsOfType<T>();
+#endif
+        }
+
+        /// <summary>How many play-mode snapshots are kept under ARIA/snapshots.</summary>
+        private const int SnapshotsKept = 10;
+
+        /// <summary>A persistentDataPath bigger than this is refused rather than copied.</summary>
+        private const long SnapshotByteLimit = 256L * 1024 * 1024;
+
+        /// <summary>
+        /// Copy everything the game keeps in persistentDataPath, before play
+        /// mode gets the chance to write over it.
+        ///
+        /// A bug in the game's save code, or a test driving the game somewhere
+        /// its author never took it, can replace hours of play in one frame. A
+        /// folder copied a moment earlier is the difference between an apology
+        /// and a restore. A file that cannot be read is skipped and named in
+        /// the result rather than sinking the copy; the saves are what matter.
+        /// </summary>
+        private static Dictionary<string, object> SnapshotPersistentData(out string error)
+        {
+            error = null;
+
+            string source = Application.persistentDataPath;
+            Dictionary<string, object> data = new Dictionary<string, object>();
+            data["source"] = (source ?? "").Replace('\\', '/');
+
+            if (string.IsNullOrEmpty(source) || !Directory.Exists(source))
+            {
+                // Nothing saved yet is not a failure: there is nothing to lose.
+                data["path"] = "";
+                data["files"] = 0;
+                data["bytes"] = 0L;
+                return data;
+            }
+
+            try
+            {
+                string[] files = Directory.GetFiles(source, "*", SearchOption.AllDirectories);
+
+                long total = 0;
+                foreach (string file in files) total += new FileInfo(file).Length;
+
+                if (total > SnapshotByteLimit)
+                {
+                    error = "persistentDataPath holds " + (total / (1024 * 1024)) + " MB, over the " +
+                            (SnapshotByteLimit / (1024 * 1024)) + " MB a snapshot will copy";
+                    return null;
+                }
+
+                string root = Path.Combine(BridgeFolder, "snapshots");
+                string target = Path.Combine(root,
+                    DateTime.Now.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture));
+                Directory.CreateDirectory(target);
+
+                int copied = 0;
+                List<object> skipped = new List<object>();
+
+                foreach (string file in files)
+                {
+                    string relative = file.Substring(source.Length).TrimStart('\\', '/');
+                    string destination = Path.Combine(target, relative);
+
+                    try
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(destination));
+                        File.Copy(file, destination, false);
+                        copied++;
+                    }
+                    catch (Exception failure)
+                    {
+                        skipped.Add(relative + ": " + failure.Message);
+                    }
+                }
+
+                PruneSnapshots(root);
+
+                data["path"] = target.Replace('\\', '/');
+                data["files"] = copied;
+                data["bytes"] = total;
+                data["skipped"] = skipped;
+                return data;
+            }
+            catch (Exception failure)
+            {
+                error = failure.Message;
+                return null;
+            }
+        }
+
+        /// <summary>Keep the newest snapshots; the folder names sort by time.</summary>
+        private static void PruneSnapshots(string root)
+        {
+            string[] kept = Directory.GetDirectories(root);
+            Array.Sort(kept, StringComparer.Ordinal);
+
+            for (int index = 0; index < kept.Length - SnapshotsKept; index++)
+            {
+                try
+                {
+                    Directory.Delete(kept[index], true);
+                }
+                catch (Exception failure)
+                {
+                    Debug.LogWarning("[ARIA] Could not prune snapshot " + kept[index] + ": " + failure.Message);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Start or stop the game.
+        ///
+        /// Returns before it happens, and that is not a shortcoming. Entering
+        /// play mode reloads the C# domain, which throws away everything
+        /// holding this call -- so the result has to be written first. The
+        /// file-based design is what makes that survivable: the next batch is
+        /// read by a bridge that came back up on the other side, already
+        /// playing -- one that runs only PlaySafeCommands, so that batch is a
+        /// Ping, a Screenshot, a read, or this command again to stop.
+        ///
+        /// Entering is guarded twice, because play mode runs the game's own
+        /// save code against the player's real files: it refuses while Unity
+        /// is not the focused application (allowUnfocused overrides), and it
+        /// copies persistentDataPath to ARIA/snapshots first (skipSnapshot
+        /// overrides). Both were learned from a save that did not survive.
+        /// </summary>
+        private static CommandResult SetPlayMode(Dictionary<string, object> args, Scope scope)
+        {
+            if (scope.InPrefab) return Fail("SetPlayMode is not allowed inside ModifyPrefab.");
+            if (Application.isBatchMode) return Fail("A batch-mode editor cannot enter play mode.");
+
+            bool wanted = Bool(args, "playing", Bool(args, "play", true));
+            bool already = EditorApplication.isPlaying;
+
+            Dictionary<string, object> data = new Dictionary<string, object>();
+            data["was"] = already;
+            data["willBe"] = wanted;
+            data["changed"] = already != wanted;
+
+            if (already == wanted)
+            {
+                return Ok(wanted ? "Already playing." : "Already stopped.", data);
+            }
+
+            if (!wanted)
+            {
+                EditorApplication.ExitPlaymode();
+                return Ok("Leaving play mode.", data);
+            }
+
+            bool focused = InternalEditorUtility.isApplicationActive;
+            data["focused"] = focused;
+
+            // Unfocused, Unity sends the game OnApplicationFocus(false) as play
+            // begins -- before Start, in no promised order -- and with Run In
+            // Background off the game will not advance a frame after it.
+            // Measured: a game that saves on focus-lost wrote its blank wake-up
+            // state over a real save exactly this way.
+            if (!focused && !Bool(args, "allowUnfocused", false))
+            {
+                return Fail("Unity is not the focused application, so play mode was not started. Started " +
+                            "now, the game would get a focus-lost event before its Start runs and would " +
+                            "not advance a frame. Click into Unity and send again, or pass allowUnfocused:true.");
+            }
+
+            if (!Bool(args, "skipSnapshot", false))
+            {
+                string snapshotError;
+                Dictionary<string, object> snapshot = SnapshotPersistentData(out snapshotError);
+                if (snapshot == null)
+                {
+                    return Fail("Play mode was not started: the game's saved data could not be copied first (" +
+                                snapshotError + "). Pass skipSnapshot:true to start without a copy.");
+                }
+                data["snapshot"] = snapshot;
+            }
+
+            EditorApplication.EnterPlaymode();
+
+            return Ok("Entering play mode. A domain reload follows, so send the next command separately.",
+                      data);
         }
 
         #endregion

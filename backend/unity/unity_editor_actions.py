@@ -102,6 +102,9 @@ ARGUMENTS: dict[str, tuple[str, ...]] = {
     "CreateCamera": ("name", "parent", "position", "rotation", "fov", "clearFlags",
                      "backgroundColor", "main", "near", "far", "orthographic",
                      "orthographicSize"),
+    "RefreshAssets": ("path", "force", "recursive"),
+    "Screenshot": ("path", "width", "height", "view"),
+    "SetPlayMode": ("playing", "allowUnfocused", "skipSnapshot"),
 }
 
 POSITIONAL: dict[str, tuple[str, ...]] = {
@@ -143,6 +146,12 @@ POSITIONAL: dict[str, tuple[str, ...]] = {
     # unnamed value is the name, in all four Create* commands.
     "CreateLight": ("name", "type", "position", "rotation", "intensity", "color"),
     "CreateCamera": ("name", "position", "rotation", "fov", "clearFlags"),
+    # Path first in both, because the thing being named is the only thing
+    # anyone writes unnamed: RefreshAssets("Assets/.../item.png") and
+    # Screenshot("ARIA/shots/book.png") each read as one instruction.
+    "RefreshAssets": ("path",),
+    "Screenshot": ("path",),
+    "SetPlayMode": ("playing",),
 }
 
 

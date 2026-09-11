@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -454,3 +455,159 @@ def test_cli_installs_and_reports(project, capsys):
 
     assert ueb.main(["--project", str(project), "do", "a", "backflip"]) == 1
     assert "Could not map" in capsys.readouterr().err
+
+
+# ======================================================
+# Looking at the result
+# ======================================================
+
+def test_refresh_assets_without_a_path_refreshes_everything(bridge):
+    def reply(commands):
+        assert commands == [{"command": "RefreshAssets", "args": {}}]
+        return [ok("RefreshAssets", scope="all")]
+
+    with FakeUnity(bridge, reply):
+        assert bridge.refresh_assets() == {"scope": "all"}
+
+
+def test_refresh_assets_reports_what_one_file_became(bridge):
+    """The reporting half is the whole reason the command exists.
+
+    A tool that writes a .png and a hand-rolled .meta beside it cannot see
+    whether the pair imported as a Sprite or as a plain Texture. The file
+    is on disk either way and the mistake surfaces as an empty square in a
+    running game, hours later.
+    """
+    def reply(commands):
+        assert commands == [{"command": "RefreshAssets",
+                             "args": {"path": "Assets/UI/item.png", "force": True}}]
+        return [ok("RefreshAssets", path="Assets/UI/item.png", guid="abc123",
+                   type="Texture2D", importer="TextureImporter",
+                   textureType="Sprite", spriteMode="Single",
+                   sprites=[{"name": "item", "rect": "256x256"}])]
+
+    with FakeUnity(bridge, reply):
+        data = bridge.refresh_assets("Assets/UI/item.png", force=True)
+
+    assert data["guid"] == "abc123"
+    assert data["textureType"] == "Sprite"
+    assert [s["name"] for s in data["sprites"]] == ["item"]
+
+
+def test_screenshot_defaults_to_the_game_view_and_returns_a_path(bridge):
+    def reply(commands):
+        assert commands == [{"command": "Screenshot", "args": {"width": 1600, "height": 900}}]
+        return [ok("Screenshot", path="ARIA/shots/shot_20260910_2131.png",
+                   width=1600, height=900, view="game", canvases=2)]
+
+    with FakeUnity(bridge, reply):
+        data = bridge.screenshot(width=1600, height=900)
+
+    assert data["path"].endswith(".png")
+    assert data["view"] == "game"
+    assert data["canvases"] == 2, "overlay canvases were borrowed for the frame"
+
+
+def test_screenshot_passes_the_scene_view_through(bridge):
+    def reply(commands):
+        assert commands[0]["args"]["view"] == "scene"
+        return [ok("Screenshot", view="scene")]
+
+    with FakeUnity(bridge, reply):
+        assert bridge.screenshot(view="scene")["view"] == "scene"
+
+
+def test_set_play_mode_says_what_it_will_be_rather_than_what_it_is(bridge):
+    """It answers before the change, because the change destroys the answerer.
+
+    Entering play mode reloads the C# domain and throws away everything
+    holding the call, so the result is written first and the play mode
+    lands after. A caller that waited for "isPlaying": true would wait
+    forever.
+    """
+    def reply(commands):
+        assert commands == [{"command": "SetPlayMode", "args": {"playing": True}}]
+        return [ok("SetPlayMode", was=False, willBe=True, changed=True)]
+
+    with FakeUnity(bridge, reply):
+        data = bridge.set_play_mode(True)
+
+    assert data["was"] is False and data["willBe"] is True
+
+
+def test_stopping_is_the_same_command(bridge):
+    def reply(commands):
+        assert commands[0]["args"] == {"playing": False}
+        return [ok("SetPlayMode", was=True, willBe=False, changed=True)]
+
+    with FakeUnity(bridge, reply):
+        assert bridge.set_play_mode(False)["changed"] is True
+
+
+def test_the_three_new_commands_are_batchable(bridge):
+    """The sequence that closes the loop: run it, photograph it, read it back."""
+    def reply(commands):
+        assert [c["command"] for c in commands] == ["SetPlayMode", "Screenshot", "RefreshAssets"]
+        return [ok(c["command"], index=i) for i, c in enumerate(commands)]
+
+    with FakeUnity(bridge, reply) as unity:
+        with bridge.batch() as batch:
+            batch.set_play_mode(True)
+            batch.screenshot("ARIA/shots/book.png")
+            batch.refresh_assets("Assets/UI/item.png")
+
+    assert len(unity.seen["commands"]) == 3
+
+
+def test_the_play_safe_list_is_the_same_on_both_sides():
+    """The client must not promise a command in play mode the editor will not run.
+
+    Found on the live editor: SetPlayMode(True) went through, and then the
+    bridge answered nothing at all -- no ping, no screenshot, not even the
+    command to stop -- because it refused everything while playing. What a
+    playing editor runs now lives in both halves, and this holds them
+    together.
+    """
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    block = re.search(r"PlaySafeCommands\s*=\s*new HashSet<string>\([^)]*\)\s*\{(?P<body>[^}]*)\}",
+                      source)
+    assert block, "PlaySafeCommands not found in the C# bridge"
+
+    listed = set(re.findall(r'"(\w+)"', block.group("body")))
+    assert listed == set(ueb.PLAY_SAFE_COMMANDS)
+    assert ueb.PLAY_SAFE_COMMANDS <= ueb.COMMANDS
+    assert "SetPlayMode" in ueb.PLAY_SAFE_COMMANDS, "a playing editor must always be stoppable"
+
+
+def test_nothing_that_edits_a_scene_is_play_safe():
+    """Play mode throws edits away on exit; a bridge must not report them as done."""
+    editing = {"CreateGameObject", "DeleteGameObject", "AddComponent", "RemoveComponent",
+               "SetTransform", "SetField", "OpenScene", "SaveScene", "CreatePrefab",
+               "ModifyPrefab", "InstantiatePrefab", "CreateLight", "CreateCamera",
+               "RefreshAssets"}
+    assert not (editing & ueb.PLAY_SAFE_COMMANDS)
+
+
+def test_the_play_mode_overrides_are_spelled_the_way_the_editor_reads_them(bridge):
+    def reply(commands):
+        assert commands[0]["args"] == {"playing": True, "allowUnfocused": True, "skipSnapshot": True}
+        return [ok("SetPlayMode", changed=True)]
+
+    with FakeUnity(bridge, reply):
+        bridge.set_play_mode(True, allow_unfocused=True, skip_snapshot=True)
+
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    assert 'Bool(args, "allowUnfocused", false)' in source
+    assert 'Bool(args, "skipSnapshot", false)' in source
+
+
+def test_entering_play_mode_checks_focus_and_copies_the_save_by_default():
+    """What once destroyed a real save: an unfocused start with no copy taken."""
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    handler = source[source.index("private static CommandResult SetPlayMode("):]
+    handler = handler[:handler.index("#endregion")]
+
+    assert "InternalEditorUtility.isApplicationActive" in handler
+    assert "SnapshotPersistentData(" in handler
+    assert handler.index("SnapshotPersistentData(") < handler.index("EditorApplication.EnterPlaymode()"), \
+        "the copy has to exist before the game can write"

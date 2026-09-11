@@ -29,11 +29,15 @@ console then shows:
 
     [ARIA] Editor bridge 1.0.0 loaded. Commands: <UnityProject>/ARIA/unity_commands.json
 
-It lives in an Editor folder, so it is never part of a build, and it
-refuses to run while the game is in play mode.
+It lives in an Editor folder, so it is never part of a build. While the
+game is playing it runs only Ping, Screenshot, GetField, GetHierarchy and
+SetPlayMode; a batch holding anything that edits a scene waits until the
+game stops, because play mode throws such edits away when it ends.
 
 Works on Unity 2021 and later. It uses nothing from URP/HDRP or the
-Input System; verified on 6000.3.
+Input System; verified on 6000.3. Screenshot under URP or HDRP needs 2023.1
+or later, where cameras take render requests; before that it falls back to
+Camera.Render, which only the built-in pipeline supports.
 
 
 2. TRIGGERING THE BRIDGE IN UNITY
@@ -180,9 +184,43 @@ COMMANDS
                      (Skybox/SolidColor/Depth/Nothing), backgroundColor?, main?
                      (tags it MainCamera), near?, far?, orthographic?,
                      orthographicSize?. Adds an AudioListener if the scene has none.
+  RefreshAssets      path?, force?, recursive?
+                     With no path, AssetDatabase.Refresh. With one, that asset
+                     is imported and the result DESCRIBES it: guid, the main
+                     asset's type, the importer, every Sprite hanging off it,
+                     and for a texture its textureType, spriteMode, pixels per
+                     unit and readability. Written for the case where a tool
+                     put a .png and a hand-rolled .meta on disk and nothing
+                     had yet asked Unity what the pair became.
+  Screenshot         path?, width? (1280), height? (720), view? (game/scene)
+                     Renders through a RenderTexture, not ScreenCapture, so it
+                     returns a file that exists rather than one that will. A
+                     Screen Space - Overlay canvas draws to the display and
+                     appears in no camera's render, so the game view borrows
+                     every overlay canvas onto the capture camera for the one
+                     frame and hands them back afterwards. Defaults under
+                     ARIA/shots/: a screenshot is evidence, not an asset.
+  SetPlayMode        playing? (true), allowUnfocused?, skipSnapshot?
+                     Returns BEFORE it happens. Entering play mode reloads the
+                     C# domain and destroys everything holding the call, so the
+                     result is written first; send whatever comes next as its
+                     own batch. A playing bridge runs only Ping, Screenshot,
+                     GetField, GetHierarchy and SetPlayMode (to stop).
+                     Entering is refused while Unity is not the focused
+                     application (allowUnfocused:true overrides), and the
+                     game's persistentDataPath is first copied to
+                     ARIA/snapshots, newest ten kept (skipSnapshot:true
+                     overrides). Play mode runs the game's own save code
+                     against real files; a blank game once replaced a
+                     real save that way. Ping reports focused too.
+                     Refused in batch mode. This is what makes Screenshot worth
+                     having on a project that builds its interface at runtime:
+                     in edit mode there is no interface to photograph, only the
+                     scripts that will make one.
 
 Asset paths must start with Assets/ and contain no "..": the bridge does
-not write outside the project.
+not write outside the project. A screenshot path is relative to the project
+rather than to Assets/, for the same reason it defaults outside it.
 
 
 5. USING IT FROM PYTHON

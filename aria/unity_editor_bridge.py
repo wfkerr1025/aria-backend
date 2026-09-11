@@ -57,6 +57,7 @@ __all__ = [
     "BRIDGE_SOURCE",
     "BRIDGE_INSTALL_PATH",
     "COMMANDS",
+    "PLAY_SAFE_COMMANDS",
     "Batch",
     "BridgeResults",
     "CommandResult",
@@ -88,6 +89,9 @@ __all__ = [
     "instantiate_prefab",
     "create_light",
     "create_camera",
+    "refresh_assets",
+    "screenshot",
+    "set_play_mode",
     "install_bridge",
 ]
 
@@ -137,6 +141,22 @@ COMMANDS = frozenset({
     "InstantiatePrefab",
     "CreateLight",
     "CreateCamera",
+    "RefreshAssets",
+    "Screenshot",
+    "SetPlayMode",
+})
+
+# What the editor will run while the game is PLAYING. Anything else is left
+# waiting by the watcher until the game stops, because an edit made in play
+# mode is thrown away when play ends and a bridge that made it anyway would
+# report success for work about to vanish. Mirrors PlaySafeCommands in the
+# C#; a test holds the two together.
+PLAY_SAFE_COMMANDS = frozenset({
+    "Ping",
+    "Screenshot",
+    "GetField",
+    "GetHierarchy",
+    "SetPlayMode",
 })
 
 
@@ -526,6 +546,73 @@ class _CommandBuilder:
             near=near, far=far,
             orthographic=orthographic, orthographicSize=orthographic_size))
 
+    # --- looking at the result -----------------------------------------
+
+    def refresh_assets(self, path: str | None = None, *,
+                       force: bool = False, recursive: bool = False) -> Any:
+        """Import what has changed on disk, and report what Unity made of it.
+
+        With no path, a plain AssetDatabase.Refresh. With one, that asset is
+        imported and the result describes it: the guid, the main asset's
+        type, the importer, every Sprite hanging off it, and -- for a
+        texture -- the settings that decide whether it became one.
+
+        That reporting half is the point of the command. Writing a .png and
+        a hand-rolled .meta beside it is a guess until something asks the
+        AssetDatabase what the pair turned into.
+        """
+        return self._submit(make_command(
+            "RefreshAssets", path=path,
+            force=True if force else None,
+            recursive=True if recursive else None))
+
+    def screenshot(self, path: str | None = None, *,
+                   width: int | None = None, height: int | None = None,
+                   view: str | None = None) -> Any:
+        """Render a camera to a PNG and return where it landed.
+
+        view: "game" (default) renders the main camera, "scene" the Scene
+        view. Paths are relative to the project and default under ARIA/, so
+        a screenshot is not filed as a game asset.
+
+        An overlay canvas draws to the display and appears in no camera's
+        render, so the game view capture borrows every one of them onto the
+        capture camera for the single frame and hands them back afterwards.
+        Without that, a game that builds its interface in code photographs
+        as an empty room.
+        """
+        return self._submit(make_command(
+            "Screenshot", path=path, width=width, height=height, view=view))
+
+    def set_play_mode(self, playing: bool = True, *, allow_unfocused: bool = False,
+                      skip_snapshot: bool = False) -> Any:
+        """Start or stop the game, and return before it happens.
+
+        Entering play mode reloads the C# domain and throws away everything
+        holding the call, so the result is written first and the change
+        lands after. Send whatever comes next as its own batch: by then the
+        bridge has come back up on the other side, already playing -- and a
+        playing bridge runs only PLAY_SAFE_COMMANDS: ping, screenshot, the
+        two reads, and set_play_mode(False) to stop. Anything that edits a
+        scene waits in the commands file until the game stops.
+
+        This is what makes screenshot() worth having on a project that
+        builds its interface at runtime. In edit mode there is no interface
+        yet -- only the scripts that will make one.
+
+        Entering refuses while Unity is not the focused application unless
+        allow_unfocused=True: unfocused, the game receives a focus-lost event
+        before its Start runs, and with Run In Background off it will not
+        advance a frame. Before entering, the bridge copies the game's
+        persistentDataPath to ARIA/snapshots (newest ten kept) and will not
+        start without that copy unless skip_snapshot=True -- play mode runs
+        the game's own save code against the player's real files.
+        """
+        return self._submit(make_command(
+            "SetPlayMode", playing=bool(playing),
+            allowUnfocused=True if allow_unfocused else None,
+            skipSnapshot=True if skip_snapshot else None))
+
 
 class Batch(_CommandBuilder):
     """Commands collected to be sent together, in one file and one editor pass.
@@ -905,6 +992,18 @@ def create_camera(name: str | None = None, position: Sequence[float] | None = No
                   rotation: Sequence[float] | None = None, fov: float | None = None,
                   clear_flags: str | None = None, **extra: Any) -> dict | None:
     return get_bridge().create_camera(name, position, rotation, fov, clear_flags, **extra)
+
+
+def refresh_assets(path: str | None = None, **extra: Any) -> dict | None:
+    return get_bridge().refresh_assets(path, **extra)
+
+
+def screenshot(path: str | None = None, **extra: Any) -> dict | None:
+    return get_bridge().screenshot(path, **extra)
+
+
+def set_play_mode(playing: bool = True, **extra: Any) -> dict | None:
+    return get_bridge().set_play_mode(playing, **extra)
 
 
 def install_bridge(project_root: str | os.PathLike | None = None) -> Path:
