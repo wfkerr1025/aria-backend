@@ -93,6 +93,9 @@ __all__ = [
     "screenshot",
     "set_play_mode",
     "last_play",
+    "Inputs",
+    "send_input",
+    "read_screen",
     "install_bridge",
 ]
 
@@ -151,6 +154,8 @@ COMMANDS = frozenset({
     "RefreshAssets",
     "Screenshot",
     "SetPlayMode",
+    "SendInput",
+    "ReadScreen",
 })
 
 # What the editor will run while the game is PLAYING. Anything else is left
@@ -164,6 +169,8 @@ PLAY_SAFE_COMMANDS = frozenset({
     "GetField",
     "GetHierarchy",
     "SetPlayMode",
+    "SendInput",
+    "ReadScreen",
 })
 
 
@@ -391,6 +398,82 @@ def _as_command_list(commands: Any) -> list[dict]:
         if not isinstance(entry, dict) or not entry.get("command"):
             raise ValueError(f"each command must be a dict with a 'command' key, got {entry!r}")
     return entries
+
+
+def _drop_none(values: dict) -> dict:
+    return {key: value for key, value in values.items() if value is not None}
+
+
+def _place(at: Any) -> Any:
+    """An object's path as it is, or (x, y) as a list of two numbers."""
+    if isinstance(at, str):
+        return at
+    try:
+        x, y = at
+        return [float(x), float(y)]
+    except (TypeError, ValueError):
+        raise ValueError(f"a place is (x, y) or an object's path, not {at!r}") from None
+
+
+class Inputs:
+    """Builders for send_input's actions, so nobody has to remember the keys.
+
+        bridge.send_input(Inputs.key("space"), Inputs.click("Canvas/Buy"),
+                          Inputs.wait(10), Inputs.text("hello"))
+
+    Places are (x, y) in pixels from the bottom left of the game's picture --
+    the coordinates read_screen reports -- or (x, y) from 0 to 1 with
+    viewport=True, or an object's hierarchy path, clicked where it is drawn.
+    """
+
+    @staticmethod
+    def key(name: str | Sequence[str], *, action: str | None = None,
+            hold: int | None = None, times: int | None = None) -> dict:
+        """Tap a key ("space", "Enter", "a", "F5", "`"), or several held together.
+
+        action "down" or "up" presses or lets go without the other half;
+        hold is frames between press and release (2).
+        """
+        keys = [name] if isinstance(name, str) else list(name)
+        return _drop_none({"key": keys[0] if len(keys) == 1 else keys,
+                           "action": action, "hold": hold, "times": times})
+
+    @staticmethod
+    def click(at: Any, *, button: str | None = None, hold: int | None = None,
+              times: int | None = None, viewport: bool = False) -> dict:
+        """Move there, press a frame later, let go after hold frames. button: left/right/middle."""
+        return _drop_none({"click": _place(at), "button": button, "hold": hold, "times": times,
+                           "space": "viewport" if viewport else None})
+
+    @staticmethod
+    def move(at: Any, *, viewport: bool = False) -> dict:
+        return _drop_none({"move": _place(at), "space": "viewport" if viewport else None})
+
+    @staticmethod
+    def mouse(state: str, at: Any = None, *, button: str | None = None,
+              viewport: bool = False) -> dict:
+        """Press ("down") or let go ("up") of a button without the other half, e.g. for a drag."""
+        return _drop_none({"mouse": state, "at": None if at is None else _place(at),
+                           "button": button, "space": "viewport" if viewport else None})
+
+    @staticmethod
+    def scroll(amount: float | Sequence[float]) -> dict:
+        """Turn the wheel for one frame; up is positive. A number, or (x, y)."""
+        if isinstance(amount, (int, float)):
+            return {"scroll": amount}
+        return {"scroll": _place(amount)}
+
+    @staticmethod
+    def text(words: str) -> dict:
+        """Characters for Keyboard.onTextInput (uGUI and TMP fields). IMGUI fields do not hear it."""
+        return {"text": str(words)}
+
+    @staticmethod
+    def wait(frames: int | None = None, *, seconds: float | None = None) -> dict:
+        """Nothing, for a while: frames, or seconds, or both."""
+        if frames is None and seconds is None:
+            raise ValueError("wait for frames, seconds, or both")
+        return _drop_none({"wait": frames, "waitSeconds": seconds})
 
 
 class _CommandBuilder:
@@ -644,6 +727,52 @@ class _CommandBuilder:
             allowUnfocused=True if allow_unfocused else None,
             skipSnapshot=True if skip_snapshot else None))
 
+    # --- playing the game ----------------------------------------------
+
+    def send_input(self, *actions: dict, allow_real_save: bool = False) -> Any:
+        """Press keys, click, scroll and type in a game the bridge started.
+
+        Each action is a dict; Inputs builds them. The editor queues them and
+        plays them over the next frames -- a press and its release have to
+        land in different frames for wasPressedThisFrame to see them --
+        through devices of its own, "ARIA Keyboard" and "ARIA Mouse", which
+        become Keyboard.current and Mouse.current as they send. For the
+        length of a test session the Input System sends input to the game
+        whatever has focus, so this works with the editor in the background.
+
+        An object's path is found where it is drawn as the command arrives;
+        something that appears later is clicked after a wait sent first.
+        Only a test session (set_play_mode on the test save) is driven:
+        input changes the game and the game saves what changes. Pass
+        allow_real_save=True to drive a real one anyway.
+
+        Returns as soon as the steps are queued; wait_for_input() waits for
+        them to play, and the module-level send_input() does both.
+        """
+        if not actions:
+            raise ValueError("send_input needs at least one action")
+        return self._submit(make_command(
+            "SendInput", actions=[dict(action) for action in actions],
+            allowRealSave=True if allow_real_save else None))
+
+    def read_screen(self, targets: Iterable[str] | str | None = None, *,
+                    include_hidden: bool = False, limit: int | None = None) -> Any:
+        """What is on the game's screen: the text a person would read, and what they could press.
+
+        data["lines"] is the visible text in reading order. data["texts"]
+        and data["controls"] give each item's path, kind, rect and center in
+        pixels from the bottom left -- the places send_input clicks -- and
+        controls say whether they are interactable. Visible means active,
+        enabled, not faded by a CanvasGroup, not transparent and on screen;
+        include_hidden lists the rest too. targets asks where particular
+        objects are drawn, UI or world. IMGUI cannot be read back.
+        """
+        if isinstance(targets, str):
+            targets = [targets]
+        return self._submit(make_command(
+            "ReadScreen", targets=list(targets) if targets is not None else None,
+            includeHidden=True if include_hidden else None, limit=limit))
+
 
 class Batch(_CommandBuilder):
     """Commands collected to be sent together, in one file and one editor pass.
@@ -855,6 +984,26 @@ class UnityEditorBridge(_CommandBuilder):
             return None
         return raw if isinstance(raw, dict) else None
 
+    def wait_for_input(self, timeout: float | None = None) -> dict:
+        """Wait until everything send_input queued has played; returns the last ping.
+
+        Input plays as the game's frames go by, so a queue that will not
+        drain is a game that is not advancing -- paused, or in the
+        background with keep_running refused.
+        """
+        limit = self.timeout if timeout is None else float(timeout)
+        deadline = time.monotonic() + limit
+        while True:
+            data = self.ping() or {}
+            if not data.get("inputPending"):
+                return data
+            if time.monotonic() >= deadline:
+                raise UnityBridgeTimeout(
+                    f"{data.get('inputPending')} input step(s) were still queued after {limit:g}s, "
+                    f"at frame {data.get('frame')}. Is the game advancing -- not paused, and not in "
+                    f"the background with keep_running refused?")
+            time.sleep(self.poll_interval)
+
     def clear(self) -> None:
         """Remove both files, so a stale exchange cannot be mistaken for a fresh one."""
         self._remove(self.commands_path)
@@ -1053,6 +1202,19 @@ def set_play_mode(playing: bool = True, **extra: Any) -> dict | None:
 
 def last_play() -> dict | None:
     return get_bridge().last_play()
+
+
+def send_input(*actions: dict, wait: bool = True, **extra: Any) -> dict | None:
+    """Queue the actions and, unless wait=False, return once they have played."""
+    bridge = get_bridge()
+    data = bridge.send_input(*actions, **extra)
+    if wait and bridge.wait:
+        bridge.wait_for_input()
+    return data
+
+
+def read_screen(targets: Iterable[str] | str | None = None, **extra: Any) -> dict | None:
+    return get_bridge().read_screen(targets, **extra)
 
 
 def install_bridge(project_root: str | os.PathLike | None = None) -> Path:

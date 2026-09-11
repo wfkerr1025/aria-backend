@@ -693,6 +693,121 @@ def test_a_test_session_keeps_running_unfocused_and_hands_the_setting_back(bridg
     assert "Application.runInBackground = _wasRunningInBackground" in end
 
 
+def test_send_input_sends_its_actions_in_order(bridge):
+    def reply(commands):
+        assert commands == [{"command": "SendInput", "args": {"actions": [
+            {"key": "space", "times": 3},
+            {"key": ["LeftCtrl", "s"]},
+            {"click": [640.0, 360.0], "button": "right"},
+            {"click": "Canvas/Buy"},
+            {"wait": 10},
+            {"text": "hi"},
+            {"scroll": -120},
+        ]}}]
+        return [ok("SendInput", queued=14, framesNeeded=30)]
+
+    with FakeUnity(bridge, reply):
+        data = bridge.send_input(
+            ueb.Inputs.key("space", times=3),
+            ueb.Inputs.key(["LeftCtrl", "s"]),
+            ueb.Inputs.click((640, 360), button="right"),
+            ueb.Inputs.click("Canvas/Buy"),
+            ueb.Inputs.wait(10),
+            ueb.Inputs.text("hi"),
+            ueb.Inputs.scroll(-120))
+
+    assert data["queued"] == 14
+
+
+def test_input_builders_refuse_what_the_editor_would():
+    assert ueb.Inputs.click((0.5, 0.5), viewport=True) == {"click": [0.5, 0.5], "space": "viewport"}
+    assert ueb.Inputs.mouse("down", (10, 20)) == {"mouse": "down", "at": [10.0, 20.0]}
+    assert ueb.Inputs.wait(seconds=0.5) == {"waitSeconds": 0.5}
+
+    with pytest.raises(ValueError):
+        ueb.Inputs.click((1, 2, 3))
+    with pytest.raises(ValueError):
+        ueb.Inputs.wait()
+
+
+def test_send_input_needs_something_to_send(bridge):
+    with pytest.raises(ValueError):
+        bridge.send_input()
+
+
+def test_wait_for_input_waits_for_the_queue_to_drain(bridge, monkeypatch):
+    pings = iter([{"inputPending": 5, "frame": 10}, {"inputPending": 2, "frame": 12},
+                  {"inputPending": 0, "frame": 14}])
+    monkeypatch.setattr(bridge, "ping", lambda: next(pings))
+
+    assert bridge.wait_for_input(timeout=2)["frame"] == 14
+
+
+def test_a_queue_that_never_drains_says_why(bridge, monkeypatch):
+    monkeypatch.setattr(bridge, "ping", lambda: {"inputPending": 3, "frame": 99})
+
+    with pytest.raises(ueb.UnityBridgeTimeout, match="advancing"):
+        bridge.wait_for_input(timeout=0.05)
+
+
+def test_read_screen_asks_where_targets_are_drawn(bridge):
+    def reply(commands):
+        assert commands[0]["args"] == {"targets": ["LabCube"], "includeHidden": True}
+        return [ok("ReadScreen", lines=["Score: 0"], texts=[], controls=[])]
+
+    with FakeUnity(bridge, reply):
+        assert bridge.read_screen("LabCube", include_hidden=True)["lines"] == ["Score: 0"]
+
+
+def test_what_plays_the_game_refuses_the_real_save():
+    """Input changes the game and the game saves what changes."""
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    refuse = _csharp_method(source, "private static CommandResult RefuseUnlessDriving(")
+    assert "if (Driving || Bool(args, \"allowRealSave\", false)) return null;" in refuse
+
+    send = source[source.index("private static CommandResult SendInput("):]
+    send = send[:send.index("private static CommandResult ReadScreen(")]
+    assert send.index("RefuseUnlessDriving(args, \"SendInput\")") < send.index("PlanAction("), \
+        "refused before anything is queued"
+
+
+def test_one_action_never_lands_in_the_same_frame_as_the_last():
+    """Measured: a button's release and the move away to the next target,
+    sent in one update, read as a release somewhere else -- not a click."""
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    send = source[source.index("private static CommandResult SendInput("):]
+    send = send[:send.index("private static CommandResult ReadScreen(")]
+
+    planned = send.index("PlanAction(")
+    spaced = send.index("steps[first].Frames = Math.Max(1, steps[first].Frames)")
+    assert planned < spaced
+    assert "bool follows = first > 0 || _input.Count > 0;" in send, \
+        "a queue already playing counts as something to follow"
+
+
+def test_input_reaches_the_game_whatever_has_focus_and_only_for_a_test():
+    """Read in the Input System: with the Game view unfocused, keyboard and
+    pointer events are held for the editor and the game never sees them.
+    For a test session the settings say otherwise -- on a copy, handed back."""
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+
+    route = _csharp_method(source, "private static void RouteInputToGame()")
+    assert "Object.Instantiate(current)" in route, "a copy, never the project's settings object"
+    assert "BackgroundBehavior.IgnoreFocus" in route
+    assert "AllDeviceInputAlwaysGoesToGameView" in route
+
+    begin = _csharp_method(source, "private static void BeginDrivenPlay()")
+    assert begin.index("if (!Driving) return;") < begin.index("RouteInputToGame()")
+
+    restore = _csharp_method(source, "private static void RestoreInput()")
+    assert "RemoveAriaDevices()" in restore
+    assert "InputSystem.settings = _originalInputSettings" in restore
+    assert "RestoreInput()" in _csharp_method(source, "private static void EndDrivenPlay()")
+
+    remove = _csharp_method(source, "private static void RemoveAriaDevices()")
+    assert "StartsWith(AriaDevicePrefix" in remove, "only the bridge's own devices are ever removed"
+
+
 def test_emptying_the_test_folder_is_confined_to_the_bridge_folder():
     source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
     prepare = source[source.index("private static Dictionary<string, object> PrepareTestSave("):]

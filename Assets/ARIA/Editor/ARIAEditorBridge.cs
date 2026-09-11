@@ -46,12 +46,17 @@ using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEditorInternal;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.LowLevel;
+#endif
 using Object = UnityEngine.Object;
 
 namespace ARIA.Bridge
@@ -121,7 +126,15 @@ namespace ARIA.Bridge
             }
 
             EditorApplication.update += Poll;
+            EditorApplication.update += Pump;
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
+
+#if ENABLE_INPUT_SYSTEM
+            // Devices a session added and a reload orphaned before it could
+            // take them away. Left a moment, because the Input System may not
+            // be up yet this early in a reload.
+            if (!EditorApplication.isPlayingOrWillChangePlaymode) EditorApplication.delayCall += RemoveAriaDevices;
+#endif
 
             // A test folder named for a play session that never began -- the
             // entry failed on a compile error, say -- must not still be named
@@ -152,6 +165,7 @@ namespace ARIA.Bridge
             new HashSet<string>(StringComparer.Ordinal)
         {
             "Ping", "Screenshot", "GetField", "GetHierarchy", "SetPlayMode",
+            "SendInput", "ReadScreen",
         };
 
         /// <summary>The commands file last left waiting for play to stop, by write time.</summary>
@@ -560,6 +574,8 @@ namespace ARIA.Bridge
                 case "RefreshAssets": return RefreshAssets(args, scope);
                 case "Screenshot": return Screenshot(args, scope);
                 case "SetPlayMode": return SetPlayMode(args, scope);
+                case "SendInput": return SendInput(args, scope);
+                case "ReadScreen": return ReadScreen(args, scope);
                 default:
                     return Fail("'" + command + "' is not a bridge command.");
             }
@@ -601,6 +617,19 @@ namespace ARIA.Bridge
             data["frame"] = EditorApplication.isPlaying ? Time.frameCount : 0;
             data["runInBackground"] = Application.runInBackground;
             data["playerSettingsRunInBackground"] = PlayerSettings.runInBackground;
+            data["inputPending"] = PendingInput;
+#if ENABLE_INPUT_SYSTEM
+            // Whether a test session's input routing and devices are in place
+            // -- and, once it has ended, that they are gone again.
+            data["inputRoutedToGame"] = InputSystem.settings != null &&
+                                        InputSystem.settings.name == DrivenInputSettingsName;
+            int ariaDevices = 0;
+            foreach (InputDevice device in InputSystem.devices)
+            {
+                if (device.name != null && device.name.StartsWith(AriaDevicePrefix, StringComparison.Ordinal)) ariaDevices++;
+            }
+            data["ariaDevices"] = ariaDevices;
+#endif
             data["lastPlay"] = ReadReport(LastPlayPath);
             return Ok("Bridge is up.", data);
         }
@@ -1751,16 +1780,26 @@ namespace ARIA.Bridge
         /// </summary>
         private static void BeginDrivenPlay()
         {
-            if (!Driving || !SessionState.GetBool(KeepRunningKey, true)) return;
+            if (!Driving) return;
 
-            _wasRunningInBackground = Application.runInBackground;
-            _changedRunInBackground = true;
-            Application.runInBackground = true;
+            if (SessionState.GetBool(KeepRunningKey, true))
+            {
+                _wasRunningInBackground = Application.runInBackground;
+                _changedRunInBackground = true;
+                Application.runInBackground = true;
+            }
+
+#if ENABLE_INPUT_SYSTEM
+            RouteInputToGame();
+#endif
         }
 
         /// <summary>Hand back everything BeginDrivenPlay changed.</summary>
         private static void EndDrivenPlay()
         {
+#if ENABLE_INPUT_SYSTEM
+            RestoreInput();
+#endif
             if (!_changedRunInBackground) return;
 
             Application.runInBackground = _wasRunningInBackground;
@@ -1821,6 +1860,10 @@ namespace ARIA.Bridge
             EndTestSave();
             SessionState.EraseString(ManifestKey);
             SessionState.EraseString(StartedAtKey);
+
+#if ENABLE_INPUT_SYSTEM
+            RecoverInputSettings();
+#endif
 
             if (!wasDriving) return;
 
@@ -2152,6 +2195,1036 @@ namespace ARIA.Bridge
             return Ok("Entering play mode" + (testSave ? " on the test save" : " on the REAL save") +
                       ". A domain reload follows, so send the next command separately.", data);
         }
+
+        #endregion
+
+        #region Commands: playing the game
+
+        /// <summary>
+        /// Refuse a command that plays the game unless the game is a test.
+        ///
+        /// Keys, clicks and console commands change the game, and the game
+        /// saves what changes. On the test save that is the point; on the
+        /// player's real save it is how hours of progress become a test's
+        /// leftovers. allowRealSave says the caller means it.
+        /// </summary>
+        private static CommandResult RefuseUnlessDriving(Dictionary<string, object> args, string command)
+        {
+            if (!EditorApplication.isPlaying) return Fail(command + " needs the game playing. SetPlayMode first.");
+            if (Driving || Bool(args, "allowRealSave", false)) return null;
+
+            return Fail(command + " drives only a test session -- one SetPlayMode started on the test save -- " +
+                        "because what it does changes the game, and the game saves what changes. This session " +
+                        "is playing on the real save. Pass allowRealSave:true to do it anyway.");
+        }
+
+        /// <summary>How many input steps are still waiting to be played.</summary>
+        private static int PendingInput
+        {
+            get
+            {
+#if ENABLE_INPUT_SYSTEM
+                return _input.Count;
+#else
+                return 0;
+#endif
+            }
+        }
+
+        /// <summary>
+        /// Play queued input a step at a time as the game's frames go by.
+        ///
+        /// Every editor update, not every half second like Poll: a key held
+        /// for two frames has to be let go on the third, not a dozen later.
+        /// </summary>
+        private static void Pump()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (_input.Count == 0) return;
+
+            if (!EditorApplication.isPlaying)
+            {
+                _input.Clear();
+                return;
+            }
+
+            int frame = Time.frameCount;
+            double now = EditorApplication.timeSinceStartup;
+
+            // Several steps may fall due in one update -- a move and the press
+            // after it -- and a cap keeps a long queue from running away with
+            // a single frame.
+            for (int guard = 0; guard < 64 && _input.Count > 0; guard++)
+            {
+                InputStep next = _input[0];
+                if (frame < _inputFrame + next.Frames) break;
+                if (now < _inputTime + next.Seconds) break;
+
+                _input.RemoveAt(0);
+                _inputFrame = frame;
+                _inputTime = now;
+
+                try
+                {
+                    next.Run();
+                }
+                catch (Exception failure)
+                {
+                    Debug.LogWarning("[ARIA] Input step '" + next.Label + "' failed: " + failure.Message);
+                }
+            }
+#endif
+        }
+
+        /// <summary>
+        /// Press keys, move and click the mouse, scroll and type, in a game the bridge started.
+        ///
+        /// Through two devices of the bridge's own, "ARIA Keyboard" and "ARIA
+        /// Mouse", which become Keyboard.current and Mouse.current as they
+        /// send -- so a game reading either, and the UI's input module, sees
+        /// them exactly as it sees hardware, and the real devices are left
+        /// alone. Queued and played over the next frames: a press and its
+        /// release have to land in different frames for wasPressedThisFrame
+        /// to see them. Ping's inputPending reaches 0 when it is all done.
+        /// </summary>
+        private static CommandResult SendInput(Dictionary<string, object> args, Scope scope)
+        {
+            if (scope.InPrefab) return Fail("SendInput is not allowed inside ModifyPrefab.");
+
+            CommandResult refused = RefuseUnlessDriving(args, "SendInput");
+            if (refused != null) return refused;
+
+#if ENABLE_INPUT_SYSTEM
+            List<object> actions;
+            object raw;
+            if (args.TryGetValue("actions", out raw) && raw is List<object>) actions = (List<object>)raw;
+            else actions = new List<object> { args };
+
+            if (actions.Count == 0) return Fail("SendInput needs at least one action.");
+
+            List<InputStep> steps = new List<InputStep>();
+            List<object> planned = new List<object>();
+
+            for (int index = 0; index < actions.Count; index++)
+            {
+                Dictionary<string, object> action = actions[index] as Dictionary<string, object>;
+                if (action == null) return Fail("Action " + (index + 1) + " is not an object.");
+
+                int first = steps.Count;
+
+                string error;
+                if (!PlanAction(action, scope, steps, planned, out error))
+                {
+                    return Fail("Action " + (index + 1) + ": " + error + ". Nothing was queued.");
+                }
+
+                // A frame between one action and the next, whatever they are.
+                // Measured in the lab: two clicks on a button followed at once
+                // by a click on a cube lost the second button click every time.
+                // Its release and the move away to the cube went out in one
+                // editor update, the game read both in one input update, and
+                // the UI module saw the button let go with the pointer
+                // elsewhere -- which is not a click.
+                bool follows = first > 0 || _input.Count > 0;
+                if (follows && first < steps.Count) steps[first].Frames = Math.Max(1, steps[first].Frames);
+            }
+
+            // Timed from now when nothing is waiting, so an idle queue's old
+            // timestamp cannot make the first step look overdue.
+            if (_input.Count == 0)
+            {
+                _inputFrame = Time.frameCount;
+                _inputTime = EditorApplication.timeSinceStartup;
+            }
+
+            _input.AddRange(steps);
+
+            int frames = 0;
+            foreach (InputStep step in steps) frames += step.Frames;
+
+            Dictionary<string, object> data = new Dictionary<string, object>();
+            data["queued"] = steps.Count;
+            data["pending"] = _input.Count;
+            data["frame"] = Time.frameCount;
+            data["framesNeeded"] = frames;
+            data["screen"] = UiPoint(GameScreenSize());
+            data["actions"] = planned;
+            return Ok("Queued " + steps.Count + " input step(s) over about " + frames +
+                      " frame(s). Ping's inputPending reaches 0 when they have played.", data);
+#else
+            return Fail("SendInput feeds the Input System package, and this project does not use it: Active " +
+                        "Input Handling is the old Input Manager, whose Input.* reads the hardware and cannot be fed.");
+#endif
+        }
+
+        /// <summary>
+        /// Everything visible on the game's screen that a person would read or press.
+        ///
+        /// Text (UI Text and TextMeshPro) and controls (anything that is a
+        /// Selectable: buttons, toggles, sliders, fields), each with where it
+        /// is drawn in screen pixels from the bottom left -- the same pixels
+        /// SendInput clicks at. "lines" is the visible text in reading order,
+        /// which is most of what a screenshot would have been asked for.
+        /// Visible means active, enabled, not faded out by a CanvasGroup, not
+        /// transparent, and on the screen; includeHidden lists the rest too.
+        /// targets asks where particular objects are drawn, UI or world.
+        ///
+        /// The UI types are found by name, not referenced, so the bridge still
+        /// compiles in a project without uGUI or TextMeshPro. IMGUI (OnGUI)
+        /// draws nothing that can be read back; a screenshot is the only way
+        /// to see it.
+        /// </summary>
+        private static CommandResult ReadScreen(Dictionary<string, object> args, Scope scope)
+        {
+            if (scope.InPrefab) return Fail("ReadScreen is not allowed inside ModifyPrefab.");
+
+            bool includeHidden = Bool(args, "includeHidden", false);
+            int limit = Math.Max(1, (int)Num(args, 200, "limit"));
+            Vector2 size = GameScreenSize();
+
+            List<object> texts = new List<object>();
+            List<object> controls = new List<object>();
+            List<KeyValuePair<Vector2, string>> seen = new List<KeyValuePair<Vector2, string>>();
+
+            foreach (Canvas canvas in FindAll<Canvas>())
+            {
+                if (canvas == null || !canvas.isRootCanvas) continue;
+
+                foreach (Component part in canvas.GetComponentsInChildren<Component>(true))
+                {
+                    if (part == null) continue;
+
+                    Type type = part.GetType();
+                    bool isText = UiIsText(type);
+                    bool isControl = !isText && UiIsA(type, "UnityEngine.UI.Selectable");
+                    if (!isText && !isControl) continue;
+
+                    RectTransform rect = part.transform as RectTransform;
+                    if (rect == null) continue;
+
+                    Rect area = ScreenRect(rect, canvas);
+                    bool onScreen = area.xMax > 0f && area.yMax > 0f && area.xMin < size.x && area.yMin < size.y;
+                    bool visible = onScreen && canvas.isActiveAndEnabled && UiShown(part);
+                    if (!visible && !includeHidden) continue;
+
+                    Dictionary<string, object> entry = new Dictionary<string, object>();
+                    entry["path"] = HierarchyPath(part.transform);
+                    entry["kind"] = type.Name;
+                    entry["center"] = UiPoint(area.center);
+                    entry["rect"] = new List<object> { UiRound(area.x), UiRound(area.y), UiRound(area.width), UiRound(area.height) };
+                    entry["visible"] = visible;
+
+                    if (isText)
+                    {
+                        string words = Convert.ToString(UiMember(part, "text"), CultureInfo.InvariantCulture);
+                        if (string.IsNullOrEmpty(words) || words.Trim().Length == 0) continue;
+
+                        entry["text"] = words;
+                        if (texts.Count < limit) texts.Add(entry);
+                        if (visible) seen.Add(new KeyValuePair<Vector2, string>(area.center, UiPlain(words)));
+                    }
+                    else
+                    {
+                        entry["interactable"] = UiMember(part, "interactable");
+
+                        string label = UiLabel(part);
+                        if (label != null) entry["label"] = label;
+
+                        foreach (string name in new[] { "isOn", "value", "text" })
+                        {
+                            object value = UiMember(part, name);
+                            if (value is bool || value is float || value is int || value is string) entry[name] = value;
+                        }
+
+                        if (controls.Count < limit) controls.Add(entry);
+                    }
+                }
+            }
+
+            // Reading order: rows from the top of the screen down, and left to
+            // right within a row, a row being anything within a few pixels.
+            seen.Sort(delegate (KeyValuePair<Vector2, string> a, KeyValuePair<Vector2, string> b)
+            {
+                int rowA = Mathf.RoundToInt(a.Key.y / 12f);
+                int rowB = Mathf.RoundToInt(b.Key.y / 12f);
+                return rowA != rowB ? rowB.CompareTo(rowA) : a.Key.x.CompareTo(b.Key.x);
+            });
+
+            List<object> lines = new List<object>();
+            foreach (KeyValuePair<Vector2, string> line in seen) lines.Add(line.Value);
+
+            Dictionary<string, object> data = new Dictionary<string, object>();
+            data["screen"] = UiPoint(size);
+            data["isPlaying"] = EditorApplication.isPlaying;
+            data["lines"] = lines;
+            data["texts"] = texts;
+            data["controls"] = controls;
+
+            object wanted;
+            if (args.TryGetValue("targets", out wanted) && wanted != null)
+            {
+                IList list = (wanted as IList) ?? new List<object> { wanted };
+                List<object> found = new List<object>();
+
+                foreach (object one in list)
+                {
+                    string reference = Text(one);
+                    Dictionary<string, object> described = new Dictionary<string, object>();
+                    described["target"] = reference;
+
+                    string error;
+                    Vector2 point;
+                    GameObject target = Resolve(reference, scope, out error);
+
+                    if (target != null && TryScreenPointOf(target, out point, out error))
+                    {
+                        described["found"] = true;
+                        described["path"] = HierarchyPath(target.transform);
+                        described["center"] = UiPoint(point);
+                        described["onScreen"] = point.x >= 0f && point.y >= 0f && point.x <= size.x && point.y <= size.y;
+                        described["active"] = target.activeInHierarchy;
+                    }
+                    else
+                    {
+                        described["found"] = false;
+                        described["error"] = error;
+                    }
+
+                    found.Add(described);
+                }
+
+                data["targets"] = found;
+            }
+
+            if (!EditorApplication.isPlaying && texts.Count == 0 && controls.Count == 0)
+            {
+                data["note"] = "Nothing is playing and no interface was found. A game that builds its interface " +
+                               "at runtime has none until it runs: SetPlayMode first.";
+            }
+
+            return Ok(lines.Count + " visible line(s) of text, " + controls.Count + " control(s).", data);
+        }
+
+        /// <summary>The size of the picture the game draws, in the pixels its pointer positions use.</summary>
+        private static Vector2 GameScreenSize()
+        {
+            // A root overlay canvas is sized to the game view exactly; a camera
+            // is the next best measure, and Screen the last, because from an
+            // editor callback Screen can describe whichever window is drawing.
+            foreach (Canvas canvas in FindAll<Canvas>())
+            {
+                if (canvas == null || !canvas.isActiveAndEnabled || !canvas.isRootCanvas) continue;
+                if (canvas.renderMode != RenderMode.ScreenSpaceOverlay) continue;
+
+                Rect area = canvas.pixelRect;
+                if (area.width > 1f && area.height > 1f) return area.size;
+            }
+
+            Camera camera = Camera.main;
+            if (camera != null) return new Vector2(camera.pixelWidth, camera.pixelHeight);
+            return new Vector2(Screen.width, Screen.height);
+        }
+
+        /// <summary>Where a RectTransform is drawn, in screen pixels from the bottom left.</summary>
+        private static Rect ScreenRect(RectTransform rect, Canvas canvas)
+        {
+            Vector3[] corners = new Vector3[4];
+            rect.GetWorldCorners(corners);
+
+            // An overlay canvas's world space IS screen space; any other kind
+            // is drawn by a camera, and has to be put through it.
+            Canvas root = canvas.rootCanvas;
+            Camera camera = root.renderMode == RenderMode.ScreenSpaceOverlay
+                ? null
+                : (root.worldCamera != null ? root.worldCamera : Camera.main);
+
+            float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+            for (int index = 0; index < 4; index++)
+            {
+                Vector2 point = RectTransformUtility.WorldToScreenPoint(camera, corners[index]);
+                minX = Mathf.Min(minX, point.x);
+                minY = Mathf.Min(minY, point.y);
+                maxX = Mathf.Max(maxX, point.x);
+                maxY = Mathf.Max(maxY, point.y);
+            }
+
+            return Rect.MinMaxRect(minX, minY, maxX, maxY);
+        }
+
+        /// <summary>
+        /// Where an object is drawn: a UI element's centre, or a world object's
+        /// middle seen through the main camera.
+        /// </summary>
+        private static bool TryScreenPointOf(GameObject target, out Vector2 point, out string error)
+        {
+            point = Vector2.zero;
+            error = null;
+
+            RectTransform rect = target.transform as RectTransform;
+            Canvas canvas = target.GetComponentInParent<Canvas>();
+            if (rect != null && canvas != null)
+            {
+                point = ScreenRect(rect, canvas).center;
+                return true;
+            }
+
+            Camera camera = Camera.main;
+            if (camera == null)
+            {
+                foreach (Camera each in FindAll<Camera>())
+                {
+                    if (each != null && each.isActiveAndEnabled) { camera = each; break; }
+                }
+            }
+            if (camera == null)
+            {
+                error = "there is no camera to see '" + target.name + "' through";
+                return false;
+            }
+
+            // The renderer's middle rather than the pivot: a rock's pivot can
+            // sit at its base, and clicking the floor under it misses it.
+            Renderer shape = target.GetComponentInChildren<Renderer>();
+            Vector3 world = shape != null ? shape.bounds.center : target.transform.position;
+            Vector3 screen = camera.WorldToScreenPoint(world);
+
+            if (screen.z <= 0f)
+            {
+                error = "'" + target.name + "' is behind the camera";
+                return false;
+            }
+
+            point = new Vector2(screen.x, screen.y);
+            return true;
+        }
+
+        /// <summary>
+        /// A place on the screen: [x, y] pixels from the bottom left, [x, y]
+        /// from 0 to 1 when space is "viewport", or an object's path.
+        /// </summary>
+        private static bool TryPoint(object where, string space, Scope scope, out Vector2 point, out string error)
+        {
+            point = Vector2.zero;
+            error = null;
+
+            string reference = where as string;
+            if (reference != null)
+            {
+                GameObject target = Resolve(reference, scope, out error);
+                if (target == null) return false;
+                return TryScreenPointOf(target, out point, out error);
+            }
+
+            Vector2 xy;
+            if (!TryXY(where, out xy))
+            {
+                error = "a place is [x, y] in screen pixels from the bottom left, or an object's path";
+                return false;
+            }
+
+            if (Normalise(space) == "viewport")
+            {
+                Vector2 size = GameScreenSize();
+                xy = new Vector2(xy.x * size.x, xy.y * size.y);
+            }
+
+            point = xy;
+            return true;
+        }
+
+        private static bool TryXY(object value, out Vector2 xy)
+        {
+            xy = Vector2.zero;
+            double x, y;
+
+            IList list = value as IList;
+            if (list != null && list.Count >= 2 && TryNumber(list[0], out x) && TryNumber(list[1], out y))
+            {
+                xy = new Vector2((float)x, (float)y);
+                return true;
+            }
+
+            Dictionary<string, object> map = value as Dictionary<string, object>;
+            object rawX, rawY;
+            if (map != null && map.TryGetValue("x", out rawX) && map.TryGetValue("y", out rawY) &&
+                TryNumber(rawX, out x) && TryNumber(rawY, out y))
+            {
+                xy = new Vector2((float)x, (float)y);
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool UiIsA(Type type, string fullName)
+        {
+            for (Type each = type; each != null; each = each.BaseType)
+            {
+                if (each.FullName == fullName) return true;
+            }
+            return false;
+        }
+
+        private static bool UiIsText(Type type)
+        {
+            return UiIsA(type, "UnityEngine.UI.Text") || UiIsA(type, "TMPro.TMP_Text");
+        }
+
+        /// <summary>A public property or field by name, or null; never throws.</summary>
+        private static object UiMember(object target, string name)
+        {
+            if (target == null) return null;
+
+            try
+            {
+                PropertyInfo property = target.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+                if (property != null && property.CanRead && property.GetIndexParameters().Length == 0)
+                {
+                    return property.GetValue(target, null);
+                }
+
+                FieldInfo field = target.GetType().GetField(name, BindingFlags.Public | BindingFlags.Instance);
+                return field != null ? field.GetValue(target) : null;
+            }
+            catch (Exception)
+            {
+                // Ambiguous overloads and throwing getters alike: an unreadable
+                // member is reported as absent, not as a failed command.
+                return null;
+            }
+        }
+
+        /// <summary>Whether a piece of UI would be seen, leaving aside where it is.</summary>
+        private static bool UiShown(Component part)
+        {
+            if (!part.gameObject.activeInHierarchy) return false;
+
+            Behaviour behaviour = part as Behaviour;
+            if (behaviour != null && !behaviour.enabled) return false;
+
+            Canvas nearest = part.GetComponentInParent<Canvas>();
+            if (nearest != null && !nearest.enabled) return false;
+
+            float alpha = 1f;
+            for (Transform each = part.transform; each != null; each = each.parent)
+            {
+                CanvasGroup group = each.GetComponent<CanvasGroup>();
+                if (group == null || !group.enabled) continue;
+
+                alpha *= group.alpha;
+                if (group.ignoreParentGroups) break;
+            }
+            if (alpha < 0.01f) return false;
+
+            object color = UiMember(part, "color");
+            return !(color is Color) || ((Color)color).a >= 0.01f;
+        }
+
+        /// <summary>The first text inside a control, which is what a person would call it.</summary>
+        private static string UiLabel(Component control)
+        {
+            foreach (Component part in control.GetComponentsInChildren<Component>(false))
+            {
+                if (part == null || !UiIsText(part.GetType())) continue;
+
+                string words = Convert.ToString(UiMember(part, "text"), CultureInfo.InvariantCulture);
+                if (!string.IsNullOrEmpty(words) && words.Trim().Length > 0) return UiPlain(words);
+            }
+            return null;
+        }
+
+        /// <summary>Text without rich-text tags, as it reads on screen.</summary>
+        private static string UiPlain(string words)
+        {
+            return Regex.Replace(words ?? "", "<[^>]*>", "").Trim();
+        }
+
+        private static List<object> UiPoint(Vector2 point)
+        {
+            return new List<object> { UiRound(point.x), UiRound(point.y) };
+        }
+
+        private static double UiRound(float value)
+        {
+            return Math.Round(value, 1);
+        }
+
+#if ENABLE_INPUT_SYSTEM
+        /// <summary>One thing SendInput does, and how long after the step before it.</summary>
+        private sealed class InputStep
+        {
+            public int Frames;
+            public double Seconds;
+            public string Label;
+            public Action Run;
+        }
+
+        private static readonly List<InputStep> _input = new List<InputStep>();
+        private static int _inputFrame;
+        private static double _inputTime;
+
+        private static readonly HashSet<Key> _heldKeys = new HashSet<Key>();
+        private static Vector2 _pointer;
+        private static ushort _buttons;
+        private static Keyboard _ariaKeyboard;
+        private static Mouse _ariaMouse;
+
+        /// <summary>Every device the bridge adds is named with this, and only those are ever removed.</summary>
+        private const string AriaDevicePrefix = "ARIA ";
+
+        private const string DrivenInputSettingsName = "ARIA Driven Input Settings";
+        private static InputSettings _originalInputSettings;
+        private static InputSettings _drivenInputSettings;
+
+        private static void Step(List<InputStep> steps, int frames, double seconds, string label, Action run)
+        {
+            steps.Add(new InputStep { Frames = frames, Seconds = seconds, Label = label, Run = run });
+        }
+
+        /// <summary>
+        /// Turn one action into steps.
+        ///
+        ///   {"key": "space"}                     tap; hold? frames (2), times?, action? tap/down/up
+        ///   {"key": ["LeftCtrl", "s"]}           held together
+        ///   {"click": [640, 360]}                button? left/right/middle, hold?, times?, space? viewport
+        ///   {"click": "Canvas/BuyButton"}        where that object is drawn
+        ///   {"move": [x, y] | "path"}
+        ///   {"mouse": "down" | "up", "at"?: ..}  button?
+        ///   {"scroll": -120}  or [x, y]          up is positive
+        ///   {"text": "hello"}                    Keyboard.onTextInput; IMGUI fields do not hear it
+        ///   {"wait": 30} / {"waitSeconds": 0.5}
+        ///
+        /// Places are found as the command arrives: something that only
+        /// appears later is clicked after a wait sent as its own command.
+        /// </summary>
+        private static bool PlanAction(Dictionary<string, object> action, Scope scope,
+                                       List<InputStep> steps, List<object> planned, out string error)
+        {
+            error = null;
+
+            int hold = Math.Max(1, (int)Num(action, 2, "hold", "holdFrames"));
+            double holdSeconds = Math.Max(0, Num(action, 0, "holdSeconds"));
+            int times = Math.Max(1, Math.Min(1000, (int)Num(action, 1, "times", "repeat")));
+            string how = Normalise(Str(action, "action", "state") ?? "tap");
+
+            Dictionary<string, object> said = new Dictionary<string, object>();
+
+            if (action.ContainsKey("wait") || action.ContainsKey("waitFrames") || action.ContainsKey("waitSeconds"))
+            {
+                int frames = Math.Max(0, (int)Num(action, 0, "wait", "waitFrames"));
+                double seconds = Math.Max(0, Num(action, 0, "waitSeconds"));
+                Step(steps, frames, seconds, "wait", delegate { });
+
+                said["wait"] = frames;
+                if (seconds > 0) said["waitSeconds"] = seconds;
+                planned.Add(said);
+                return true;
+            }
+
+            object keyValue;
+            if (action.TryGetValue("key", out keyValue) || action.TryGetValue("keys", out keyValue))
+            {
+                List<Key> keys = new List<Key>();
+                List<object> names = new List<object>();
+                IList many = keyValue as IList;
+                if (many != null) foreach (object one in many) names.Add(one);
+                else names.Add(keyValue);
+
+                foreach (object one in names)
+                {
+                    Key parsed;
+                    if (!TryKey(Text(one), out parsed))
+                    {
+                        error = "there is no key called '" + Text(one) + "'. Keys use the Input System's names: " +
+                                "Space, Enter, Escape, A, Digit1, LeftShift, UpArrow, F5, Backquote";
+                        return false;
+                    }
+                    keys.Add(parsed);
+                }
+
+                if (keys.Count == 0)
+                {
+                    error = "key names no key";
+                    return false;
+                }
+
+                if (how != "tap" && how != "press" && how != "down" && how != "up")
+                {
+                    error = "a key's action is tap, down or up, not '" + how + "'";
+                    return false;
+                }
+
+                Key[] chord = keys.ToArray();
+                string label = string.Join("+", Array.ConvertAll(chord, key => key.ToString()));
+
+                for (int round = 0; round < times; round++)
+                {
+                    int gap = round == 0 ? 0 : 1;
+
+                    if (how == "up")
+                    {
+                        Step(steps, gap, 0, label + " up", delegate { SetKeys(chord, false); });
+                        continue;
+                    }
+
+                    Step(steps, gap, 0, label + " down", delegate { SetKeys(chord, true); });
+                    if (how == "down") continue;
+
+                    Step(steps, hold, holdSeconds, label + " up", delegate { SetKeys(chord, false); });
+                }
+
+                said["key"] = label;
+                said["action"] = how == "press" ? "tap" : how;
+                said["times"] = times;
+                planned.Add(said);
+                return true;
+            }
+
+            if (action.ContainsKey("text"))
+            {
+                string words = Str(action, "text") ?? "";
+                Step(steps, 0, 0, "text", delegate { TypeText(words); });
+
+                said["text"] = words;
+                planned.Add(said);
+                return true;
+            }
+
+            object scrollValue;
+            if (action.TryGetValue("scroll", out scrollValue))
+            {
+                Vector2 amount;
+                double single;
+                if (TryNumber(scrollValue, out single)) amount = new Vector2(0f, (float)single);
+                else if (!TryXY(scrollValue, out amount))
+                {
+                    error = "scroll is a number (up is positive) or [x, y]";
+                    return false;
+                }
+
+                // A scroll is a delta for one frame; the event after it puts
+                // the wheel back at rest, or it would keep scrolling.
+                Vector2 wheel = amount;
+                Step(steps, 0, 0, "scroll", delegate { SetMouse(null, -1, false, wheel); });
+                Step(steps, 1, 0, "scroll end", delegate { SetMouse(null, -1, false, Vector2.zero); });
+
+                said["scroll"] = new List<object> { (double)amount.x, (double)amount.y };
+                planned.Add(said);
+                return true;
+            }
+
+            bool click = action.ContainsKey("click");
+            bool move = action.ContainsKey("move");
+            bool mouse = action.ContainsKey("mouse");
+
+            if (click || move || mouse)
+            {
+                object where = click ? action["click"] : move ? action["move"] : null;
+                if (where == null || where is bool)
+                {
+                    object at;
+                    where = action.TryGetValue("at", out at) ? at : null;
+                }
+
+                Vector2? point = null;
+                if (where != null)
+                {
+                    Vector2 found;
+                    if (!TryPoint(where, Str(action, "space"), scope, out found, out error)) return false;
+
+                    point = found;
+                    said["at"] = UiPoint(found);
+                    if (where is string) said["target"] = where;
+                }
+
+                int button;
+                string buttonName = Str(action, "button") ?? "left";
+                if (!TryMouseButton(buttonName, out button))
+                {
+                    error = "button is left, right, middle, back or forward, not '" + buttonName + "'";
+                    return false;
+                }
+
+                if (move)
+                {
+                    if (point == null)
+                    {
+                        error = "move needs a place: [x, y] or an object's path";
+                        return false;
+                    }
+
+                    Vector2 to = point.Value;
+                    Step(steps, 0, 0, "move", delegate { SetMouse(to, -1, false, Vector2.zero); });
+
+                    said["move"] = true;
+                    planned.Add(said);
+                    return true;
+                }
+
+                if (click)
+                {
+                    if (point == null)
+                    {
+                        error = "click needs a place: [x, y] or an object's path";
+                        return false;
+                    }
+
+                    // Arrive, then press a frame later, then let go: the UI's
+                    // input module wants the pointer over a button before it
+                    // will count a press on it.
+                    Vector2 to = point.Value;
+                    int which = button;
+                    for (int round = 0; round < times; round++)
+                    {
+                        Step(steps, round == 0 ? 0 : 1, 0, "move", delegate { SetMouse(to, -1, false, Vector2.zero); });
+                        Step(steps, 1, 0, buttonName + " press", delegate { SetMouse(to, which, true, Vector2.zero); });
+                        Step(steps, hold, holdSeconds, buttonName + " release", delegate { SetMouse(to, which, false, Vector2.zero); });
+                    }
+
+                    said["click"] = buttonName;
+                    said["times"] = times;
+                    planned.Add(said);
+                    return true;
+                }
+
+                string state = Normalise(Text(action["mouse"]));
+                if (state != "down" && state != "up")
+                {
+                    error = "mouse is down or up, not '" + state + "'";
+                    return false;
+                }
+
+                bool pressing = state == "down";
+                Vector2? place = point;
+                int pressed = button;
+                Step(steps, 0, 0, "mouse " + state, delegate { SetMouse(place, pressed, pressing, Vector2.zero); });
+
+                said["mouse"] = state;
+                said["button"] = buttonName;
+                planned.Add(said);
+                return true;
+            }
+
+            error = "an action needs one of key, text, click, move, mouse, scroll or wait";
+            return false;
+        }
+
+        /// <summary>A key from a name a person would write, or the Input System's own.</summary>
+        private static bool TryKey(string name, out Key key)
+        {
+            key = Key.None;
+            if (string.IsNullOrEmpty(name)) return false;
+
+            if (name.Length == 1)
+            {
+                switch (name[0])
+                {
+                    case ' ': key = Key.Space; return true;
+                    case '`': case '~': key = Key.Backquote; return true;
+                    case ',': key = Key.Comma; return true;
+                    case '.': key = Key.Period; return true;
+                    case '/': key = Key.Slash; return true;
+                    case '\\': key = Key.Backslash; return true;
+                    case ';': key = Key.Semicolon; return true;
+                    case '\'': key = Key.Quote; return true;
+                    case '[': key = Key.LeftBracket; return true;
+                    case ']': key = Key.RightBracket; return true;
+                    case '-': key = Key.Minus; return true;
+                    case '=': key = Key.Equals; return true;
+                }
+
+                if (char.IsDigit(name[0])) return TryEnum("Digit" + name, out key);
+            }
+
+            switch (Normalise(name))
+            {
+                case "esc": key = Key.Escape; return true;
+                case "return": key = Key.Enter; return true;
+                case "ctrl": case "control": key = Key.LeftCtrl; return true;
+                case "shift": key = Key.LeftShift; return true;
+                case "alt": key = Key.LeftAlt; return true;
+                case "up": key = Key.UpArrow; return true;
+                case "down": key = Key.DownArrow; return true;
+                case "left": key = Key.LeftArrow; return true;
+                case "right": key = Key.RightArrow; return true;
+                case "del": key = Key.Delete; return true;
+                case "pgup": key = Key.PageUp; return true;
+                case "pgdn": case "pagedn": key = Key.PageDown; return true;
+                case "win": case "cmd": case "meta": key = Key.LeftMeta; return true;
+                case "backtick": case "grave": case "tilde": key = Key.Backquote; return true;
+                case "spacebar": key = Key.Space; return true;
+            }
+
+            return TryEnum(name, out key) && key != Key.None;
+        }
+
+        /// <summary>MouseButton's numbering: the bit each button has in MouseState.buttons.</summary>
+        private static bool TryMouseButton(string name, out int button)
+        {
+            switch (Normalise(name))
+            {
+                case "": case "left": button = 0; return true;
+                case "right": button = 1; return true;
+                case "middle": button = 2; return true;
+                case "forward": button = 3; return true;
+                case "back": button = 4; return true;
+            }
+
+            button = 0;
+            return false;
+        }
+
+        private static Keyboard AriaKeyboard()
+        {
+            if (_ariaKeyboard == null || !_ariaKeyboard.added)
+            {
+                _ariaKeyboard = InputSystem.AddDevice<Keyboard>(AriaDevicePrefix + "Keyboard");
+            }
+            return _ariaKeyboard;
+        }
+
+        private static Mouse AriaMouse()
+        {
+            if (_ariaMouse == null || !_ariaMouse.added)
+            {
+                _ariaMouse = InputSystem.AddDevice<Mouse>(AriaDevicePrefix + "Mouse");
+            }
+            return _ariaMouse;
+        }
+
+        /// <summary>Press or let go of keys; every event carries the whole keyboard, so the held set is kept here.</summary>
+        private static void SetKeys(Key[] keys, bool down)
+        {
+            foreach (Key key in keys)
+            {
+                if (down) _heldKeys.Add(key);
+                else _heldKeys.Remove(key);
+            }
+
+            Key[] held = new Key[_heldKeys.Count];
+            _heldKeys.CopyTo(held);
+
+            Keyboard board = AriaKeyboard();
+            InputSystem.QueueStateEvent(board, new KeyboardState(held));
+            board.MakeCurrent();
+        }
+
+        private static void TypeText(string words)
+        {
+            Keyboard board = AriaKeyboard();
+            foreach (char character in words) InputSystem.QueueTextEvent(board, character);
+            board.MakeCurrent();
+        }
+
+        /// <summary>Move, press, release or scroll; every event carries the whole mouse.</summary>
+        private static void SetMouse(Vector2? at, int button, bool down, Vector2 scroll)
+        {
+            Vector2 delta = Vector2.zero;
+            if (at.HasValue)
+            {
+                delta = at.Value - _pointer;
+                _pointer = at.Value;
+            }
+
+            if (button >= 0)
+            {
+                int bit = 1 << button;
+                _buttons = (ushort)(down ? (_buttons | bit) : (_buttons & ~bit));
+            }
+
+            MouseState state = new MouseState();
+            state.position = _pointer;
+            state.delta = delta;
+            state.scroll = scroll;
+            state.buttons = _buttons;
+
+            Mouse mouse = AriaMouse();
+            InputSystem.QueueStateEvent(mouse, state);
+            mouse.MakeCurrent();
+        }
+
+        /// <summary>
+        /// Let input reach the game however focus lies, for a test session.
+        ///
+        /// The Input System's editor default sends keyboard and pointer input
+        /// to the game only while the Game view has focus, and holds it for
+        /// the editor otherwise -- read in InputManager: with the Game view
+        /// unfocused, a keyboard or pointer event is left for an editor update
+        /// and the game never sees it. A test is sent precisely while the
+        /// person is elsewhere, so for its length the settings say input
+        /// always goes to the game and focus is ignored. A copy is changed,
+        /// never the project's settings object, and the original is put back
+        /// as play ends.
+        /// </summary>
+        private static void RouteInputToGame()
+        {
+            InputSettings current = InputSystem.settings;
+            if (current == null || current.name == DrivenInputSettingsName) return;
+
+            InputSettings driven = Object.Instantiate(current);
+            driven.name = DrivenInputSettingsName;
+            driven.hideFlags = HideFlags.HideAndDontSave;
+            driven.backgroundBehavior = InputSettings.BackgroundBehavior.IgnoreFocus;
+            driven.editorInputBehaviorInPlayMode = InputSettings.EditorInputBehaviorInPlayMode.AllDeviceInputAlwaysGoesToGameView;
+
+            _originalInputSettings = current;
+            _drivenInputSettings = driven;
+            InputSystem.settings = driven;
+        }
+
+        private static void RestoreInput()
+        {
+            RemoveAriaDevices();
+
+            if (_originalInputSettings != null && InputSystem.settings == _drivenInputSettings)
+            {
+                InputSystem.settings = _originalInputSettings;
+            }
+
+            if (_drivenInputSettings != null) Object.DestroyImmediate(_drivenInputSettings);
+            _originalInputSettings = null;
+            _drivenInputSettings = null;
+        }
+
+        /// <summary>
+        /// Put the project's settings back if a session ended without doing
+        /// it -- a reload in the middle of play loses the reference to them.
+        /// </summary>
+        private static void RecoverInputSettings()
+        {
+            InputSettings current = InputSystem.settings;
+            if (current == null || current.name != DrivenInputSettingsName) return;
+
+            InputSettings asset;
+            bool fromProject = EditorBuildSettings.TryGetConfigObject("com.unity.input.settings", out asset) && asset != null;
+            InputSystem.settings = fromProject ? asset : ScriptableObject.CreateInstance<InputSettings>();
+
+            Debug.LogWarning("[ARIA] Put the Input System settings back after a test session that could not.");
+        }
+
+        /// <summary>Take away every device the bridge added, and forget what they held.</summary>
+        private static void RemoveAriaDevices()
+        {
+            _input.Clear();
+            _heldKeys.Clear();
+            _buttons = 0;
+            _pointer = Vector2.zero;
+            _ariaKeyboard = null;
+            _ariaMouse = null;
+
+            List<InputDevice> doomed = new List<InputDevice>();
+            foreach (InputDevice device in InputSystem.devices)
+            {
+                if (device != null && device.name != null &&
+                    device.name.StartsWith(AriaDevicePrefix, StringComparison.Ordinal))
+                {
+                    doomed.Add(device);
+                }
+            }
+
+            foreach (InputDevice device in doomed) InputSystem.RemoveDevice(device);
+        }
+#endif
 
         #endregion
 

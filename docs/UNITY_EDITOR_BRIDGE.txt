@@ -272,6 +272,64 @@ COMMANDS
                      in edit mode there is no interface to photograph, only the
                      scripts that will make one.
 
+  SendInput          actions: [ {...}, ... ]  (or one action's fields directly),
+                     allowRealSave?
+                     Plays keys, clicks, scrolls and text into the running
+                     game, queued and spread over the next frames (a press and
+                     its release must land in different frames for
+                     wasPressedThisFrame to see them). Ping's inputPending
+                     reaches 0 when they have played. Actions:
+                       {"key": "space"}               tap; hold? frames (2), times?,
+                                                      action? tap/down/up
+                       {"key": ["LeftCtrl", "s"]}     held together
+                       {"click": [640, 360]}          button? left/right/middle,
+                                                      hold?, times?, space? viewport
+                       {"click": "Canvas/BuyButton"}  where that object is drawn
+                       {"move": [x, y] | path}
+                       {"mouse": "down"|"up", "at"?}  button?
+                       {"scroll": -120} or [x, y]     up is positive
+                       {"text": "hello"}              Keyboard.onTextInput
+                       {"wait": 30} / {"waitSeconds": 0.5}
+                     Places are pixels from the bottom left of the game's
+                     picture (ReadScreen's coordinates), 0..1 with
+                     space:"viewport", or an object's path, found as the
+                     command arrives. Key names are the Input System's
+                     (Space, Enter, Escape, A, Digit1, LeftShift, UpArrow,
+                     F5, Backquote) or a character ("`", "1", ",").
+                     Sent through two devices of the bridge's own, "ARIA
+                     Keyboard" and "ARIA Mouse", which become Keyboard.current
+                     and Mouse.current as they send; the real devices are
+                     untouched, and the bridge removes its own as play ends.
+                     For the length of a test session the Input System is
+                     told to send all input to the game whatever has focus
+                     (backgroundBehavior IgnoreFocus, editorInputBehavior
+                     AllDeviceInputAlwaysGoesToGameView) -- on a copy of its
+                     settings, handed back as play ends. Without that, a
+                     keyboard or pointer event with the Game view unfocused
+                     is kept for the editor and the game never sees it. It
+                     also means a person typing in the editor during a test
+                     is typing into the game.
+                     Refused unless the session is a test (see SetPlayMode):
+                     input changes the game, and the game saves what changes.
+                     Needs the Input System package; the old Input Manager
+                     reads the hardware and cannot be fed. IMGUI text fields
+                     (OnGUI) do not hear "text".
+  ReadScreen         targets?, includeHidden?, limit? (200)
+                     What is on the game's screen, as data: lines (visible
+                     text in reading order), texts and controls (each with
+                     path, kind, rect and center in pixels from the bottom
+                     left, which is what SendInput clicks; controls say
+                     interactable, their label and isOn/value/text).
+                     Visible means active, enabled, not faded out by a
+                     CanvasGroup, not transparent, and on the screen;
+                     includeHidden lists the rest. targets: object paths,
+                     answered with where each is drawn (a UI element's
+                     centre, a world object's renderer centre through the
+                     main camera) and whether that is on screen. UI Text and
+                     TextMeshPro are found by type name, so the bridge needs
+                     neither package. IMGUI (OnGUI) cannot be read back:
+                     Screenshot it.
+
 Asset paths must start with Assets/ and contain no "..": the bridge does
 not write outside the project. A screenshot path is relative to the project
 rather than to Assets/, for the same reason it defaults outside it.

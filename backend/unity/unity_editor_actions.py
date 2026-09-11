@@ -106,6 +106,8 @@ ARGUMENTS: dict[str, tuple[str, ...]] = {
     "Screenshot": ("path", "width", "height", "view"),
     "SetPlayMode": ("playing", "testSave", "seed", "keepRunning", "allowUnfocused",
                     "skipSnapshot"),
+    "SendInput": ("actions", "allowRealSave"),
+    "ReadScreen": ("targets", "includeHidden", "limit"),
 }
 
 POSITIONAL: dict[str, tuple[str, ...]] = {
@@ -153,6 +155,8 @@ POSITIONAL: dict[str, tuple[str, ...]] = {
     "RefreshAssets": ("path",),
     "Screenshot": ("path",),
     "SetPlayMode": ("playing",),
+    "SendInput": ("actions",),
+    "ReadScreen": ("targets",),
 }
 
 
