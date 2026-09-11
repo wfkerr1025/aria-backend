@@ -104,7 +104,8 @@ ARGUMENTS: dict[str, tuple[str, ...]] = {
                      "orthographicSize"),
     "RefreshAssets": ("path", "force", "recursive"),
     "Screenshot": ("path", "width", "height", "view"),
-    "SetPlayMode": ("playing", "allowUnfocused", "skipSnapshot"),
+    "SetPlayMode": ("playing", "testSave", "seed", "keepRunning", "allowUnfocused",
+                    "skipSnapshot"),
 }
 
 POSITIONAL: dict[str, tuple[str, ...]] = {

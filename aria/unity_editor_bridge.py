@@ -92,6 +92,7 @@ __all__ = [
     "refresh_assets",
     "screenshot",
     "set_play_mode",
+    "last_play",
     "install_bridge",
 ]
 
@@ -102,6 +103,12 @@ __all__ = [
 FOLDER_NAME = "ARIA"
 COMMANDS_FILE = "unity_commands.json"
 RESULTS_FILE = "unity_results.json"
+# What the bridge writes when a play session it started ends: whether the
+# game's real save folder came through untouched. See last_play().
+LAST_PLAY_FILE = "last_play.json"
+# The variable a bridge-started game reads to find its test save folder.
+# Mirrors TestSaveVariable in the C#; a test holds the two together.
+TEST_SAVE_VARIABLE = "ARIA_TEST_SAVE_DIR"
 
 # Which Unity project to talk to. Then the Unity plugin's setting, then
 # the file tools' workspace, then the current directory.
@@ -584,8 +591,9 @@ class _CommandBuilder:
         return self._submit(make_command(
             "Screenshot", path=path, width=width, height=height, view=view))
 
-    def set_play_mode(self, playing: bool = True, *, allow_unfocused: bool = False,
-                      skip_snapshot: bool = False) -> Any:
+    def set_play_mode(self, playing: bool = True, *, test_save: bool = True,
+                      seed: str | None = None, keep_running: bool = True,
+                      allow_unfocused: bool = False, skip_snapshot: bool = False) -> Any:
         """Start or stop the game, and return before it happens.
 
         Entering play mode reloads the C# domain and throws away everything
@@ -607,9 +615,32 @@ class _CommandBuilder:
         persistentDataPath to ARIA/snapshots (newest ten kept) and will not
         start without that copy unless skip_snapshot=True -- play mode runs
         the game's own save code against the player's real files.
+
+        test_save (on unless refused) points the game at ARIA/testsave
+        instead, through the ARIA_TEST_SAVE_DIR environment variable, for a
+        game that reads it. seed decides what that folder holds as play
+        begins: "keep" (the default: as the last test left it), "fresh"
+        (emptied, so a new game) or "real" (a copy of the player's save, to
+        start where they are without being able to write back). When the
+        session ends the bridge compares the real save folder with how it
+        was and says in ARIA/last_play.json whether anything changed;
+        last_play() reads it.
+
+        keep_running (on unless refused) keeps a test session advancing
+        while Unity is not the focused application. Without it an unfocused
+        editor plays no frames at all (measured: minimized mid-play, the
+        frame count stood still). The bridge sets Application.runInBackground
+        for the session -- which in the editor is also Player Settings' Run
+        In Background, so both read true meanwhile -- and hands the old value
+        back as play ends. With it and test_save both on, an unfocused start
+        is allowed without allow_unfocused: the focus-lost save lands in the
+        test folder, and the frames come.
         """
         return self._submit(make_command(
             "SetPlayMode", playing=bool(playing),
+            testSave=None if test_save else False,
+            seed=seed,
+            keepRunning=None if keep_running else False,
             allowUnfocused=True if allow_unfocused else None,
             skipSnapshot=True if skip_snapshot else None))
 
@@ -810,6 +841,20 @@ class UnityEditorBridge(_CommandBuilder):
         """Whether a commands file is waiting for the editor."""
         return self.commands_path.exists()
 
+    def last_play(self) -> dict | None:
+        """What the last bridge-started play session left behind, or None.
+
+        ARIA/last_play.json, written as the session ends. realSaveSafe is
+        True only when every file under the game's persistentDataPath was
+        the same at the end as at the start; realSaveTouched names any that
+        were not. A game that ignores the test save variable shows up here.
+        """
+        try:
+            raw = json.loads((self.folder / LAST_PLAY_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return raw if isinstance(raw, dict) else None
+
     def clear(self) -> None:
         """Remove both files, so a stale exchange cannot be mistaken for a fresh one."""
         self._remove(self.commands_path)
@@ -1004,6 +1049,10 @@ def screenshot(path: str | None = None, **extra: Any) -> dict | None:
 
 def set_play_mode(playing: bool = True, **extra: Any) -> dict | None:
     return get_bridge().set_play_mode(playing, **extra)
+
+
+def last_play() -> dict | None:
+    return get_bridge().last_play()
 
 
 def install_bridge(project_root: str | os.PathLike | None = None) -> Path:

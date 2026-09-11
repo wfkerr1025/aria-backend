@@ -63,7 +63,7 @@ namespace ARIA.Bridge
     [InitializeOnLoad]
     public static class ARIAEditorBridge
     {
-        public const string Version = "1.3.0";
+        public const string Version = "1.4.0";
 
         /// <summary>Folder beside Assets/ that holds the two RPC files.</summary>
         public const string FolderName = "ARIA";
@@ -121,6 +121,15 @@ namespace ARIA.Bridge
             }
 
             EditorApplication.update += Poll;
+            EditorApplication.playModeStateChanged += OnPlayModeChanged;
+
+            // A test folder named for a play session that never began -- the
+            // entry failed on a compile error, say -- must not still be named
+            // when a person next presses Play. The one exception is a request
+            // on its way in: entering play mode can recompile first, and that
+            // reload lands here before the session it belongs to has started.
+            if (!EditorApplication.isPlayingOrWillChangePlaymode && !StartPending()) EndTestSave();
+
             Debug.Log("[ARIA] Editor bridge " + Version + " loaded. Commands: " + CommandsPath);
         }
 
@@ -583,6 +592,16 @@ namespace ARIA.Bridge
             Scene active = SceneManager.GetActiveScene();
             data["activeScene"] = active.path ?? "";
             data["activeSceneName"] = active.name ?? "";
+
+            // Whether a test is running, and on what. A caller that cannot see
+            // the editor has no other way to know the game in front of it is
+            // playing against the test folder and not the player's save.
+            data["driving"] = Driving;
+            data["testSave"] = ActiveTestSave.Replace('\\', '/');
+            data["frame"] = EditorApplication.isPlaying ? Time.frameCount : 0;
+            data["runInBackground"] = Application.runInBackground;
+            data["playerSettingsRunInBackground"] = PlayerSettings.runInBackground;
+            data["lastPlay"] = ReadReport(LastPlayPath);
             return Ok("Bridge is up.", data);
         }
 
@@ -1638,6 +1657,377 @@ namespace ARIA.Bridge
             }
         }
 
+        #region Play sessions
+
+        /// <summary>
+        /// The environment variable a game reads to find the bridge's test
+        /// folder. Set before a bridge-started play session, cleared when it
+        /// ends; a game that honours it keeps every file it writes there.
+        /// </summary>
+        public const string TestSaveVariable = "ARIA_TEST_SAVE_DIR";
+
+        private const string TestSaveFolderName = "testsave";
+        private const string LastPlayFileName = "last_play.json";
+
+        // SessionState outlives the domain reload that entering play mode
+        // causes and dies with the editor, which is exactly a session's life.
+        private const string PendingStartKey = "ARIA.Bridge.PendingStart";
+        private const string DrivingKey = "ARIA.Bridge.Driving";
+        private const string TestSaveKey = "ARIA.Bridge.TestSave";
+        private const string ManifestKey = "ARIA.Bridge.RealSaveManifest";
+        private const string StartedAtKey = "ARIA.Bridge.StartedAt";
+
+        /// <summary>How long after SetPlayMode a play session can still be claimed as the bridge's.</summary>
+        private const double PendingStartSeconds = 15.0;
+
+        /// <summary>Where a bridge-started game keeps its files, beside the snapshots.</summary>
+        public static string TestSaveFolder
+        {
+            get { return Path.Combine(BridgeFolder, TestSaveFolderName); }
+        }
+
+        /// <summary>What the last bridge-started session left behind: see EndSession.</summary>
+        public static string LastPlayPath
+        {
+            get { return Path.Combine(BridgeFolder, LastPlayFileName); }
+        }
+
+        /// <summary>Whether the game now playing was started by the bridge against its test folder.</summary>
+        private static bool Driving
+        {
+            get { return SessionState.GetBool(DrivingKey, false); }
+            set { SessionState.SetBool(DrivingKey, value); }
+        }
+
+        /// <summary>The test folder the environment names right now, or "".</summary>
+        private static string ActiveTestSave
+        {
+            get { return Environment.GetEnvironmentVariable(TestSaveVariable) ?? ""; }
+        }
+
+        private static bool StartPending()
+        {
+            double asked;
+            string pending = SessionState.GetString(PendingStartKey, "");
+            return double.TryParse(pending, NumberStyles.Float, CultureInfo.InvariantCulture, out asked) &&
+                   EditorApplication.timeSinceStartup - asked < PendingStartSeconds;
+        }
+
+        private static void OnPlayModeChanged(PlayModeStateChange change)
+        {
+            if (change == PlayModeStateChange.ExitingEditMode) ClaimOrDisownStart();
+            else if (change == PlayModeStateChange.EnteredPlayMode) BeginDrivenPlay();
+            else if (change == PlayModeStateChange.ExitingPlayMode) EndDrivenPlay();
+            else if (change == PlayModeStateChange.EnteredEditMode) EndSession();
+        }
+
+        /// <summary>Whether a driven session keeps running while Unity is not the focused application.</summary>
+        private const string KeepRunningKey = "ARIA.Bridge.KeepRunning";
+
+        /// <summary>What Application.runInBackground was before a driven session changed it.</summary>
+        private static bool _wasRunningInBackground;
+        private static bool _changedRunInBackground;
+
+        /// <summary>
+        /// Keep a bridge-started game advancing while Unity is in the background.
+        ///
+        /// With Run In Background off, an unfocused editor plays no frames.
+        /// Measured on 6000.3 with the window minimized mid-play: the frame
+        /// count stood at 456 for three seconds with the flag off, and went
+        /// from 1823 to 3422 with it on. Start never comes, coroutines stall,
+        /// and a test waits on a game that is not running -- and the bridge is
+        /// used exactly while the person is somewhere else. So for its own
+        /// sessions, and only for their length, the game runs regardless.
+        ///
+        /// In the editor the runtime flag IS Player Settings' Run In
+        /// Background: both read true for the session. The old value is
+        /// handed back as play ends, and nothing is written to
+        /// ProjectSettings.asset unless something saves the project while the
+        /// session runs -- in which case the next save puts it right.
+        ///
+        /// Entering play mode brings the editor window to the front, so an
+        /// unfocused START is not the case this is for; a person clicking
+        /// away from a running test is.
+        /// </summary>
+        private static void BeginDrivenPlay()
+        {
+            if (!Driving || !SessionState.GetBool(KeepRunningKey, true)) return;
+
+            _wasRunningInBackground = Application.runInBackground;
+            _changedRunInBackground = true;
+            Application.runInBackground = true;
+        }
+
+        /// <summary>Hand back everything BeginDrivenPlay changed.</summary>
+        private static void EndDrivenPlay()
+        {
+            if (!_changedRunInBackground) return;
+
+            Application.runInBackground = _wasRunningInBackground;
+            _changedRunInBackground = false;
+        }
+
+        /// <summary>
+        /// Decide, as play begins, whether this session is the bridge's.
+        ///
+        /// Only a SetPlayMode from moments ago claims it. Anything else is a
+        /// person pressing Play, and whatever an earlier request left behind
+        /// must not quietly turn their game into a test that keeps nothing.
+        /// The variable is set again on a claim rather than trusted to have
+        /// survived: a recompile between the request and the start is a
+        /// domain reload, and the one place worth being sure is here.
+        /// </summary>
+        private static void ClaimOrDisownStart()
+        {
+            bool claimed = StartPending();
+            SessionState.EraseString(PendingStartKey);
+
+            string folder = SessionState.GetString(TestSaveKey, "");
+
+            if (claimed && Driving && !string.IsNullOrEmpty(folder))
+            {
+                Environment.SetEnvironmentVariable(TestSaveVariable, folder);
+                return;
+            }
+
+            if (!claimed) EndTestSave();
+        }
+
+        /// <summary>Forget the test folder: the variable, and the session's claim to it.</summary>
+        private static void EndTestSave()
+        {
+            Environment.SetEnvironmentVariable(TestSaveVariable, null);
+            SessionState.EraseString(TestSaveKey);
+            Driving = false;
+        }
+
+        /// <summary>
+        /// Close a session the bridge started, and say whether the real save survived it.
+        ///
+        /// The test folder only protects a game that reads the variable. One
+        /// that does not writes where it always does, and the only way to
+        /// know is to look: every file under persistentDataPath is compared
+        /// with the list taken as play began. A difference is logged as an
+        /// error and named in ARIA/last_play.json, with the snapshot taken at
+        /// the start as the way back.
+        /// </summary>
+        private static void EndSession()
+        {
+            bool wasDriving = Driving;
+            string folder = SessionState.GetString(TestSaveKey, "");
+            string manifest = SessionState.GetString(ManifestKey, "");
+            string startedAt = SessionState.GetString(StartedAtKey, "");
+
+            EndTestSave();
+            SessionState.EraseString(ManifestKey);
+            SessionState.EraseString(StartedAtKey);
+
+            if (!wasDriving) return;
+
+            Dictionary<string, object> report = new Dictionary<string, object>();
+            report["startedAt"] = startedAt;
+            report["endedAt"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+            report["testSave"] = folder.Replace('\\', '/');
+            report["realSave"] = (Application.persistentDataPath ?? "").Replace('\\', '/');
+
+            List<object> touched = CompareRealSave(manifest);
+            report["realSaveTouched"] = touched;
+            report["realSaveSafe"] = touched.Count == 0;
+
+            if (touched.Count > 0)
+            {
+                Debug.LogError("[ARIA] The game changed its REAL save folder during a test session (" +
+                               string.Join(", ", touched.ConvertAll<string>(
+                                   item => Convert.ToString(item, CultureInfo.InvariantCulture)).ToArray()) +
+                               "). It does not read " + TestSaveVariable + " for every file it writes. " +
+                               "The copy taken as play began is in ARIA/snapshots.");
+            }
+
+            WriteReport(LastPlayPath, report);
+        }
+
+        private static void WriteReport(string path, Dictionary<string, object> report)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                File.WriteAllText(path, Json.Serialize(report, true), new UTF8Encoding(false));
+            }
+            catch (Exception failure)
+            {
+                Debug.LogWarning("[ARIA] Could not write " + path + ": " + failure.Message);
+            }
+        }
+
+        /// <summary>The last session's report, or null when there has not been one.</summary>
+        private static object ReadReport(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return null;
+
+                object parsed;
+                string error;
+                return Json.TryParse(File.ReadAllText(path), out parsed, out error) ? parsed : null;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Make the test folder ready for a session.
+        ///
+        /// keep  -- as the last session left it (a new folder is a new game)
+        /// fresh -- emptied, so the game starts from nothing
+        /// real  -- emptied, then filled with a copy of the real save, so a
+        ///          test starts where the player is without being able to
+        ///          write back to where the player is
+        /// </summary>
+        private static Dictionary<string, object> PrepareTestSave(string seed, out string error)
+        {
+            error = null;
+            string how = Normalise(string.IsNullOrEmpty(seed) ? "keep" : seed);
+
+            if (how != "keep" && how != "fresh" && how != "real")
+            {
+                error = "seed is keep, fresh or real, not '" + seed + "'";
+                return null;
+            }
+
+            string folder = Path.GetFullPath(TestSaveFolder);
+
+            // Emptying a folder is only ever done to this one. Checked rather
+            // than assumed, because the day it is wrong it deletes something.
+            if (!folder.StartsWith(Path.GetFullPath(BridgeFolder), StringComparison.OrdinalIgnoreCase))
+            {
+                error = "the test folder " + folder + " is not inside " + BridgeFolder;
+                return null;
+            }
+
+            try
+            {
+                if (how != "keep" && Directory.Exists(folder)) Directory.Delete(folder, true);
+                Directory.CreateDirectory(folder);
+
+                int copied = 0;
+                if (how == "real") copied = CopyRealSave(folder);
+
+                Dictionary<string, object> data = new Dictionary<string, object>();
+                data["path"] = folder.Replace('\\', '/');
+                data["seed"] = how;
+                data["copied"] = copied;
+                data["files"] = Directory.GetFiles(folder, "*", SearchOption.AllDirectories).Length;
+                return data;
+            }
+            catch (Exception failure)
+            {
+                error = failure.Message;
+                return null;
+            }
+        }
+
+        /// <summary>Copy the game's saved files, not Unity's own caches, into a folder.</summary>
+        private static int CopyRealSave(string into)
+        {
+            string source = Application.persistentDataPath;
+            if (string.IsNullOrEmpty(source) || !Directory.Exists(source)) return 0;
+
+            int copied = 0;
+            foreach (string file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+            {
+                string relative = Relative(source, file);
+                if (EngineOwned(relative)) continue;
+
+                string destination = Path.Combine(into, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(destination));
+                File.Copy(file, destination, true);
+                copied++;
+            }
+
+            return copied;
+        }
+
+        /// <summary>Every file under persistentDataPath, by size and write time.</summary>
+        private static Dictionary<string, object> RealSaveManifest()
+        {
+            Dictionary<string, object> manifest = new Dictionary<string, object>();
+
+            string root = Application.persistentDataPath;
+            if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) return manifest;
+
+            foreach (string file in Directory.GetFiles(root, "*", SearchOption.AllDirectories))
+            {
+                string relative = Relative(root, file);
+                if (EngineOwned(relative)) continue;
+
+                FileInfo info = new FileInfo(file);
+                manifest[relative] = info.Length.ToString(CultureInfo.InvariantCulture) + ":" +
+                                     info.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture);
+            }
+
+            return manifest;
+        }
+
+        /// <summary>What changed under persistentDataPath since a manifest was taken, one line per file.</summary>
+        private static List<object> CompareRealSave(string before)
+        {
+            List<object> touched = new List<object>();
+
+            object parsed;
+            string error;
+            Dictionary<string, object> old = Json.TryParse(before ?? "", out parsed, out error)
+                ? parsed as Dictionary<string, object>
+                : null;
+
+            // No list to compare with means nothing can be claimed either way,
+            // and "safe" must never be said without having looked.
+            if (old == null)
+            {
+                touched.Add("(no record of the real save from the start of the session)");
+                return touched;
+            }
+
+            Dictionary<string, object> now;
+            try
+            {
+                now = RealSaveManifest();
+            }
+            catch (Exception failure)
+            {
+                touched.Add("(could not read the real save folder: " + failure.Message + ")");
+                return touched;
+            }
+
+            foreach (KeyValuePair<string, object> file in now)
+            {
+                object was;
+                if (!old.TryGetValue(file.Key, out was)) touched.Add(file.Key + " (created)");
+                else if (Convert.ToString(was, CultureInfo.InvariantCulture) != Convert.ToString(file.Value, CultureInfo.InvariantCulture)) touched.Add(file.Key + " (changed)");
+            }
+
+            foreach (string file in old.Keys)
+            {
+                if (!now.ContainsKey(file)) touched.Add(file + " (deleted)");
+            }
+
+            return touched;
+        }
+
+        private static string Relative(string root, string file)
+        {
+            return file.Substring(root.Length).TrimStart('\\', '/').Replace('\\', '/');
+        }
+
+        /// <summary>Unity keeps caches of its own under persistentDataPath/Unity; those are not the game's save.</summary>
+        private static bool EngineOwned(string relative)
+        {
+            return relative.StartsWith("Unity/", StringComparison.OrdinalIgnoreCase);
+        }
+
+        #endregion
+
         /// <summary>
         /// Start or stop the game.
         ///
@@ -1682,16 +2072,23 @@ namespace ARIA.Bridge
             bool focused = InternalEditorUtility.isApplicationActive;
             data["focused"] = focused;
 
+            bool testSave = Bool(args, "testSave", true);
+            bool keepRunning = Bool(args, "keepRunning", true);
+
             // Unfocused, Unity sends the game OnApplicationFocus(false) as play
             // begins -- before Start, in no promised order -- and with Run In
             // Background off the game will not advance a frame after it.
             // Measured: a game that saves on focus-lost wrote its blank wake-up
-            // state over a real save exactly this way.
-            if (!focused && !Bool(args, "allowUnfocused", false))
+            // state over a real save exactly this way. On the test save that
+            // write lands in the test folder, and keepRunning supplies the
+            // frames, so only a start with either one refused still needs the
+            // person's click.
+            if (!focused && !(testSave && keepRunning) && !Bool(args, "allowUnfocused", false))
             {
                 return Fail("Unity is not the focused application, so play mode was not started. Started " +
                             "now, the game would get a focus-lost event before its Start runs and would " +
-                            "not advance a frame. Click into Unity and send again, or pass allowUnfocused:true.");
+                            "not advance a frame. Click into Unity and send again, pass allowUnfocused:true, " +
+                            "or leave testSave and keepRunning on.");
             }
 
             if (!Bool(args, "skipSnapshot", false))
@@ -1706,10 +2103,54 @@ namespace ARIA.Bridge
                 data["snapshot"] = snapshot;
             }
 
+            // The test save, on unless refused. The snapshot above is the way
+            // back after damage; this is what stops the damage, for a game
+            // that reads the variable -- and the manifest below is how a game
+            // that does not is caught.
+            if (testSave)
+            {
+                string prepareError;
+                Dictionary<string, object> prepared = PrepareTestSave(Str(args, "seed"), out prepareError);
+                if (prepared == null)
+                {
+                    return Fail("Play mode was not started: the test save could not be prepared (" + prepareError + ").");
+                }
+
+                data["testSave"] = prepared;
+                SessionState.SetString(TestSaveKey, Path.GetFullPath(TestSaveFolder));
+                Environment.SetEnvironmentVariable(TestSaveVariable, Path.GetFullPath(TestSaveFolder));
+            }
+            else
+            {
+                EndTestSave();
+                data["testSave"] = null;
+                data["warning"] = "testSave is off: the game is playing against its REAL save.";
+            }
+
+            Driving = testSave;
+            SessionState.SetBool(KeepRunningKey, keepRunning);
+            data["keepRunning"] = testSave && keepRunning;
+
+            try
+            {
+                SessionState.SetString(ManifestKey, Json.Serialize(RealSaveManifest(), false));
+            }
+            catch (Exception failure)
+            {
+                // Recorded as missing, which EndSession reports as unverified
+                // rather than safe.
+                SessionState.EraseString(ManifestKey);
+                Debug.LogWarning("[ARIA] Could not list the real save before play: " + failure.Message);
+            }
+
+            SessionState.SetString(StartedAtKey, DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+            SessionState.SetString(PendingStartKey,
+                EditorApplication.timeSinceStartup.ToString("R", CultureInfo.InvariantCulture));
+
             EditorApplication.EnterPlaymode();
 
-            return Ok("Entering play mode. A domain reload follows, so send the next command separately.",
-                      data);
+            return Ok("Entering play mode" + (testSave ? " on the test save" : " on the REAL save") +
+                      ". A domain reload follows, so send the next command separately.", data);
         }
 
         #endregion

@@ -590,15 +590,19 @@ def test_nothing_that_edits_a_scene_is_play_safe():
 
 def test_the_play_mode_overrides_are_spelled_the_way_the_editor_reads_them(bridge):
     def reply(commands):
-        assert commands[0]["args"] == {"playing": True, "allowUnfocused": True, "skipSnapshot": True}
+        assert commands[0]["args"] == {"playing": True, "testSave": False, "seed": "fresh",
+                                       "allowUnfocused": True, "skipSnapshot": True}
         return [ok("SetPlayMode", changed=True)]
 
     with FakeUnity(bridge, reply):
-        bridge.set_play_mode(True, allow_unfocused=True, skip_snapshot=True)
+        bridge.set_play_mode(True, test_save=False, seed="fresh",
+                             allow_unfocused=True, skip_snapshot=True)
 
     source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
     assert 'Bool(args, "allowUnfocused", false)' in source
     assert 'Bool(args, "skipSnapshot", false)' in source
+    assert 'Bool(args, "testSave", true)' in source, "the test save is on unless refused"
+    assert 'Str(args, "seed")' in source
 
 
 def test_entering_play_mode_checks_focus_and_copies_the_save_by_default():
@@ -611,3 +615,99 @@ def test_entering_play_mode_checks_focus_and_copies_the_save_by_default():
     assert "SnapshotPersistentData(" in handler
     assert handler.index("SnapshotPersistentData(") < handler.index("EditorApplication.EnterPlaymode()"), \
         "the copy has to exist before the game can write"
+
+
+def _csharp_method(source, signature):
+    body = source[source.index(signature):]
+    return body[:body.index("\n        }\n") + 10]
+
+
+def test_the_test_save_variable_is_the_one_the_game_reads():
+    """Spelled once on each side of a process boundary nothing type-checks."""
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    assert f'TestSaveVariable = "{ueb.TEST_SAVE_VARIABLE}"' in source
+    assert f'LastPlayFileName = "{ueb.LAST_PLAY_FILE}"' in source
+
+
+def test_the_test_save_is_named_and_the_real_save_listed_before_the_game_starts():
+    """The game reads the variable in its first frame; set after, it is set too late."""
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    handler = source[source.index("private static CommandResult SetPlayMode("):]
+    handler = handler[:handler.index("#endregion")]
+    start = handler.index("EditorApplication.EnterPlaymode()")
+
+    assert handler.index("Environment.SetEnvironmentVariable(TestSaveVariable") < start
+    assert handler.index("RealSaveManifest()") < start, "what the real save was must be known first"
+    assert handler.index("PendingStartKey") < start, "the session must be claimable as the bridge's"
+
+
+def test_a_person_pressing_play_is_never_a_test_session():
+    """A folder left named by a request that never started must not catch a real game.
+
+    Only a SetPlayMode from moments earlier claims a session; anything else
+    clears the variable as play begins, and every session's end clears it.
+    """
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    changed = _csharp_method(source, "private static void OnPlayModeChanged(")
+    assert "PlayModeStateChange.ExitingEditMode" in changed and "ClaimOrDisownStart()" in changed
+    assert "PlayModeStateChange.EnteredEditMode" in changed and "EndSession()" in changed
+
+    claim = _csharp_method(source, "private static void ClaimOrDisownStart()")
+    assert "StartPending()" in claim
+    assert "if (!claimed) EndTestSave();" in claim
+
+    end = _csharp_method(source, "private static void EndSession()")
+    assert end.index("EndTestSave()") < end.index("if (!wasDriving) return;"), \
+        "the variable is cleared whoever started the session"
+
+
+def test_a_test_session_keeps_running_unfocused_and_hands_the_setting_back(bridge):
+    """With Run In Background off an unfocused editor plays no frames at all.
+
+    Measured in a lab editor minimized mid-play: 456 frames, then 456 three
+    seconds later. The bridge is used while the person is somewhere else, so
+    its own sessions set the flag for their length -- in the editor that is
+    Player Settings' value too -- and give the old value back as play ends.
+    """
+    def reply(commands):
+        assert commands[0]["args"] == {"playing": True, "keepRunning": False}
+        return [ok("SetPlayMode", changed=True)]
+
+    with FakeUnity(bridge, reply):
+        bridge.set_play_mode(True, keep_running=False)
+
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    assert 'Bool(args, "keepRunning", true)' in source
+
+    changed = _csharp_method(source, "private static void OnPlayModeChanged(")
+    assert "PlayModeStateChange.EnteredPlayMode) BeginDrivenPlay()" in changed
+    assert "PlayModeStateChange.ExitingPlayMode) EndDrivenPlay()" in changed
+
+    begin = _csharp_method(source, "private static void BeginDrivenPlay()")
+    assert begin.index("if (!Driving") < begin.index("Application.runInBackground = true"), \
+        "only the bridge's own test sessions"
+    assert begin.index("_wasRunningInBackground = Application.runInBackground") < \
+        begin.index("Application.runInBackground = true"), "the old value is kept before it is changed"
+
+    end = _csharp_method(source, "private static void EndDrivenPlay()")
+    assert "Application.runInBackground = _wasRunningInBackground" in end
+
+
+def test_emptying_the_test_folder_is_confined_to_the_bridge_folder():
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    prepare = source[source.index("private static Dictionary<string, object> PrepareTestSave("):]
+    prepare = prepare[:prepare.index("private static int CopyRealSave(")]
+    assert prepare.index("StartsWith(Path.GetFullPath(BridgeFolder)") < prepare.index("Directory.Delete(")
+
+
+def test_last_play_reads_the_report_the_session_left(bridge):
+    assert bridge.last_play() is None, "no session yet"
+
+    bridge.folder.mkdir(parents=True, exist_ok=True)
+    report = bridge.folder / ueb.LAST_PLAY_FILE
+    report.write_text(json.dumps({"realSaveSafe": True, "realSaveTouched": [],
+                                  "testSave": "ARIA/testsave"}), encoding="utf-8")
+    assert bridge.last_play()["realSaveSafe"] is True
+
+    report.write_text('{"realSave', encoding="utf-8")
+    assert bridge.last_play() is None, "half a report is no report"

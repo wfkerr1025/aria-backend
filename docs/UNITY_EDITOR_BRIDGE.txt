@@ -200,7 +200,8 @@ COMMANDS
                      every overlay canvas onto the capture camera for the one
                      frame and hands them back afterwards. Defaults under
                      ARIA/shots/: a screenshot is evidence, not an asset.
-  SetPlayMode        playing? (true), allowUnfocused?, skipSnapshot?
+  SetPlayMode        playing? (true), testSave? (true), seed? (keep/fresh/real),
+                     keepRunning? (true), allowUnfocused?, skipSnapshot?
                      Returns BEFORE it happens. Entering play mode reloads the
                      C# domain and destroys everything holding the call, so the
                      result is written first; send whatever comes next as its
@@ -213,6 +214,59 @@ COMMANDS
                      overrides). Play mode runs the game's own save code
                      against real files; a blank game once replaced a
                      real save that way. Ping reports focused too.
+
+                     THE TEST SAVE. Unless testSave:false, the game plays
+                     against ARIA/testsave instead of its real save. The
+                     bridge sets the environment variable ARIA_TEST_SAVE_DIR
+                     to that folder before play and clears it when play ends;
+                     a game that reads it (in the editor only) keeps every
+                     file there. seed decides what the folder holds as play
+                     begins: keep (as the last test left it; the default),
+                     fresh (emptied: a new game), or real (a copy of the
+                     player's save, to start where they are with no way to
+                     write back).
+
+                     Only SetPlayMode from moments earlier makes a session
+                     the bridge's. A person pressing Play always gets the
+                     real save: the variable is cleared as any other session
+                     begins, and whenever a session ends.
+
+                     A game that does NOT read the variable still writes its
+                     real save, so the bridge checks: every file under
+                     persistentDataPath is listed as play begins and compared
+                     as it ends, and ARIA/last_play.json records
+                     realSaveSafe and realSaveTouched (anything created,
+                     changed or deleted). A difference is also logged as an
+                     error. Unity's own persistentDataPath/Unity caches are
+                     not counted. PlayerPrefs live in the registry, not in
+                     that folder, and are NOT redirected. Ping reports
+                     driving, testSave and lastPlay.
+
+                     KEEP RUNNING. With Run In Background off, an unfocused
+                     editor plays no frames: measured on 6000.3, minimized
+                     mid-play, the frame count stood still for three seconds;
+                     with it on, it climbed 1600 frames. While a test session
+                     plays the bridge sets Application.runInBackground, which
+                     in the editor is Player Settings' Run In Background too
+                     (both read true meanwhile), and hands the old value back
+                     as play ends. ProjectSettings.asset is not written unless
+                     the project is saved mid-session, and the next save puts
+                     that right. keepRunning:false refuses. With testSave and
+                     keepRunning both on, an unfocused start needs no
+                     allowUnfocused: the focus-lost save lands in the test
+                     folder, and the frames come.
+
+                     Entering and leaving play mode bring the editor window
+                     to the front. That is Unity's own behaviour, not the
+                     bridge's.
+
+                     In a game, the whole of honouring it is choosing the
+                     folder (Ore and Odds: SaveSystem.Folder):
+
+                         string test = Application.isEditor
+                             ? Environment.GetEnvironmentVariable("ARIA_TEST_SAVE_DIR") : null;
+                         string folder = string.IsNullOrEmpty(test)
+                             ? Application.persistentDataPath : test;
                      Refused in batch mode. This is what makes Screenshot worth
                      having on a project that builds its interface at runtime:
                      in edit mode there is no interface to photograph, only the
