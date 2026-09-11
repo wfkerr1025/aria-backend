@@ -460,7 +460,54 @@ From a shell:
     python -m aria.unity_editor_bridge --headless "ping"      # starts a batch-mode editor
 
 
-6. EXTENDING
+6. PLAYTHROUGHS
+---------------
+
+aria/unity_playthrough.py plays a game from a JSON script and checks it as
+it goes. It starts a test session on a fresh test save (seed: fresh, keep
+or real), plays the steps in order, and reports which passed, the first
+that failed with a screenshot of the moment and the screen's text, every
+console error, and whether the real save came through untouched. A
+console error fails the run even when no step checked for one, unless
+the script says "allowErrors": true.
+
+    python -m aria.unity_playthrough --project "D:/Unity/Projects/Stone Betting" Playthroughs/smoke.json
+    python -m aria.unity_playthrough --project "D:/Unity/Projects/Stone Betting" Playthroughs/
+
+    --keep-going     play every step even after one fails
+    --keep-playing   leave the game running after the last script
+    --json           results as JSON
+
+Exit 0 when every script passed, 1 when one failed, 2 when a script is
+not valid -- which is checked before Unity is touched: a misspelt key is
+refused rather than silently skipped. Reports land in
+<project>/ARIA/playthroughs/<name>_<time>/report.md (and .json), beside
+any screenshots the run took.
+
+Steps (each exactly one kind, plus an optional "label"):
+
+    {"console": "coins 1000", "expect": "coins: "}   line or list; expect? text in the answer
+    {"press": "space", "times": 3}                    hold?, action? tap/down/up
+    {"click": "Canvas/Buy" | [x, y]}                  button?, hold?, times?, viewport?
+    {"move": ...}  {"scroll": -120}  {"type": "hi"}  {"input": [raw SendInput actions]}
+    {"wait": 0.5}                                     seconds
+    {"waitFrames": 30}                                timeout?
+    {"until": {"text": "Ready"}, "timeout": 10}       or {"noText": ...} or {"field": {...}}
+    {"timeScale": 4}  {"pause": true}  {"step": 5}
+    {"screenshot": "name"}                            width?, height?
+    {"burst": "name", "count": 8, "everySeconds": 0.1}
+    {"expectText": "Score: 3"}  {"expectNoText": "Error"}   ignoreCase?
+    {"expectField": {"target": "GameSystems", "component": "Wallet",
+                     "field": "coins", "atLeast": 1000}}
+                     one of equals, notEquals, atLeast, atMost, contains
+    {"expectNoErrors": true}
+
+From Python: run_playthrough(script_or_path, bridge) returns a
+PlaythroughResult with .ok, .steps, .failed, .errors, .real_save_safe,
+.summary() and .to_markdown().
+
+
+7. EXTENDING
 ------------
 
 A new command is one case in RunOne() in ARIAEditorBridge.cs, a method
