@@ -363,6 +363,30 @@ COMMANDS
                      (ReadScreen, unlike SendInput, reads a session on the
                      real save as well: it only looks.)
 
+  SetTime            timeScale?, paused?, step?, allowRealSave?
+                     Reads or changes the game's clock. timeScale 0..100;
+                     paused holds the game; step N plays exactly N frames and
+                     holds again, pausing first if it was running (Ping's
+                     stepsPending reaches 0 when they have played).
+                     Everything changed is put back as play ends: normal
+                     speed, and not left paused for the next session. With
+                     no arguments it only reads (timeScale, paused, frame,
+                     time, unscaledTime). Changes are for test sessions,
+                     like SendInput, unless allowRealSave.
+  RunConsole         line? / lines?, allowRealSave?
+                     Types lines into the game's own debug console and
+                     returns what each printed: data.ran is {line, output}
+                     per line; one that throws stops the rest and is named.
+                     The console is reached through the one method a game
+                     defines for it,
+                         public static string ARIAConsole(string line)
+                     on any class, found by that fixed name -- never by a
+                     name that was sent. (Ore and Odds: DevConsole.) Simulated
+                     keys would be slow, and an IMGUI console's text field
+                     does not hear the Input System at all. For test
+                     sessions unless allowRealSave: a console exists to
+                     change the game.
+
 Asset paths must start with Assets/ and contain no "..": the bridge does
 not write outside the project. A screenshot path is relative to the project
 rather than to Assets/, for the same reason it defaults outside it.

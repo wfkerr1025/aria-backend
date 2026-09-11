@@ -110,6 +110,8 @@ ARGUMENTS: dict[str, tuple[str, ...]] = {
     "SendInput": ("actions", "allowRealSave"),
     "ReadScreen": ("targets", "includeHidden", "limit"),
     "GetLog": ("since", "session", "types", "contains", "limit", "stack"),
+    "SetTime": ("timeScale", "paused", "step", "allowRealSave"),
+    "RunConsole": ("line", "lines", "allowRealSave"),
 }
 
 POSITIONAL: dict[str, tuple[str, ...]] = {
@@ -162,6 +164,9 @@ POSITIONAL: dict[str, tuple[str, ...]] = {
     # GetLog("errors") reads as one instruction; a sequence number rarely
     # comes first.
     "GetLog": ("types", "since"),
+    "SetTime": ("timeScale",),
+    # RunConsole("coins 1000") is the whole of what anyone writes.
+    "RunConsole": ("line",),
 }
 
 

@@ -921,6 +921,62 @@ def test_a_single_screenshot_and_a_burst_are_taken_the_same_way():
     assert "CaptureFrame(" in pump and "FindCaptureCamera(" in pump
 
 
+def test_set_time_sends_only_what_it_changes(bridge):
+    def reply(commands):
+        assert commands[0]["args"] == {"timeScale": 4, "paused": False}
+        return [ok("SetTime", timeScale=4.0, paused=False)]
+
+    with FakeUnity(bridge, reply):
+        assert bridge.set_time(4, paused=False)["timeScale"] == 4.0
+
+
+def test_run_console_sends_its_lines_in_order(bridge):
+    def reply(commands):
+        assert commands[0]["args"] == {"lines": ["coins 1000", "build all"]}
+        return [ok("RunConsole", ran=[{"line": "coins 1000", "output": "coins: 1000"},
+                                     {"line": "build all", "output": "machine_rare built."}])]
+
+    with FakeUnity(bridge, reply):
+        data = bridge.run_console("coins 1000", "build all")
+
+    assert data["ran"][0]["output"] == "coins: 1000"
+    with pytest.raises(ValueError):
+        bridge.run_console()
+
+
+def test_wait_for_steps_waits_for_the_frames_to_play(bridge, monkeypatch):
+    pings = iter([{"stepsPending": 3, "frame": 100}, {"stepsPending": 0, "frame": 103}])
+    monkeypatch.setattr(bridge, "ping", lambda: next(pings))
+    assert bridge.wait_for_steps(timeout=2)["frame"] == 103
+
+
+def test_the_clock_and_the_console_drive_only_a_test_and_put_things_back():
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+
+    set_time = source[source.index("private static CommandResult SetTime("):]
+    set_time = set_time[:set_time.index("private static void PumpSteps()")]
+    assert set_time.index('RefuseUnlessDriving(args, "SetTime")') < set_time.index("Time.timeScale = (float)scale")
+    assert "_wasTimeScale = Time.timeScale" in set_time, "the speed it had is kept, to be handed back"
+
+    restore = _csharp_method(source, "private static void RestoreTime()")
+    assert "Time.timeScale = _wasTimeScale" in restore
+    assert "EditorApplication.isPaused = false" in restore, "the next session must not start paused"
+    assert "RestoreTime()" in _csharp_method(source, "private static void EndDrivenPlay()")
+
+    console = source[source.index("private static CommandResult RunConsole("):]
+    console = console[:console.index("#endregion")]
+    assert console.index('RefuseUnlessDriving(args, "RunConsole")') < console.index("hook.Invoke(")
+
+
+def test_the_console_hook_is_found_by_a_name_the_bridge_chose():
+    """The bridge never calls a method by a name that was sent to it."""
+    source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
+    assert 'private const string ConsoleHookName = "ARIAConsole";' in source
+    hook = _csharp_method(source, "private static MethodInfo ConsoleHook()")
+    assert "type.GetMethod(ConsoleHookName" in hook
+    assert "typeof(string)" in hook and "method.ReturnType == typeof(string)" in hook
+
+
 def test_a_session_report_says_whether_anything_went_wrong():
     source = ueb.BRIDGE_SOURCE.read_text(encoding="utf-8")
     end = _csharp_method(source, "private static void EndSession()")

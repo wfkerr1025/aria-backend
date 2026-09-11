@@ -24,7 +24,9 @@
 // an explicit switch, never by reflection over a name from outside, and
 // every asset path is confined to Assets/. SetField reaches serialized
 // fields and public members of components, which is the inspector's own
-// surface and nothing more.
+// surface and nothing more. RunConsole calls exactly one method a game
+// opts into by defining it -- public static string ARIAConsole(string
+// line) -- found by that fixed name, never by one that was sent.
 //
 // EVERY COMMAND ANSWERS
 // ---------------------
@@ -175,7 +177,7 @@ namespace ARIA.Bridge
             new HashSet<string>(StringComparer.Ordinal)
         {
             "Ping", "Screenshot", "GetField", "GetHierarchy", "SetPlayMode",
-            "SendInput", "ReadScreen", "GetLog",
+            "SendInput", "ReadScreen", "GetLog", "SetTime", "RunConsole",
         };
 
         /// <summary>The commands file last left waiting for play to stop, by write time.</summary>
@@ -587,6 +589,8 @@ namespace ARIA.Bridge
                 case "SendInput": return SendInput(args, scope);
                 case "ReadScreen": return ReadScreen(args, scope);
                 case "GetLog": return GetLog(args, scope);
+                case "SetTime": return SetTime(args, scope);
+                case "RunConsole": return RunConsole(args, scope);
                 default:
                     return Fail("'" + command + "' is not a bridge command.");
             }
@@ -633,6 +637,9 @@ namespace ARIA.Bridge
             data["sessionErrors"] = ErrorsSince(SessionLogStart());
             data["burstPending"] = PendingShots;
             data["lastBurst"] = _lastBurst;
+            data["timeScale"] = Time.timeScale;
+            data["paused"] = EditorApplication.isPaused;
+            data["stepsPending"] = _stepsPending;
 #if ENABLE_INPUT_SYSTEM
             // Whether a test session's input routing and devices are in place
             // -- and, once it has ended, that they are gone again.
@@ -2145,6 +2152,8 @@ namespace ARIA.Bridge
 #if ENABLE_INPUT_SYSTEM
             RestoreInput();
 #endif
+            RestoreTime();
+
             if (!_changedRunInBackground) return;
 
             Application.runInBackground = _wasRunningInBackground;
@@ -3039,6 +3048,7 @@ namespace ARIA.Bridge
         private static void Pump()
         {
             PumpBurst();
+            PumpSteps();
 
 #if ENABLE_INPUT_SYSTEM
             if (_input.Count == 0) return;
@@ -4026,6 +4036,249 @@ namespace ARIA.Bridge
             foreach (InputDevice device in doomed) InputSystem.RemoveDevice(device);
         }
 #endif
+
+        #endregion
+
+        #region Commands: time and the console
+
+        private static bool _changedTimeScale;
+        private static float _wasTimeScale = 1f;
+        private static bool _pausedByBridge;
+        private static int _stepsPending;
+        private static int _stepFrame = -1;
+
+        /// <summary>
+        /// Read or change the game's clock: timeScale, paused, and step.
+        ///
+        /// A game with timers -- a machine that works for a minute, an
+        /// autosave, an offer that expires -- is slow to test at the speed
+        /// it is played. timeScale runs it faster or slower (0 to 100);
+        /// paused holds it; step N plays exactly N frames and holds again,
+        /// pausing first if it was running. Ping's stepsPending reaches 0
+        /// when they have played. Everything changed is put back as play
+        /// ends, so the next session starts at normal speed and unpaused.
+        /// With no arguments it only reads. Changes drive the game, so like
+        /// SendInput they are for test sessions unless allowRealSave.
+        /// </summary>
+        private static CommandResult SetTime(Dictionary<string, object> args, Scope scope)
+        {
+            bool changing = args.ContainsKey("timeScale") || args.ContainsKey("paused") || args.ContainsKey("step");
+
+            if (changing)
+            {
+                CommandResult refused = RefuseUnlessDriving(args, "SetTime");
+                if (refused != null) return refused;
+            }
+
+            if (args.ContainsKey("timeScale"))
+            {
+                double scale = Num(args, 1, "timeScale");
+                if (scale < 0 || scale > 100) return Fail("timeScale is 0 to 100, not " + scale + ".");
+
+                if (!_changedTimeScale)
+                {
+                    _wasTimeScale = Time.timeScale;
+                    _changedTimeScale = true;
+                }
+                Time.timeScale = (float)scale;
+            }
+
+            if (args.ContainsKey("paused"))
+            {
+                bool pause = Bool(args, "paused", false);
+                if (pause && !EditorApplication.isPaused) _pausedByBridge = true;
+                if (!pause)
+                {
+                    _pausedByBridge = false;
+                    _stepsPending = 0;
+                }
+                EditorApplication.isPaused = pause;
+            }
+
+            int step = (int)Num(args, 0, "step");
+            if (step > 10000) return Fail("step is at most 10000 frames at a time.");
+            if (step > 0)
+            {
+                if (!EditorApplication.isPaused)
+                {
+                    EditorApplication.isPaused = true;
+                    _pausedByBridge = true;
+                }
+                _stepsPending += step;
+                _stepFrame = -1;
+            }
+
+            Dictionary<string, object> data = new Dictionary<string, object>();
+            data["timeScale"] = Time.timeScale;
+            data["paused"] = EditorApplication.isPaused;
+            data["stepsPending"] = _stepsPending;
+            data["isPlaying"] = EditorApplication.isPlaying;
+            data["frame"] = EditorApplication.isPlaying ? Time.frameCount : 0;
+            data["time"] = EditorApplication.isPlaying ? Math.Round(Time.time, 3) : 0;
+            data["unscaledTime"] = EditorApplication.isPlaying ? Math.Round(Time.unscaledTime, 3) : 0;
+
+            return Ok("Time scale " + Time.timeScale.ToString("0.###", CultureInfo.InvariantCulture) +
+                      (EditorApplication.isPaused ? ", paused" : "") +
+                      (_stepsPending > 0 ? ", " + _stepsPending + " frame(s) to step" : "") + ".", data);
+        }
+
+        /// <summary>
+        /// Play queued frames one at a time while paused.
+        ///
+        /// EditorApplication.Step advances one frame on the next update, and
+        /// several calls in one update are one frame; so each waits for the
+        /// last to land.
+        /// </summary>
+        private static void PumpSteps()
+        {
+            if (_stepsPending <= 0) return;
+
+            // Unpaused by anyone, or stopped: stepping means nothing any more.
+            if (!EditorApplication.isPlaying || !EditorApplication.isPaused)
+            {
+                _stepsPending = 0;
+                return;
+            }
+
+            if (Time.frameCount == _stepFrame) return;
+
+            _stepFrame = Time.frameCount;
+            _stepsPending--;
+            EditorApplication.Step();
+        }
+
+        /// <summary>Put the clock back as play ends: normal speed, and not left paused for the next session.</summary>
+        private static void RestoreTime()
+        {
+            _stepsPending = 0;
+            _stepFrame = -1;
+
+            if (_changedTimeScale)
+            {
+                Time.timeScale = _wasTimeScale;
+                _changedTimeScale = false;
+            }
+
+            if (_pausedByBridge)
+            {
+                EditorApplication.isPaused = false;
+                _pausedByBridge = false;
+            }
+        }
+
+        /// <summary>The one method name RunConsole will call. Chosen here, never sent.</summary>
+        private const string ConsoleHookName = "ARIAConsole";
+
+        private static MethodInfo _consoleHook;
+        private static bool _consoleSearched;
+
+        /// <summary>
+        /// The game's console hook: a public static string ARIAConsole(string)
+        /// on any type outside Unity's and .NET's own assemblies. Looked for
+        /// once per domain, which is once per compile.
+        /// </summary>
+        private static MethodInfo ConsoleHook()
+        {
+            if (_consoleSearched) return _consoleHook;
+            _consoleSearched = true;
+
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                string name = assembly.GetName().Name ?? "";
+                if (name.StartsWith("Unity", StringComparison.Ordinal) || name.StartsWith("System", StringComparison.Ordinal) ||
+                    name.StartsWith("Mono.", StringComparison.Ordinal) || name == "mscorlib" || name == "netstandard")
+                {
+                    continue;
+                }
+
+                Type[] types;
+                try
+                {
+                    types = assembly.GetTypes();
+                }
+                catch (ReflectionTypeLoadException partial)
+                {
+                    types = partial.Types;
+                }
+
+                foreach (Type type in types)
+                {
+                    if (type == null) continue;
+
+                    MethodInfo method = type.GetMethod(ConsoleHookName, BindingFlags.Public | BindingFlags.Static,
+                                                       null, new[] { typeof(string) }, null);
+                    if (method != null && method.ReturnType == typeof(string))
+                    {
+                        _consoleHook = method;
+                        return method;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Type lines into the game's own debug console, and read what it printed.
+        ///
+        /// A game's console is the quickest way to the state worth testing --
+        /// money, a built machine, a level -- and typing into it through
+        /// simulated keys is slow and, for an IMGUI text field, impossible:
+        /// those fields do not hear the Input System. So the bridge calls the
+        /// console directly, through the one method a game defines for it.
+        /// Lines run in order; one that throws stops the rest and is named.
+        /// For test sessions unless allowRealSave, because a console exists
+        /// to change the game.
+        /// </summary>
+        private static CommandResult RunConsole(Dictionary<string, object> args, Scope scope)
+        {
+            CommandResult refused = RefuseUnlessDriving(args, "RunConsole");
+            if (refused != null) return refused;
+
+            List<string> lines = new List<string>();
+            string single = Str(args, "line", "command");
+            if (!string.IsNullOrEmpty(single)) lines.Add(single);
+
+            object raw;
+            IList many = args.TryGetValue("lines", out raw) ? raw as IList : null;
+            if (many != null) foreach (object one in many) lines.Add(Text(one));
+
+            lines.RemoveAll(line => string.IsNullOrWhiteSpace(line));
+            if (lines.Count == 0) return Fail("RunConsole needs a line, or lines.");
+
+            MethodInfo hook = ConsoleHook();
+            if (hook == null)
+            {
+                return Fail("This game has no console hook. Add public static string " + ConsoleHookName +
+                            "(string line) to any class: run the line as if it were typed, and return what it printed.");
+            }
+
+            List<object> ran = new List<object>();
+            foreach (string line in lines)
+            {
+                string output;
+                try
+                {
+                    output = hook.Invoke(null, new object[] { line }) as string;
+                }
+                catch (TargetInvocationException failure)
+                {
+                    Exception inner = failure.InnerException ?? failure;
+                    return Fail("'" + line + "' threw " + inner.GetType().Name + ": " + inner.Message +
+                                (ran.Count > 0 ? " -- after " + ran.Count + " line(s) had run." : "."));
+                }
+
+                Dictionary<string, object> entry = new Dictionary<string, object>();
+                entry["line"] = line;
+                entry["output"] = output ?? "";
+                ran.Add(entry);
+            }
+
+            Dictionary<string, object> data = new Dictionary<string, object>();
+            data["ran"] = ran;
+            data["hook"] = hook.DeclaringType.FullName + "." + hook.Name;
+            return Ok("Ran " + ran.Count + " console line(s) through " + data["hook"] + ".", data);
+        }
 
         #endregion
 

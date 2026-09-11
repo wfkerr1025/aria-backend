@@ -98,6 +98,9 @@ __all__ = [
     "read_screen",
     "get_log",
     "screenshot_burst",
+    "set_time",
+    "step_frames",
+    "run_console",
     "install_bridge",
 ]
 
@@ -159,6 +162,8 @@ COMMANDS = frozenset({
     "SendInput",
     "ReadScreen",
     "GetLog",
+    "SetTime",
+    "RunConsole",
 })
 
 # What the editor will run while the game is PLAYING. Anything else is left
@@ -175,6 +180,8 @@ PLAY_SAFE_COMMANDS = frozenset({
     "SendInput",
     "ReadScreen",
     "GetLog",
+    "SetTime",
+    "RunConsole",
 })
 
 
@@ -812,6 +819,36 @@ class _CommandBuilder:
             types=list(types) if types is not None else None,
             contains=contains, limit=limit, stack=stack))
 
+    def set_time(self, time_scale: float | None = None, *, paused: bool | None = None,
+                 step: int | None = None, allow_real_save: bool = False) -> Any:
+        """Read or change the game's clock.
+
+        time_scale runs it faster or slower (0 to 100); paused holds it;
+        step plays exactly that many frames and holds again, pausing first
+        if the game was running (Ping's stepsPending reaches 0 when done).
+        Everything changed is put back as play ends. With no arguments it
+        only reads: data has timeScale, paused, frame, time, unscaledTime.
+        Changes are for test sessions unless allow_real_save=True.
+        """
+        return self._submit(make_command(
+            "SetTime", timeScale=time_scale, paused=paused, step=step,
+            allowRealSave=True if allow_real_save else None))
+
+    def run_console(self, *lines: str, allow_real_save: bool = False) -> Any:
+        """Type lines into the game's own debug console and return what it printed.
+
+        Through the one method a game defines for it -- public static string
+        ARIAConsole(string line) -- rather than simulated keys, which an
+        IMGUI console's text field does not hear. data["ran"] is one
+        {line, output} per line; a line that throws stops the rest and the
+        command fails naming it. For test sessions unless allow_real_save=True.
+        """
+        if not lines:
+            raise ValueError("run_console needs at least one line")
+        return self._submit(make_command(
+            "RunConsole", lines=[str(line) for line in lines],
+            allowRealSave=True if allow_real_save else None))
+
 
 class Batch(_CommandBuilder):
     """Commands collected to be sent together, in one file and one editor pass.
@@ -1055,6 +1092,19 @@ class UnityEditorBridge(_CommandBuilder):
                     f"{data.get('frame')}. Is the game advancing?")
             time.sleep(self.poll_interval)
 
+    def wait_for_steps(self, timeout: float | None = None) -> dict:
+        """Wait until every frame set_time(step=...) queued has played; returns the last ping."""
+        limit = self.timeout if timeout is None else float(timeout)
+        deadline = time.monotonic() + limit
+        while True:
+            data = self.ping() or {}
+            if not data.get("stepsPending"):
+                return data
+            if time.monotonic() >= deadline:
+                raise UnityBridgeTimeout(
+                    f"{data.get('stepsPending')} frame(s) were still to step after {limit:g}s.")
+            time.sleep(self.poll_interval)
+
     def wait_for_input(self, timeout: float | None = None) -> dict:
         """Wait until everything send_input queued has played; returns the last ping.
 
@@ -1290,6 +1340,21 @@ def read_screen(targets: Iterable[str] | str | None = None, **extra: Any) -> dic
 
 def get_log(since: int | None = None, **extra: Any) -> dict | None:
     return get_bridge().get_log(since, **extra)
+
+
+def set_time(time_scale: float | None = None, **extra: Any) -> dict | None:
+    return get_bridge().set_time(time_scale, **extra)
+
+
+def step_frames(frames: int, **extra: Any) -> dict | None:
+    """Pause, play exactly `frames` frames, and return once they have played."""
+    bridge = get_bridge()
+    data = bridge.set_time(step=frames, **extra)
+    return bridge.wait_for_steps() if bridge.wait else data
+
+
+def run_console(*lines: str, **extra: Any) -> dict | None:
+    return get_bridge().run_console(*lines, **extra)
 
 
 def screenshot_burst(count: int = 8, path: str | None = None, **extra: Any) -> dict | None:
