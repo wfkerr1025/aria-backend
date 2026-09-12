@@ -20,6 +20,9 @@ A script:
     {
       "name": "smoke",
       "seed": "fresh",           what the test save holds as play begins: fresh, keep or real
+      "scene": "Assets/Scenes/MainMenu.unity",   opened before play; the editor's own
+                                 scene is put back afterwards. A game of more than one
+                                 scene needs this to say which one it is a test of.
       "allowErrors": false,      any console error fails the run unless this is true
       "steps": [
         {"console": "coins 1000", "expect": "coins: "},
@@ -142,6 +145,13 @@ def validate(script: Any) -> list[str]:
     seed = script.get("seed", "fresh")
     if seed not in ("fresh", "keep", "real"):
         problems.append(f"seed is fresh, keep or real, not {seed!r}")
+
+    if "scene" in script:
+        scene = script["scene"]
+        if not isinstance(scene, str) or not scene.strip():
+            problems.append("scene is the path of a scene to open before play")
+        elif not scene.endswith(".unity"):
+            problems.append(f"scene is a path ending in .unity, not {scene!r}")
 
     for index, step in enumerate(steps, start=1):
         where = f"step {index}"
@@ -422,9 +432,12 @@ class PlaythroughRunner:
         if problems:
             return finish(False, [], [], None, "The script was not run: " + "; ".join(problems))
 
+        scene = str(script.get("scene") or "")
+        was_open = str((self.bridge.ping() or {}).get("activeScene") or "") if scene else ""
+
         try:
             previous = self.bridge.last_play()
-            self._start(script.get("seed", "fresh"))
+            self._start(script.get("seed", "fresh"), scene)
         except (ueb.UnityBridgeError, StepFailed) as error:
             return finish(False, [], [], None, f"The game could not be started: {error}")
 
@@ -448,6 +461,14 @@ class PlaythroughRunner:
         if not self.keep_playing:
             safe = self._stop_and_check(previous)
 
+            # The editor is someone's workspace, not the run's. A run that
+            # borrowed a scene hands back the one that was open before it.
+            if was_open and was_open != scene:
+                try:
+                    self.bridge.open_scene(was_open)
+                except ueb.UnityBridgeError:
+                    pass
+
         ok = all(step.ok for step in steps) and len(steps) == len(script["steps"])
         if errors and not script.get("allowErrors", False):
             ok = False
@@ -455,8 +476,8 @@ class PlaythroughRunner:
             ok = False
         return finish(ok, steps, errors, safe)
 
-    def _start(self, seed: str) -> None:
-        """Start a session on the test save, and touch no other.
+    def _start(self, seed: str, scene: str = "") -> None:
+        """Start a session on the test save, in the scene asked for, and touch no other.
 
         A game already running is stopped first only when it is a test
         session -- one an earlier run left behind. Anything else is someone
@@ -480,6 +501,12 @@ class PlaythroughRunner:
         # request as well; this is so a run does not have to be retried to
         # discover that.
         self.sleep(1.0)
+
+        # Before play begins, because a scene cannot be opened during it, and
+        # a game of several scenes is a different game in each. The stop above
+        # has already made sure nothing is running.
+        if scene:
+            self.bridge.open_scene(scene)
 
         answer = self.bridge.set_play_mode(True, seed=seed) or {}
         if answer.get("changed") is False:

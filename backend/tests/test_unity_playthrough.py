@@ -31,6 +31,8 @@ class FakeBridge:
         self.test_save = ""
         self.starts_on_real_save = False
         self.pressed_play_by_hand = False
+        self.active_scene = "Assets/Scenes/Workshop.unity"
+        self.opened: list[str] = []
 
     def _record(self, name, *args, **kwargs):
         self.sent.append((name, args, kwargs))
@@ -41,7 +43,16 @@ class FakeBridge:
         if self.playing:
             self.frame += 10
         return {"isPlaying": self.playing, "frame": self.frame if self.playing else 0,
-                "testSave": self.test_save if self.playing else ""}
+                "testSave": self.test_save if self.playing else "",
+                "activeScene": self.active_scene}
+
+    def open_scene(self, path, **kwargs):
+        self._record("open_scene", path)
+        if self.playing:
+            raise ueb.UnityBridgeError("OpenScene is not allowed while playing")
+        self.opened.append(path)
+        self.active_scene = path
+        return {"path": path, "name": path.rsplit("/", 1)[-1]}
 
     def set_play_mode(self, playing=True, **kwargs):
         self._record("set_play_mode", playing, **kwargs)
@@ -168,9 +179,42 @@ def test_the_seed_must_be_one_the_bridge_knows():
     assert up.validate({"seed": "clean", "steps": [{"wait": 1}]})
 
 
+def test_a_scene_is_a_path_to_a_scene():
+    """A scene name that is not a path opens nothing and would fail mid-run."""
+    assert up.validate({"scene": "MainMenu", "steps": [{"wait": 1}]})
+    assert up.validate({"scene": "", "steps": [{"wait": 1}]})
+    assert not up.validate({"scene": "Assets/Scenes/MainMenu.unity", "steps": [{"wait": 1}]})
+
+
 # ======================================================
 # Running
 # ======================================================
+
+def test_a_scene_is_opened_before_play_and_the_editors_own_put_back(tmp_path):
+    """A game of several scenes is a different game in each, so a script says
+    which one it tests. The editor is someone's workspace, so the run borrows
+    the scene and hands back the one that was open."""
+    bridge = FakeBridge(tmp_path)
+    bridge.active_scene = "Assets/Scenes/Workshop.unity"
+
+    result = runner(bridge).run({"name": "menu", "scene": "Assets/Scenes/MainMenu.unity",
+                                 "steps": [{"wait": 1}]})
+
+    assert result.ok, result.summary()
+    assert bridge.opened == ["Assets/Scenes/MainMenu.unity", "Assets/Scenes/Workshop.unity"]
+
+    # FakeBridge refuses OpenScene while playing, as the real one does; this
+    # says the run never even tried it at the wrong moment.
+    names = [sent[0] for sent in bridge.sent]
+    assert names.index("open_scene") < names.index("set_play_mode")
+
+
+def test_a_run_with_no_scene_leaves_the_editor_where_it_was(tmp_path):
+    bridge = FakeBridge(tmp_path)
+    result = runner(bridge).run({"name": "smoke", "steps": [{"wait": 1}]})
+
+    assert result.ok, result.summary()
+    assert bridge.opened == []
 
 def test_a_passing_run_starts_fresh_plays_every_step_and_stops(tmp_path):
     bridge = FakeBridge(tmp_path)
