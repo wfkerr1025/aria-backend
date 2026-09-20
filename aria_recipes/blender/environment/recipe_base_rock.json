@@ -1,65 +1,98 @@
 {
   "name": "base_rock",
-  "version": "1.0",
-  "description": "Primitive blockout rock used as the foundation for all rock and ore variants.",
+  "version": "2.0",
+  "description": "A rock. Four spheres, welded into one mesh and voxel-remeshed into a single surface -- which is the step that makes it a rock rather than four spheres inside each other, because the remesh throws away the seams where they met. Then a light cast toward a box for some flat faces, and a displace for the lumps. Cast before displace: the other way round, the cast smooths the lumps straight back off.",
   "units": "meters",
-
   "objects": [
     {
-      "id": "rock_core",
+      "id": "core",
       "type": "sphere",
       "radius": 0.8,
-      "location": [0, 0, 0.8],
-      "subdivision": 1
+      "location": [
+        0,
+        0,
+        0.74
+      ],
+      "subdivision": 2
     },
     {
-      "id": "rock_lump_1",
+      "id": "lump_1",
       "type": "sphere",
-      "radius": 0.6,
-      "location": [0.5, -0.2, 0.7],
-      "subdivision": 1
+      "radius": 0.58,
+      "location": [
+        0.52,
+        -0.18,
+        0.62
+      ],
+      "subdivision": 2
     },
     {
-      "id": "rock_lump_2",
+      "id": "lump_2",
       "type": "sphere",
       "radius": 0.5,
-      "location": [-0.4, 0.3, 0.6],
-      "subdivision": 1
+      "location": [
+        -0.44,
+        0.3,
+        0.58
+      ],
+      "subdivision": 2
     },
     {
-      "id": "rock_lump_3",
+      "id": "lump_3",
       "type": "sphere",
-      "radius": 0.4,
-      "location": [0.2, 0.4, 0.9],
-      "subdivision": 1
+      "radius": 0.38,
+      "location": [
+        0.16,
+        0.42,
+        0.98
+      ],
+      "subdivision": 2
     }
   ],
-
+  "join": [
+    {
+      "into": "core",
+      "parts": [
+        "lump_1",
+        "lump_2",
+        "lump_3"
+      ],
+      "merge": 0.001,
+      "remesh": {
+        "size": 0.07,
+        "adaptivity": 0.15
+      },
+      "smooth": true
+    }
+  ],
   "modifiers": [
     {
-      "target": "rock_core",
-      "type": "smooth_shade"
+      "target": "core",
+      "type": "cast",
+      "shape": "CUBOID",
+      "factor": 0.16,
+      "apply": true
     },
     {
-      "target": "rock_lump_1",
-      "type": "smooth_shade"
+      "target": "core",
+      "type": "stamp",
+      "texture": "CLOUDS",
+      "scale": 0.55,
+      "depth": 3,
+      "strength": 0.11,
+      "coords": "LOCAL",
+      "apply": true
     },
     {
-      "target": "rock_lump_2",
-      "type": "smooth_shade"
-    },
-    {
-      "target": "rock_lump_3",
+      "target": "core",
       "type": "smooth_shade"
     }
   ],
-
   "cleanup": {
     "apply_transforms": true,
-    "merge_by_distance": true,
+    "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_rock.fbx",

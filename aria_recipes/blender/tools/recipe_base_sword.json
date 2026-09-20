@@ -1,50 +1,96 @@
 {
   "name": "base_sword",
-  "version": "1.0",
-  "description": "Primitive blockout sword used as the foundation for all weapon variants.",
+  "version": "2.0",
+  "description": "A sword. The blade was a 60cm-wide slab; it is a blade now, tapered along its length so it narrows to a point and bevelled so it has edges rather than corners.",
   "units": "meters",
-
   "objects": [
     {
       "id": "blade",
       "type": "cube",
-      "size": [0.15, 0.6, 2.0],
-      "location": [0, 0, 1.5]
+      "size": [
+        0.055,
+        0.22,
+        1.15
+      ],
+      "location": [
+        0,
+        0,
+        1.02
+      ]
     },
     {
       "id": "guard",
       "type": "cube",
-      "size": [0.4, 0.15, 0.15],
-      "location": [0, 0, 0.9]
+      "size": [
+        0.1,
+        0.52,
+        0.08
+      ],
+      "location": [
+        0,
+        0,
+        0.42
+      ]
     },
     {
-      "id": "handle",
+      "id": "grip",
       "type": "cylinder",
-      "radius": 0.08,
-      "depth": 0.6,
-      "location": [0, 0, 0.6],
-      "rotation": [0, 0, 0]
+      "radius": 0.043,
+      "depth": 0.34,
+      "location": [
+        0,
+        0,
+        0.23
+      ]
     },
     {
       "id": "pommel",
       "type": "sphere",
-      "radius": 0.12,
-      "location": [0, 0, 0.3],
+      "radius": 0.072,
+      "location": [
+        0,
+        0,
+        0.045
+      ],
       "subdivision": 2
     }
   ],
-
   "modifiers": [
-    { "target": "handle", "type": "smooth_shade" },
-    { "target": "pommel", "type": "smooth_shade" }
+    {
+      "target": "blade",
+      "type": "deform",
+      "method": "TAPER",
+      "axis": "Z",
+      "factor": 0.62,
+      "apply": true
+    },
+    {
+      "target": "blade",
+      "type": "bevel",
+      "width": 0.014,
+      "segments": 2
+    },
+    {
+      "target": "guard",
+      "type": "bevel",
+      "width": 0.016,
+      "segments": 2
+    },
+    {
+      "target": "grip",
+      "type": "smooth_shade",
+      "angle": 40
+    },
+    {
+      "target": "pommel",
+      "type": "smooth_shade"
+    }
   ],
-
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_sword.fbx",

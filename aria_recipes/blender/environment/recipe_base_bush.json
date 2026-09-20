@@ -1,53 +1,103 @@
 {
   "name": "base_bush",
-  "version": "1.0",
-  "description": "Primitive blockout bush used as the foundation for all foliage and shrub variants.",
+  "version": "2.0",
+  "description": "A bush, built the same way as the rock and tuned the other way: the same weld and remesh, then a displace at a much tighter scale, so the surface breaks into leaf-sized clumps instead of boulder-sized faces.",
   "units": "meters",
-
   "objects": [
     {
       "id": "core",
       "type": "sphere",
-      "radius": 0.8,
-      "location": [0, 0, 0.8],
-      "subdivision": 1
+      "radius": 0.72,
+      "location": [
+        0,
+        0,
+        0.66
+      ],
+      "subdivision": 2
     },
     {
       "id": "lump_1",
       "type": "sphere",
-      "radius": 0.6,
-      "location": [0.6, -0.2, 0.7],
-      "subdivision": 1
+      "radius": 0.54,
+      "location": [
+        0.56,
+        -0.18,
+        0.56
+      ],
+      "subdivision": 2
     },
     {
       "id": "lump_2",
       "type": "sphere",
-      "radius": 0.5,
-      "location": [-0.5, 0.3, 0.7],
-      "subdivision": 1
+      "radius": 0.48,
+      "location": [
+        -0.48,
+        0.28,
+        0.6
+      ],
+      "subdivision": 2
     },
     {
       "id": "lump_3",
       "type": "sphere",
       "radius": 0.4,
-      "location": [0.2, 0.5, 0.9],
-      "subdivision": 1
+      "location": [
+        0.18,
+        0.46,
+        0.86
+      ],
+      "subdivision": 2
+    },
+    {
+      "id": "lump_4",
+      "type": "sphere",
+      "radius": 0.34,
+      "location": [
+        -0.3,
+        -0.38,
+        0.84
+      ],
+      "subdivision": 2
     }
   ],
-
-  "modifiers": [
-    { "target": "core", "type": "smooth_shade" },
-    { "target": "lump_1", "type": "smooth_shade" },
-    { "target": "lump_2", "type": "smooth_shade" },
-    { "target": "lump_3", "type": "smooth_shade" }
+  "join": [
+    {
+      "into": "core",
+      "parts": [
+        "lump_1",
+        "lump_2",
+        "lump_3",
+        "lump_4"
+      ],
+      "merge": 0.001,
+      "remesh": {
+        "size": 0.055,
+        "adaptivity": 0.1
+      },
+      "smooth": true
+    }
   ],
-
+  "modifiers": [
+    {
+      "target": "core",
+      "type": "stamp",
+      "texture": "CLOUDS",
+      "scale": 0.2,
+      "depth": 4,
+      "strength": 0.1,
+      "coords": "LOCAL",
+      "apply": true
+    },
+    {
+      "target": "core",
+      "type": "smooth_shade"
+    }
+  ],
   "cleanup": {
     "apply_transforms": true,
-    "merge_by_distance": true,
+    "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_bush.fbx",

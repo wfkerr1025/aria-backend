@@ -1,90 +1,264 @@
 {
   "name": "base_humanoid",
-  "version": "1.0",
-  "description": "Primitive blockout humanoid used as the foundation for all character variants.",
+  "version": "2.0",
+  "description": "A primitive humanoid blockout, and still primitives on purpose: base_stylized_body is the one that brings in a real figure, and this one is the start for proportions no human has. Its arms used to float 12cm off its shoulders, because the recipe rotated them 90 degrees about Z to lay them out -- and rotating a Z-aligned cylinder about Z does nothing at all. They are attached now, and it has a skeleton, one bone per part.",
   "units": "meters",
-
   "objects": [
     {
       "id": "head",
       "type": "sphere",
-      "radius": 0.12,
-      "location": [0, 0, 1.72],
+      "radius": 0.125,
+      "location": [
+        0,
+        0,
+        1.7
+      ],
       "subdivision": 2
     },
     {
       "id": "torso",
       "type": "cube",
-      "size": [0.32, 0.20, 0.45],
-      "location": [0, 0, 1.35]
+      "size": [
+        0.34,
+        0.22,
+        0.46
+      ],
+      "location": [
+        0,
+        0,
+        1.36
+      ]
     },
     {
       "id": "pelvis",
       "type": "cube",
-      "size": [0.28, 0.18, 0.20],
-      "location": [0, 0, 1.05]
+      "size": [
+        0.3,
+        0.2,
+        0.2
+      ],
+      "location": [
+        0,
+        0,
+        1.04
+      ]
     },
     {
       "id": "arm_left",
       "type": "cylinder",
-      "radius": 0.06,
-      "depth": 0.45,
-      "location": [-0.28, 0, 1.45],
-      "rotation": [0, 0, 90]
+      "radius": 0.062,
+      "depth": 0.62,
+      "location": [
+        -0.215,
+        0,
+        1.13
+      ]
     },
     {
       "id": "arm_right",
       "type": "cylinder",
-      "radius": 0.06,
-      "depth": 0.45,
-      "location": [0.28, 0, 1.45],
-      "rotation": [0, 0, -90]
+      "radius": 0.062,
+      "depth": 0.62,
+      "location": [
+        0.215,
+        0,
+        1.13
+      ]
     },
     {
       "id": "leg_left",
       "type": "cylinder",
-      "radius": 0.07,
-      "depth": 0.55,
-      "location": [-0.10, 0, 0.70]
+      "radius": 0.075,
+      "depth": 0.9,
+      "location": [
+        -0.1,
+        0,
+        0.47
+      ]
     },
     {
       "id": "leg_right",
       "type": "cylinder",
-      "radius": 0.07,
-      "depth": 0.55,
-      "location": [0.10, 0, 0.70]
+      "radius": 0.075,
+      "depth": 0.9,
+      "location": [
+        0.1,
+        0,
+        0.47
+      ]
     }
   ],
-
   "modifiers": [
     {
       "target": "head",
       "type": "smooth_shade"
     },
     {
+      "target": "torso",
+      "type": "bevel",
+      "width": 0.03,
+      "segments": 2
+    },
+    {
+      "target": "pelvis",
+      "type": "bevel",
+      "width": 0.03,
+      "segments": 2
+    },
+    {
       "target": "arm_left",
-      "type": "smooth_shade"
+      "type": "smooth_shade",
+      "angle": 40
     },
     {
       "target": "arm_right",
-      "type": "smooth_shade"
+      "type": "smooth_shade",
+      "angle": 40
     },
     {
       "target": "leg_left",
-      "type": "smooth_shade"
+      "type": "smooth_shade",
+      "angle": 40
     },
     {
       "target": "leg_right",
-      "type": "smooth_shade"
+      "type": "smooth_shade",
+      "angle": 40
     }
   ],
-
+  "armature": {
+    "name": "Humanoid_Rig",
+    "bones": [
+      {
+        "name": "Hips",
+        "head": [
+          0,
+          0,
+          0.94
+        ],
+        "tail": [
+          0,
+          0,
+          1.14
+        ]
+      },
+      {
+        "name": "Spine",
+        "head": [
+          0,
+          0,
+          1.14
+        ],
+        "tail": [
+          0,
+          0,
+          1.4
+        ],
+        "parent": "Hips",
+        "connect": true
+      },
+      {
+        "name": "Neck",
+        "head": [
+          0,
+          0,
+          1.4
+        ],
+        "tail": [
+          0,
+          0,
+          1.57
+        ],
+        "parent": "Spine",
+        "connect": true
+      },
+      {
+        "name": "Head",
+        "head": [
+          0,
+          0,
+          1.57
+        ],
+        "tail": [
+          0,
+          0,
+          1.83
+        ],
+        "parent": "Neck",
+        "connect": true
+      },
+      {
+        "name": "Arm_R",
+        "head": [
+          0.215,
+          0,
+          1.44
+        ],
+        "tail": [
+          0.215,
+          0,
+          0.82
+        ],
+        "parent": "Spine"
+      },
+      {
+        "name": "Arm_L",
+        "head": [
+          -0.215,
+          0,
+          1.44
+        ],
+        "tail": [
+          -0.215,
+          0,
+          0.82
+        ],
+        "parent": "Spine"
+      },
+      {
+        "name": "Leg_R",
+        "head": [
+          0.1,
+          0,
+          0.92
+        ],
+        "tail": [
+          0.1,
+          0,
+          0.02
+        ],
+        "parent": "Hips"
+      },
+      {
+        "name": "Leg_L",
+        "head": [
+          -0.1,
+          0,
+          0.92
+        ],
+        "tail": [
+          -0.1,
+          0,
+          0.02
+        ],
+        "parent": "Hips"
+      }
+    ],
+    "bind": {
+      "head": "Head",
+      "torso": "Spine",
+      "pelvis": "Hips",
+      "arm_left": "Arm_L",
+      "arm_right": "Arm_R",
+      "leg_left": "Leg_L",
+      "leg_right": "Leg_R"
+    }
+  },
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_humanoid.fbx",

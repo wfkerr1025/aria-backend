@@ -40,12 +40,19 @@ So a recipe may carry:
                 because export_fbx writes every mesh in the file
     objects     primitives, as before -- still the right way to make a
                 hat, which is not the shape of a head
+    join        several primitives welded into one mesh and remeshed
+                into a single surface. What makes a rock a rock rather
+                than four spheres inside each other
     garments    boxes to cut out of the base. `regions` for a garment
                 that covers two places a single box cannot reach
                 between, `relax` to take the anatomy out, `cast` to
                 push the result toward a sphere or a cylinder
     fit         shrinkwrap a blank onto something (the older way)
-    modifiers   smooth_shade, subdivision, bevel, mirror, solidify
+    modifiers   shaping -- see MODIFIERS. A taper makes a roof out of
+                a box, a boolean cuts a doorway instead of gluing a
+                slab over one, a stamp puts lumps on a rock
+    discard     scaffolding to delete before the export, such as the
+                cube a boolean used as a cutter
     armature    bones, bind, auto_bind, ik
     animations  keyed poses and the shape of the curves between them
     cleanup     apply_transforms, merge_by_distance, origin_to_geometry
@@ -93,6 +100,7 @@ __all__ = [
     "base_models",
     "fit_actions",
     "garment_actions",
+    "join_actions",
     "animation_names",
     "build_many",
     "catalogue",
@@ -127,13 +135,35 @@ PRIMITIVES = {
 }
 
 # Modifier names a recipe may use, and the action each becomes.
+#
+# The first five were the whole vocabulary, and smooth_shade was the
+# only one any recipe actually used -- which is why every prop in the
+# library was a pile of untouched primitives. A rock was four spheres
+# and read as four spheres. The rest are shaping: a taper turns a box
+# into a roof, a cast rounds a car, a displace puts lumps on a rock,
+# and a boolean cuts a doorway instead of gluing a slab over one.
 MODIFIERS = {
     "smooth_shade": "smooth_shade",
     "subdivision": "apply_subdivision",
     "bevel": "apply_bevel",
     "mirror": "apply_mirror",
     "solidify": "apply_solidify",
+    "cast": "apply_cast",
+    "deform": "apply_simple_deform",
+    "relax": "relax_surface",
+    "decimate": "apply_decimate",
+    "array": "apply_array",
+    "boolean": "apply_boolean",
+    "stamp": "stamp_detail",
+    "voxel_remesh": "voxel_remesh",
+    "quad_remesh": "quad_remesh",
 }
+
+# Modifier settings that name another OBJECT rather than a number, and
+# what the action calls them. A recipe writes its own ids, which carry
+# the recipe's prefix once they are in the scene -- so "with": "door"
+# has to reach Blender as "House_Door" or the boolean cuts nothing.
+MODIFIER_OBJECTS = {"with": "target"}
 
 # Cleanup steps, in the order they have to run. Transforms are baked
 # before the origins move: shifting an origin on an object whose scale
@@ -301,6 +331,62 @@ def _point(value: Any, marks: Dict[str, Any], where: str = "") -> Any:
     if not isinstance(value, (list, tuple)):
         return value
     return [resolve(item, marks, where) for item in value]
+
+
+def join_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Several primitives into one solid thing.
+
+    WHY A PROP NEEDS THIS. The library's rock was four spheres sitting
+    inside each other, and it rendered as four spheres sitting inside
+    each other -- because that is what it was. Overlapping primitives
+    read as overlapping primitives however they are shaded: every
+    sphere keeps its own silhouette, and the seams where they meet are
+    creases running through the middle of the shape.
+
+    Joining welds them into one mesh; a voxel remesh then rebuilds
+    that mesh as a single surface wrapped round the whole union, which
+    is the step that throws the seams away. What comes out has no
+    spheres in it. A displace on top of THAT is a rock; a displace on
+    four separate spheres is four bumpy spheres.
+
+    The joined object keeps the name of `into`, so later modifiers and
+    a rig can still find it. The absorbed parts are gone -- they are
+    listed by `part_names` because the build really did create them,
+    which is worth knowing when a rig cannot find one afterwards.
+    """
+    recipe = load(name)
+    head = prefix or prefix_for(name)
+    steps: List[Dict[str, Any]] = []
+
+    for weld in recipe.get("join", []):
+        into = _name(head, weld.get("into"))
+        parts = [_name(head, part) for part in weld.get("parts", [])]
+        if not parts:
+            raise UnsupportedRecipe(
+                f"{name}: join into {weld.get('into')!r} lists no parts")
+
+        steps.append({"action": "join_objects",
+                      "params": {"objects": [into] + parts}})
+
+        # Welded, not merely in the same object: joining leaves two
+        # vertices at every place the surfaces touched, and a remesh
+        # of a mesh full of doubles keeps the crease it was meant to
+        # remove.
+        if weld.get("merge", 0.0):
+            steps.append({"action": "merge_by_distance",
+                          "params": {"distance": weld["merge"]}})
+
+        remesh = weld.get("remesh")
+        if remesh:
+            steps.append({"action": "voxel_remesh",
+                          "params": {"object": into,
+                                     "size": remesh.get("size", 0.05),
+                                     "adaptivity": remesh.get("adaptivity", 0.0)}})
+
+        if weld.get("smooth", True):
+            steps.append({"action": "smooth_shade", "params": {"object": into}})
+
+    return steps
 
 
 def _boxes(item: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -508,6 +594,13 @@ def actions(name: str, *, prefix: Optional[str] = None,
     for item in recipe.get("objects", []):
         steps.extend(_one_object(item, head, marks))
 
+    # Joining happens BEFORE the modifiers, so a modifier can act on
+    # the thing that came out of it. Stamping lumps onto a rock is the
+    # case: four separate spheres each get their own noise and stay
+    # four spheres, while one joined and remeshed rock takes the noise
+    # across its whole surface and becomes a rock.
+    steps.extend(join_actions(name, prefix=head))
+
     for modifier in recipe.get("modifiers", []):
         kind = str(modifier.get("type", "")).lower()
         action = MODIFIERS.get(kind)
@@ -517,8 +610,11 @@ def actions(name: str, *, prefix: Optional[str] = None,
                 f"{', '.join(sorted(MODIFIERS))}")
 
         params = {key: value for key, value in modifier.items()
-                  if key not in ("type", "target")}
+                  if key not in ("type", "target") and key not in MODIFIER_OBJECTS}
         params["object"] = _name(head, modifier.get("target"))
+        for written, called in MODIFIER_OBJECTS.items():
+            if modifier.get(written) is not None:
+                params[called] = _name(head, modifier[written])
         steps.append({"action": action, "params": params})
 
     # Garments are cut from the base, so the base has to exist and the
@@ -530,15 +626,22 @@ def actions(name: str, *, prefix: Optional[str] = None,
     # that has since shifted under it.
     steps.extend(fit_actions(name, prefix=head))
 
-    # And now the base can go, if it was only ever scaffolding. A
-    # recipe for a garment ALONE still has to stand a body up to cut
-    # the garment out of, and export_fbx writes every mesh in the file
-    # -- so without this, base_pants exports a naked man wearing them.
+    # And now the scaffolding can go. Two kinds of it, and the reason
+    # is the same for both: export_fbx writes every mesh in the file,
+    # not a selection. A garment recipe has to stand a body up to cut
+    # the garment out of -- without the drop, base_pants exports a
+    # naked man wearing them. A boolean has to keep its cutter around
+    # until the hole is made -- without the drop, base_house exports a
+    # solid slab of door floating in its own doorway.
     base = recipe.get("base") or {}
     if base and not base.get("keep", True):
         steps.append({"action": "delete_object",
                       "params": {"object": base.get("as")
                                  or f"{head}_Base"}})
+
+    for spent in recipe.get("discard", []):
+        steps.append({"action": "delete_object",
+                      "params": {"object": _name(head, spent)}})
 
     if cleanup:
         asked = recipe.get("cleanup") or {}

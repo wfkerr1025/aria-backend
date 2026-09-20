@@ -1,48 +1,105 @@
 {
   "name": "base_pickaxe",
-  "version": "1.0",
-  "description": "Primitive blockout pickaxe used as the foundation for all tool variants.",
+  "version": "2.0",
+  "description": "A pickaxe. The head was three boxes, which from any angle is a plus sign; the two picks are cones now, so they come to points the way a pick does. The haft tapers toward the head.",
   "units": "meters",
-
   "objects": [
     {
-      "id": "handle",
+      "id": "haft",
       "type": "cylinder",
-      "radius": 0.05,
-      "depth": 1.2,
-      "location": [0, 0, 0.6],
-      "rotation": [0, 0, 0]
+      "radius": 0.048,
+      "depth": 1.25,
+      "location": [
+        0,
+        0,
+        0.62
+      ]
     },
     {
-      "id": "head_center",
+      "id": "head",
       "type": "cube",
-      "size": [0.25, 0.25, 0.25],
-      "location": [0, 0, 1.2]
-    },
-    {
-      "id": "pick_left",
-      "type": "cube",
-      "size": [0.8, 0.15, 0.15],
-      "location": [-0.5, 0, 1.2]
+      "size": [
+        0.2,
+        0.16,
+        0.17
+      ],
+      "location": [
+        0,
+        0,
+        1.26
+      ]
     },
     {
       "id": "pick_right",
-      "type": "cube",
-      "size": [0.8, 0.15, 0.15],
-      "location": [0.5, 0, 1.2]
+      "type": "cone",
+      "radius": 0.085,
+      "radius_top": 0.0,
+      "depth": 0.6,
+      "location": [
+        0.4,
+        0,
+        1.26
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ]
+    },
+    {
+      "id": "pick_left",
+      "type": "cone",
+      "radius": 0.085,
+      "radius_top": 0.0,
+      "depth": 0.6,
+      "location": [
+        -0.4,
+        0,
+        1.26
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ]
     }
   ],
-
   "modifiers": [
-    { "target": "handle", "type": "smooth_shade" }
+    {
+      "target": "haft",
+      "type": "deform",
+      "method": "TAPER",
+      "axis": "Z",
+      "factor": -0.12,
+      "apply": true
+    },
+    {
+      "target": "haft",
+      "type": "smooth_shade",
+      "angle": 40
+    },
+    {
+      "target": "head",
+      "type": "bevel",
+      "width": 0.018,
+      "segments": 2
+    },
+    {
+      "target": "pick_right",
+      "type": "smooth_shade",
+      "angle": 40
+    },
+    {
+      "target": "pick_left",
+      "type": "smooth_shade",
+      "angle": 40
+    }
   ],
-
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_pickaxe.fbx",

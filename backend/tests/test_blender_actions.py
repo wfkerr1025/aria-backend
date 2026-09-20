@@ -222,7 +222,7 @@ EVERY_ACTION = [
     # What the recipe library asks for.
     ("add_cone", {"name": "Cone", "radius": 0.5, "radius_top": 0.0,
                   "depth": 1.0, "location": [0, 0, 0]}),
-    ("smooth_shade", {"object": "Cube", "smooth": True}),
+    ("smooth_shade", {"object": "Cube", "smooth": True, "angle": 30}),
     ("load_image", {"path": "C:/art/head.png", "name": "head"}),
     ("add_light", {"name": "Sun", "type": "SUN", "energy": 3.0,
                    "elevation": 38, "bearing": -38, "color": [1.0, 0.96, 0.88]}),

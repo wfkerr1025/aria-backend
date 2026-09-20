@@ -1,54 +1,108 @@
 {
   "name": "base_tree",
-  "version": "1.0",
-  "description": "Primitive blockout tree used as the foundation for all environment tree variants.",
+  "version": "2.0",
+  "description": "A tree. The trunk is a cone -- wider at the root than at the crown -- rather than a cylinder with a taper modifier on it, because a taper's sign is easy to get backwards and a tree standing on a spike is what that looks like. The canopy is four spheres welded and remeshed into one crown and then displaced; left as separate spheres it reads as a snowman, which is what this recipe built before. Trunk and crown stay separate objects so they can take a bark material and a leaf material.",
   "units": "meters",
-
   "objects": [
     {
       "id": "trunk",
-      "type": "cylinder",
-      "radius": 0.25,
-      "depth": 3.0,
-      "location": [0, 0, 1.5],
-      "rotation": [0, 0, 0]
+      "type": "cone",
+      "radius": 0.34,
+      "depth": 3.2,
+      "location": [
+        0,
+        0,
+        1.6
+      ],
+      "radius_top": 0.2
     },
     {
-      "id": "canopy_bottom",
+      "id": "crown",
       "type": "sphere",
-      "radius": 1.4,
-      "location": [0, 0, 3.2],
+      "radius": 1.45,
+      "location": [
+        0,
+        0,
+        3.55
+      ],
       "subdivision": 2
     },
     {
-      "id": "canopy_middle",
+      "id": "crown_left",
       "type": "sphere",
-      "radius": 1.2,
-      "location": [0, 0, 4.2],
+      "radius": 1.0,
+      "location": [
+        -0.95,
+        0.25,
+        3.95
+      ],
       "subdivision": 2
     },
     {
-      "id": "canopy_top",
+      "id": "crown_right",
       "type": "sphere",
-      "radius": 0.9,
-      "location": [0, 0, 5.0],
+      "radius": 0.92,
+      "location": [
+        0.9,
+        -0.3,
+        4.1
+      ],
+      "subdivision": 2
+    },
+    {
+      "id": "crown_top",
+      "type": "sphere",
+      "radius": 0.85,
+      "location": [
+        0.05,
+        0.2,
+        4.7
+      ],
       "subdivision": 2
     }
   ],
-
-  "modifiers": [
-    { "target": "trunk", "type": "smooth_shade" },
-    { "target": "canopy_bottom", "type": "smooth_shade" },
-    { "target": "canopy_middle", "type": "smooth_shade" },
-    { "target": "canopy_top", "type": "smooth_shade" }
+  "join": [
+    {
+      "into": "crown",
+      "parts": [
+        "crown_left",
+        "crown_right",
+        "crown_top"
+      ],
+      "merge": 0.001,
+      "remesh": {
+        "size": 0.1,
+        "adaptivity": 0.1
+      },
+      "smooth": true
+    }
   ],
-
+  "modifiers": [
+    {
+      "target": "trunk",
+      "type": "smooth_shade",
+      "angle": 40
+    },
+    {
+      "target": "crown",
+      "type": "stamp",
+      "texture": "CLOUDS",
+      "scale": 0.35,
+      "depth": 4,
+      "strength": 0.22,
+      "coords": "LOCAL",
+      "apply": true
+    },
+    {
+      "target": "crown",
+      "type": "smooth_shade"
+    }
+  ],
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_tree.fbx",

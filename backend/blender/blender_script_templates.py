@@ -1418,13 +1418,39 @@ def smooth_shade(params: Dict[str, Any]) -> str:
     that reads as a limb and one that reads as a barrel with facets.
     `smooth: false` turns it back off, because a sawn stone block wants
     its edges.
+
+    `angle` is what a WHEEL needs, and every wheel in the library needed
+    it. Plain shade_smooth smooths everything, including the hard rim
+    where a cylinder's flat cap meets its barrel -- so the cap blends
+    into the side and a tyre renders as a ball. Every cylinder in the
+    library had this: wheels, hafts, grips, limbs. An angle limit keeps
+    edges sharper than it and smooths the rest, so the barrel is round
+    and the rim is still a rim. 30 degrees is the usual choice.
+
+    Falls back to plain smoothing if the operator is not there, because
+    shade_smooth_by_angle arrived in 4.1 and this should not be the
+    thing that stops an older Blender building a recipe at all.
     """
     smooth = params.get("smooth", True)
     call = "shade_smooth" if smooth or smooth is None else "shade_flat"
+    angle = params.get("angle")
 
-    return (f'_target = _active(_obj({_text(params.get("object") or params.get("target"))}))\n'
-            f'bpy.ops.object.{call}()\n'
-            f'_note("smooth_shade", object=_target.name, smooth={"True" if call == "shade_smooth" else "False"})')
+    head = (f'_target = _active(_obj('
+            f'{_text(params.get("object") or params.get("target"))}))\n')
+    tail = (f'_note("smooth_shade", object=_target.name, '
+            f'smooth={"True" if call == "shade_smooth" else "False"})')
+
+    if angle is None or call != "shade_smooth":
+        return head + f'bpy.ops.object.{call}()\n' + tail
+
+    return (head
+            + f'import math\n'
+            + f'if hasattr(bpy.ops.object, "shade_smooth_by_angle"):\n'
+            + f'    bpy.ops.object.shade_smooth_by_angle('
+            f'angle=math.radians({_num(angle, 30.0)}))\n'
+            + f'else:\n'
+            + f'    bpy.ops.object.shade_smooth()\n'
+            + tail)
 
 
 def origin_to_geometry(params: Dict[str, Any]) -> str:

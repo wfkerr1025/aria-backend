@@ -61,7 +61,7 @@ def test_a_box_is_a_scaled_cube():
     Getting this wrong builds a model entirely out of cubes of the
     wrong shape, which reads as a modelling mistake rather than a
     translation one. Measured in Blender 5.0.1: the torso comes out
-    0.32 x 0.20 x 0.45, exactly as base_humanoid asks.
+    0.34 x 0.22 x 0.46, exactly as base_humanoid asks.
     """
     steps = recipes.actions("base_humanoid")
     cube = next(s for s in steps
@@ -70,12 +70,12 @@ def test_a_box_is_a_scaled_cube():
                  if s["action"] == "scale" and s["params"]["object"] == "Humanoid_Torso")
 
     assert cube["params"]["size"] == 1.0
-    assert [scale["params"]["x"], scale["params"]["y"], scale["params"]["z"]] == [0.32, 0.20, 0.45]
+    assert [scale["params"]["x"], scale["params"]["y"], scale["params"]["z"]] == [0.34, 0.22, 0.46]
 
 
 def test_parts_are_named_for_their_recipe():
     assert recipes.part_names("base_pickaxe") == [
-        "Pickaxe_Handle", "Pickaxe_HeadCenter", "Pickaxe_PickLeft", "Pickaxe_PickRight"]
+        "Pickaxe_Haft", "Pickaxe_Head", "Pickaxe_PickRight", "Pickaxe_PickLeft"]
 
 
 def test_part_names_match_what_the_build_creates():
@@ -114,7 +114,7 @@ def test_clearing_is_optional_so_two_recipes_can_share_a_scene():
     assert together.count({"action": "clear_scene"}) == 1
     assert together[0] == {"action": "clear_scene"}
     names = [s["params"]["name"] for s in together if s["action"].startswith("add_")]
-    assert "Humanoid_Torso" in names and "Pickaxe_Handle" in names
+    assert "Humanoid_Torso" in names and "Pickaxe_Haft" in names
 
 
 def test_an_unknown_recipe_says_what_there_is():
@@ -406,3 +406,135 @@ def test_a_rig_can_be_placed_off_the_body_it_is_for():
 
     assert bone["params"]["head"][2] == pytest.approx(marks["z"]["neck"])
     assert bone["params"]["tail"][2] == pytest.approx(marks["z"]["crown"])
+
+
+# ======================================================
+# Props
+# ======================================================
+#
+# Props stay primitives -- a rock does not want a human base mesh --
+# but primitives left untouched read as primitives, and for a long
+# time smooth_shade was the only modifier any recipe in the library
+# used. These cover the shaping that replaced that.
+
+def test_a_rock_is_one_surface_and_not_four_spheres():
+    """Overlapping primitives read as overlapping primitives however
+    they are shaded: each keeps its own silhouette and the seams run
+    through the middle of the shape. The weld makes one mesh and the
+    remesh rebuilds it as one surface."""
+    steps = recipes.actions("base_rock")
+    order = [step["action"] for step in steps]
+    weld = next(s for s in steps if s["action"] == "join_objects")
+
+    assert weld["params"]["objects"][0] == "Rock_Core"
+    assert len(weld["params"]["objects"]) == 4
+    assert order.index("join_objects") < order.index("voxel_remesh")
+
+
+def test_joining_happens_before_the_modifiers_that_shape_the_result():
+    """A displace on four separate spheres is four bumpy spheres. The
+    same displace on one remeshed rock is a rock."""
+    order = [step["action"] for step in recipes.actions("base_rock")]
+
+    assert order.index("voxel_remesh") < order.index("stamp_detail")
+
+
+def test_a_cast_runs_before_the_displace_it_would_otherwise_undo():
+    """Cast then displace puts flat faces on a lumpy rock. Displace
+    then cast smooths the lumps straight back off again."""
+    order = [step["action"] for step in recipes.actions("base_rock")]
+
+    assert order.index("apply_cast") < order.index("stamp_detail")
+
+
+def test_a_join_with_no_parts_is_refused(tmp_path, monkeypatch):
+    """Silently joining nothing leaves the parts scattered, and the
+    only symptom is a prop that still looks like a pile of spheres."""
+    shelf = tmp_path / "blender" / "oddments"
+    shelf.mkdir(parents=True)
+    (shelf / "recipe_lonely.json").write_text(json.dumps({
+        "name": "lonely", "version": "1.0", "description": "",
+        "units": "meters",
+        "objects": [{"id": "core", "type": "sphere", "radius": 1.0,
+                     "location": [0, 0, 0]}],
+        "join": [{"into": "core", "parts": []}],
+        "cleanup": {}, "export": {},
+    }), encoding="utf-8")
+    monkeypatch.setattr(recipes, "RECIPE_ROOT", tmp_path / "blender")
+
+    with pytest.raises(recipes.UnsupportedRecipe) as raised:
+        recipes.actions("lonely")
+
+    assert "no parts" in str(raised.value)
+
+
+def test_a_boolean_names_another_part_of_the_same_recipe():
+    """A recipe writes its own ids; they carry the recipe's prefix once
+    they are in the scene. Passing "door_cut" through untouched leaves
+    the boolean aiming at an object that was never made, and it cuts
+    nothing at all."""
+    cuts = [step for step in recipes.actions("base_house")
+            if step["action"] == "apply_boolean"]
+
+    assert len(cuts) == 3
+    assert {step["params"]["object"] for step in cuts} == {"House_Walls"}
+    assert "House_DoorCut" in {step["params"]["target"] for step in cuts}
+
+
+def test_a_boolean_is_applied_before_its_cutter_is_discarded():
+    """A live boolean holds a pointer to its cutter. Delete the cutter
+    and the modifier aims at nothing, which evaluates to no walls at
+    all -- the render was a roof floating over a foundation."""
+    steps = recipes.actions("base_house")
+    order = [step["action"] for step in steps]
+    cut = next(s for s in steps if s["action"] == "apply_boolean")
+
+    assert cut["params"]["apply"] is True
+    assert order.index("apply_boolean") < order.index("delete_object")
+
+
+def test_scaffolding_is_discarded_by_name():
+    """export_fbx writes every mesh in the file, so a cutter left in
+    the scene ships as a solid slab of door in its own doorway."""
+    dropped = [step["params"]["object"] for step in recipes.actions("base_house")
+               if step["action"] == "delete_object"]
+
+    assert dropped == ["House_DoorCut", "House_WindowLeftCut",
+                       "House_WindowRightCut"]
+
+
+def test_a_wheel_is_smoothed_with_an_angle_limit():
+    """Plain shade_smooth smooths the rim where a cylinder's flat cap
+    meets its barrel, so the cap blends into the side and a tyre
+    renders as a ball. Every cylinder in the library had this."""
+    wheels = [step for step in recipes.actions("base_car")
+              if step["action"] == "smooth_shade"
+              and "Wheel" in step["params"]["object"]]
+
+    assert len(wheels) == 4
+    assert all(step["params"].get("angle") for step in wheels)
+
+
+def test_the_shaping_modifiers_are_all_reachable_from_a_recipe():
+    """The library had the actions and the recipes could not say them,
+    which is why every prop was a pile of untouched primitives."""
+    for wanted in ("cast", "deform", "boolean", "stamp", "voxel_remesh"):
+        assert wanted in recipes.MODIFIERS
+
+    for action in recipes.MODIFIERS.values():
+        assert action in templates.TEMPLATES, action
+
+
+def test_a_creature_limb_is_attached_to_the_body_it_belongs_to():
+    """base_humanoid rotated its arms 90 degrees about Z to lay them
+    out, and rotating a Z-aligned cylinder about Z does nothing -- so
+    they hung 12cm off its shoulders. Same bug in both creatures."""
+    marks = {}
+    for step in recipes.actions("base_humanoid"):
+        if step["action"] in ("add_cylinder", "add_cube"):
+            marks[step["params"]["name"]] = step["params"]["location"]
+
+    torso_half = 0.34 / 2.0
+    arm = marks["Humanoid_ArmLeft"]
+
+    assert abs(arm[0]) < torso_half + 0.07, "the arm floats off the shoulder"

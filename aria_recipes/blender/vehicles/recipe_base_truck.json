@@ -1,69 +1,221 @@
 {
   "name": "base_truck",
-  "version": "1.0",
-  "description": "Primitive blockout pickup truck used as the foundation for all truck variants.",
+  "version": "2.0",
+  "description": "A pickup: a cab, a load bed with sides rather than a solid block, and four wheels. The bed was one box, which is a truck carrying a permanent cube of cargo.",
   "units": "meters",
-
   "objects": [
     {
       "id": "cab",
       "type": "cube",
-      "size": [1.6, 1.4, 1.0],
-      "location": [0.9, 0, 1.0]
+      "size": [
+        1.7,
+        1.66,
+        1.1
+      ],
+      "location": [
+        0.95,
+        0,
+        1.15
+      ]
     },
     {
-      "id": "bed",
+      "id": "bonnet",
       "type": "cube",
-      "size": [2.0, 1.4, 0.8],
-      "location": [-0.6, 0, 0.9]
+      "size": [
+        0.9,
+        1.6,
+        0.55
+      ],
+      "location": [
+        1.95,
+        0,
+        0.92
+      ]
     },
     {
-      "id": "wheel_fl",
-      "type": "cylinder",
-      "radius": 0.45,
-      "depth": 0.35,
-      "location": [1.2, 0.95, 0.45],
-      "rotation": [90, 0, 0]
+      "id": "bed_floor",
+      "type": "cube",
+      "size": [
+        2.4,
+        1.66,
+        0.16
+      ],
+      "location": [
+        -0.9,
+        0,
+        0.78
+      ]
     },
     {
-      "id": "wheel_fr",
-      "type": "cylinder",
-      "radius": 0.45,
-      "depth": 0.35,
-      "location": [1.2, -0.95, 0.45],
-      "rotation": [90, 0, 0]
+      "id": "bed_left",
+      "type": "cube",
+      "size": [
+        2.4,
+        0.1,
+        0.44
+      ],
+      "location": [
+        -0.9,
+        0.78,
+        1.06
+      ]
     },
     {
-      "id": "wheel_rl",
-      "type": "cylinder",
-      "radius": 0.45,
-      "depth": 0.35,
-      "location": [-1.2, 0.95, 0.45],
-      "rotation": [90, 0, 0]
+      "id": "bed_right",
+      "type": "cube",
+      "size": [
+        2.4,
+        0.1,
+        0.44
+      ],
+      "location": [
+        -0.9,
+        -0.78,
+        1.06
+      ]
     },
     {
-      "id": "wheel_rr",
+      "id": "bed_back",
+      "type": "cube",
+      "size": [
+        0.1,
+        1.66,
+        0.44
+      ],
+      "location": [
+        -2.05,
+        0,
+        1.06
+      ]
+    },
+    {
+      "id": "wheel_front_left",
       "type": "cylinder",
-      "radius": 0.45,
-      "depth": 0.35,
-      "location": [-1.2, -0.95, 0.45],
-      "rotation": [90, 0, 0]
+      "radius": 0.46,
+      "depth": 0.32,
+      "location": [
+        1.35,
+        0.9,
+        0.46
+      ],
+      "rotation": [
+        90,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "wheel_front_right",
+      "type": "cylinder",
+      "radius": 0.46,
+      "depth": 0.32,
+      "location": [
+        1.35,
+        -0.9,
+        0.46
+      ],
+      "rotation": [
+        90,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "wheel_back_left",
+      "type": "cylinder",
+      "radius": 0.46,
+      "depth": 0.32,
+      "location": [
+        -1.35,
+        0.9,
+        0.46
+      ],
+      "rotation": [
+        90,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "wheel_back_right",
+      "type": "cylinder",
+      "radius": 0.46,
+      "depth": 0.32,
+      "location": [
+        -1.35,
+        -0.9,
+        0.46
+      ],
+      "rotation": [
+        90,
+        0,
+        0
+      ]
     }
   ],
-
   "modifiers": [
-    { "target": "wheel_fl", "type": "smooth_shade" },
-    { "target": "wheel_fr", "type": "smooth_shade" },
-    { "target": "wheel_rl", "type": "smooth_shade" },
-    { "target": "wheel_rr", "type": "smooth_shade" }
+    {
+      "target": "cab",
+      "type": "bevel",
+      "width": 0.07,
+      "segments": 3
+    },
+    {
+      "target": "bonnet",
+      "type": "bevel",
+      "width": 0.06,
+      "segments": 3
+    },
+    {
+      "target": "bed_floor",
+      "type": "bevel",
+      "width": 0.02,
+      "segments": 2
+    },
+    {
+      "target": "bed_left",
+      "type": "bevel",
+      "width": 0.02,
+      "segments": 2
+    },
+    {
+      "target": "bed_right",
+      "type": "bevel",
+      "width": 0.02,
+      "segments": 2
+    },
+    {
+      "target": "bed_back",
+      "type": "bevel",
+      "width": 0.02,
+      "segments": 2
+    },
+    {
+      "target": "wheel_front_left",
+      "type": "smooth_shade",
+      "angle": 30
+    },
+    {
+      "target": "wheel_front_right",
+      "type": "smooth_shade",
+      "angle": 30
+    },
+    {
+      "target": "wheel_back_left",
+      "type": "smooth_shade",
+      "angle": 30
+    },
+    {
+      "target": "wheel_back_right",
+      "type": "smooth_shade",
+      "angle": 30
+    }
   ],
-
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_truck.fbx",

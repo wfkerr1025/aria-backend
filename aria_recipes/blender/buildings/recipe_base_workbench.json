@@ -1,56 +1,177 @@
 {
   "name": "base_workbench",
-  "version": "1.0",
-  "description": "Primitive blockout workbench used as the foundation for all workshop table variants.",
+  "version": "2.0",
+  "description": "A workbench: top, four legs, a lower shelf, a back board and a vice. Bevelled, because sawn timber has arrises and a mesh with none of them catches no light along its edges at all.",
   "units": "meters",
-
   "objects": [
     {
-      "id": "table_top",
+      "id": "top",
       "type": "cube",
-      "size": [2.0, 1.0, 0.15],
-      "location": [0, 0, 0.9]
+      "size": [
+        2.0,
+        1.0,
+        0.16
+      ],
+      "location": [
+        0,
+        0,
+        0.9
+      ]
     },
     {
-      "id": "leg_fl",
+      "id": "leg_front_left",
       "type": "cube",
-      "size": [0.15, 0.15, 0.9],
-      "location": [0.85, 0.35, 0.45]
+      "size": [
+        0.14,
+        0.14,
+        0.82
+      ],
+      "location": [
+        0.88,
+        0.38,
+        0.41
+      ]
     },
     {
-      "id": "leg_fr",
+      "id": "leg_front_right",
       "type": "cube",
-      "size": [0.15, 0.15, 0.9],
-      "location": [0.85, -0.35, 0.45]
+      "size": [
+        0.14,
+        0.14,
+        0.82
+      ],
+      "location": [
+        0.88,
+        -0.38,
+        0.41
+      ]
     },
     {
-      "id": "leg_rl",
+      "id": "leg_back_left",
       "type": "cube",
-      "size": [0.15, 0.15, 0.9],
-      "location": [-0.85, 0.35, 0.45]
+      "size": [
+        0.14,
+        0.14,
+        0.82
+      ],
+      "location": [
+        -0.88,
+        0.38,
+        0.41
+      ]
     },
     {
-      "id": "leg_rr",
+      "id": "leg_back_right",
       "type": "cube",
-      "size": [0.15, 0.15, 0.9],
-      "location": [-0.85, -0.35, 0.45]
+      "size": [
+        0.14,
+        0.14,
+        0.82
+      ],
+      "location": [
+        -0.88,
+        -0.38,
+        0.41
+      ]
     },
     {
       "id": "shelf",
       "type": "cube",
-      "size": [1.8, 0.8, 0.1],
-      "location": [0, 0, 0.3]
+      "size": [
+        1.8,
+        0.8,
+        0.08
+      ],
+      "location": [
+        0,
+        0,
+        0.28
+      ]
+    },
+    {
+      "id": "back_board",
+      "type": "cube",
+      "size": [
+        2.0,
+        0.07,
+        0.55
+      ],
+      "location": [
+        0,
+        -0.47,
+        1.25
+      ]
+    },
+    {
+      "id": "vice",
+      "type": "cube",
+      "size": [
+        0.3,
+        0.26,
+        0.2
+      ],
+      "location": [
+        0.78,
+        0.44,
+        1.04
+      ]
     }
   ],
-
-  "modifiers": [],
-
+  "modifiers": [
+    {
+      "target": "top",
+      "type": "bevel",
+      "width": 0.012,
+      "segments": 2
+    },
+    {
+      "target": "leg_front_left",
+      "type": "bevel",
+      "width": 0.012,
+      "segments": 2
+    },
+    {
+      "target": "leg_front_right",
+      "type": "bevel",
+      "width": 0.012,
+      "segments": 2
+    },
+    {
+      "target": "leg_back_left",
+      "type": "bevel",
+      "width": 0.012,
+      "segments": 2
+    },
+    {
+      "target": "leg_back_right",
+      "type": "bevel",
+      "width": 0.012,
+      "segments": 2
+    },
+    {
+      "target": "shelf",
+      "type": "bevel",
+      "width": 0.012,
+      "segments": 2
+    },
+    {
+      "target": "back_board",
+      "type": "bevel",
+      "width": 0.012,
+      "segments": 2
+    },
+    {
+      "target": "vice",
+      "type": "bevel",
+      "width": 0.012,
+      "segments": 2
+    }
+  ],
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_workbench.fbx",
