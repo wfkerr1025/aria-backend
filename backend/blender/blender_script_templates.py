@@ -777,6 +777,27 @@ def sculpt_brush(params: Dict[str, Any]) -> str:
     So it does not try. The result reports what was asked for, what is
     actually active, and whether those are the same.
 
+    RE-MEASURED 2026-09-20, HARDER, BECAUSE A WHOLE ARCHITECTURE RESTED ON IT
+    The plan was: blockout, subdivide, then "sculpting passes" turn a
+    cylinder into an arm. Four attempts in Blender 5.0.1 --background,
+    each on a subdivided sphere, measuring whether any vertex moved:
+
+      * sculpt.brush_stroke, with 3D locations in the stroke rather
+        than only mouse coordinates -- poll() failed, context is
+        incorrect. It refuses.
+      * the same inside a temp_override with the window manager's own
+        window -- refuses identically. There are no windows to borrow.
+      * sculpt.mesh_filter INFLATE, a sculpt deform that needs no
+        stroke at all -- CRASHED Blender. EXCEPTION_ACCESS_VIOLATION,
+        exit 11. Not an exception; a segfault.
+      * a displace modifier, as a control -- worked, radial spread
+        0.01035 to 0.23698.
+
+    Entering sculpt mode succeeds. Sculpting does not. So anatomy has
+    to arrive already sculpted, in a base mesh someone made with a
+    viewport open -- which is what aria_models/ is for, and why it is
+    not a convenience but a replacement for a step that cannot run.
+
     What it DOES do is real: enters sculpt mode, sets the strength on
     whichever brush is active, and sets the dyntopo detail size -- the
     parameter that actually changes what later sculpting does.
@@ -1912,6 +1933,59 @@ def set_world(params: Dict[str, Any]) -> str:
             f'_note("set_world", strength={_num(params.get("strength"), 0.6)})')
 
 
+def append_from_blend(params: Dict[str, Any]) -> str:
+    """Append one object out of another .blend file.
+
+    The data API rather than bpy.ops.wm.append, which wants a filepath
+    stitched together out of the blend, the word "Object" and the name,
+    and fails quietly when that path is a hair wrong. Loading through
+    bpy.data.libraries.load names what it wants and says so when it is
+    not there.
+
+    Appended, not linked: a linked object is read-only and cannot be
+    modified, scaled, remeshed or bound to an armature, which is the
+    entire reason for fetching it.
+
+    A miss lists what the file actually holds. A 49MB library with 382
+    meshes in it is not something anybody is going to guess their way
+    around, and "object not found" with no list is the least helpful
+    thing this could say.
+    """
+    rename = params.get("name")
+
+    return (f'import os\n'
+            f'_blend = {_text(params.get("blend") or params.get("path"))}\n'
+            f'if not os.path.isfile(_blend):\n'
+            f'    raise RuntimeError("no .blend at %r" % _blend)\n'
+            f'_want = {_text(params.get("object"))}\n'
+            f'_before = set(bpy.data.objects)\n'
+            f'with bpy.data.libraries.load(_blend, link=False) as (_src, _dst):\n'
+            f'    _have = list(_src.objects)\n'
+            f'    if _want not in _have:\n'
+            f'        raise RuntimeError("%r is not in %s. It holds %d objects; "\n'
+            f'                           "the ones with \'body\' in the name are: %s"\n'
+            f'                           % (_want, os.path.basename(_blend), len(_have),\n'
+            f'                              ", ".join(n for n in sorted(_have) if "body" in n.lower())\n'
+            f'                              or "none"))\n'
+            f'    _dst.objects = [_want]\n'
+            f'_added = [o for o in _dst.objects if o is not None]\n'
+            f'for _o in _added:\n'
+            f'    bpy.context.collection.objects.link(_o)\n'
+            f'if not _added:\n'
+            f'    raise RuntimeError("%r loaded as nothing" % _want)\n'
+            f'_new = _added[0]\n'
+            f'_rename = {_text(rename)}\n'
+            f'if _rename:\n'
+            f'    _new.name = _rename\n'
+            f'    if _new.data is not None:\n'
+            f'        _new.data.name = _rename\n'
+            f'_new.location = {_vector(params.get("location"))}\n'
+            f'_RESULT["created"].append(_new.name)\n'
+            f'_note("append_from_blend", object=_new.name, '
+            f'verts=len(_new.data.vertices) if _new.type == "MESH" else 0, '
+            f'uvs=[u.name for u in _new.data.uv_layers] if _new.type == "MESH" else [])')
+
+
 TEMPLATES = {
     "apply_transforms": apply_transforms,
     "remove_stray_meshes": remove_stray_meshes,
@@ -1936,6 +2010,7 @@ TEMPLATES = {
     "add_ik_constraint": add_ik_constraint,
     "set_interpolation": set_interpolation,
     "import_model": import_model,
+    "append_from_blend": append_from_blend,
     "measure_mesh": measure_mesh,
     "remove_loose": remove_loose,
     "recalculate_normals": recalculate_normals,

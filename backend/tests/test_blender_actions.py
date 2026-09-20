@@ -181,6 +181,9 @@ EVERY_ACTION = [
 
     # The cleanup stage. Exercised properly in test_blender_cleanup.py;
     # listed here so the coverage guard above stays honest.
+    ("append_from_blend", {"blend": "C:/lib/human.blend",
+                           "object": "GEO-body_male_stylized",
+                           "name": "Miner_Body", "location": [0, 0, 0]}),
     ("import_model", {"path": "C:/tmp/a.glb"}),
     ("measure_mesh", {}),
     ("remove_loose", {}),
