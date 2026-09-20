@@ -67,6 +67,7 @@ __all__ = [
     "base_actions",
     "base_models",
     "fit_actions",
+    "garment_actions",
     "animation_names",
     "build_many",
     "catalogue",
@@ -317,6 +318,10 @@ def actions(name: str, *, prefix: Optional[str] = None,
         params["object"] = f"{head}_{_pascal(modifier.get('target') or 'Part')}"
         steps.append({"action": action, "params": params})
 
+    # Garments are cut from the base, so the base has to exist and the
+    # blanks must not have been merged into anything yet.
+    steps.extend(garment_actions(name, prefix=head))
+
     # Fitting happens before cleanup, because origin_to_geometry moves
     # every origin and a wrap done afterwards would be aiming at a body
     # that has since shifted under it.
@@ -442,7 +447,11 @@ def rig_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]
     # onto one -- cannot be nailed to one bone the way a blockout's
     # separate forearm can. It needs weights that fall off across the
     # joint, which is what auto_weights computes.
-    known_ids = {item.get("id") for item in recipe.get("objects", [])}
+    # Garments are named the same way objects are -- by id, with the
+    # recipe's prefix -- so auto_bind has to know about both lists or a
+    # garment's name goes through untouched and finds nothing.
+    known_ids = ({item.get("id") for item in recipe.get("objects", [])} |
+                 {item.get("id") for item in recipe.get("garments", [])})
     base_called = (recipe.get("base") or {}).get("as")
 
     for whole in spec.get("auto_bind", []):
@@ -649,6 +658,67 @@ def fit_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]
         if thickness:
             steps.append({"action": "apply_solidify",
                           "params": {"object": worn, "thickness": thickness, "apply": True}})
+
+        if item.get("smooth", True):
+            steps.append({"action": "smooth_shade", "params": {"object": worn}})
+
+    return steps
+
+
+def garment_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Cut a garment out of the body it is worn by.
+
+    Copy the body, keep the box the garment covers, throw the rest
+    away, push what is left out along its own normals, and thicken it.
+    The result fits exactly because it IS the body -- there is no
+    wrapping and so nothing to choose wrongly.
+
+    This is what replaced the blanks. A cylinder wrapped onto a torso
+    came out a crop top; a cylinder wrapped onto two legs bridged them
+    into a skirt; every hem was ragged where the wrap ran out. A cut
+    has a hem wherever the mask ends and legs wherever the body has
+    them.
+
+    The bounds are in WORLD metres, the same ones the body was measured
+    in -- waist 1.02, chest 1.26 to 1.44, knee 0.48 -- so a recipe says
+    what it means.
+    """
+    recipe = load(name)
+    head = prefix or prefix_for(name)
+    base_called = (recipe.get("base") or {}).get("as") or f"{head}_Base"
+
+    steps: List[Dict[str, Any]] = []
+
+    for item in recipe.get("garments", []):
+        worn = f"{head}_{_pascal(item.get('id') or 'Garment')}"
+        body = item.get("from") or base_called
+        group = "Region_" + _pascal(item.get("id") or "Garment")
+
+        steps.append({"action": "duplicate_object",
+                      "params": {"object": body, "name": worn}})
+
+        region = {"object": worn, "name": group, "soft": item.get("soft", 0.015)}
+        for key in ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max"):
+            if item.get(key) is not None:
+                region[key] = item[key]
+        steps.append({"action": "vertex_group_by_region", "params": region})
+
+        steps.append({"action": "apply_mask",
+                      "params": {"object": worn, "group": group,
+                                 "threshold": item.get("threshold", 0.05), "apply": True}})
+
+        # Out along its own normals, NOT by shrinkwrapping onto the body
+        # it was copied from: every vertex would find itself at distance
+        # zero, where there is no direction to offset along, and the two
+        # surfaces would stay coincident and z-fight into speckle.
+        steps.append({"action": "inflate",
+                      "params": {"object": worn,
+                                 "distance": item.get("offset", 0.012), "apply": True}})
+
+        if item.get("thickness"):
+            steps.append({"action": "apply_solidify",
+                          "params": {"object": worn, "thickness": item["thickness"],
+                                     "apply": True}})
 
         if item.get("smooth", True):
             steps.append({"action": "smooth_shade", "params": {"object": worn}})

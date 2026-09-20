@@ -1,175 +1,975 @@
 {
   "name": "crew_miner",
-  "version": "2.0",
-  "description": "The hired miner at a crew rock in Ores & Odds. Built on Blender Studio's stylised male base rather than out of primitives, and dressed by wrapping blanks onto it. Human scale; the Mine stands him at 3.6m (CrewMiner.MetresTall), so scale on import. Faces -Y.",
+  "version": "3.0",
+  "description": "The hired miner at a crew rock in Ores & Odds. Built on Blender Studio's stylised male base; the clothes are cut from the body rather than wrapped onto it, so they fit by construction. Human scale -- the Mine stands him at 3.6m (CrewMiner.MetresTall), so scale on import. Faces -Y.",
   "units": "meters",
-
   "base": {
     "library": "human_base_meshes",
     "object": "GEO-body_male_stylized",
     "as": "Miner_Body",
-    "height": 1.80,
-    "location": [0, 0, 0]
+    "height": 1.8,
+    "location": [
+      0,
+      0,
+      0
+    ]
   },
-
+  "garments": [
+    {
+      "id": "vest",
+      "from": "Miner_Body",
+      "z_min": 0.97,
+      "z_max": 1.47,
+      "x_min": -0.225,
+      "x_max": 0.225,
+      "soft": 0.006,
+      "offset": 0.013,
+      "thickness": 0.018
+    },
+    {
+      "id": "trousers",
+      "from": "Miner_Body",
+      "z_min": 0.13,
+      "z_max": 1.05,
+      "x_min": -0.27,
+      "x_max": 0.27,
+      "soft": 0.01,
+      "offset": 0.011,
+      "thickness": 0.015
+    },
+    {
+      "id": "boots",
+      "from": "Miner_Body",
+      "z_min": -0.01,
+      "z_max": 0.27,
+      "soft": 0.008,
+      "offset": 0.016,
+      "thickness": 0.02
+    },
+    {
+      "id": "hair",
+      "from": "Miner_Body",
+      "z_min": 1.575,
+      "z_max": 1.765,
+      "soft": 0.008,
+      "offset": 0.004,
+      "thickness": 0.01,
+      "y_min": -0.035
+    }
+  ],
   "objects": [
-    {"id": "vest", "type": "cylinder", "radius": 0.235, "depth": 0.44, "location": [0, 0, 1.24]},
-    {"id": "trousers", "type": "cylinder", "radius": 0.205, "depth": 0.90, "location": [0, 0, 0.61]},
-    {"id": "boot_l", "type": "cylinder", "radius": 0.105, "depth": 0.30, "location": [-0.095, -0.02, 0.15]},
-    {"id": "boot_r", "type": "cylinder", "radius": 0.105, "depth": 0.30, "location": [0.095, -0.02, 0.15]},
-
-    {"id": "hat_crown", "type": "cylinder", "radius": 0.118, "depth": 0.14, "location": [0, 0, 1.80]},
-    {"id": "hat_brim", "type": "cylinder", "radius": 0.205, "depth": 0.022, "location": [0, 0, 1.745]},
-
-    {"id": "haft", "type": "cylinder", "radius": 0.028, "depth": 0.85, "location": [0.44, -0.04, 1.265]},
-    {"id": "pick_head", "type": "cube", "size": [0.36, 0.085, 0.085], "location": [0.44, -0.04, 1.705]}
+    {
+      "id": "hat_crown",
+      "type": "cylinder",
+      "radius": 0.122,
+      "depth": 0.15,
+      "location": [
+        0,
+        0,
+        1.805
+      ]
+    },
+    {
+      "id": "hat_brim",
+      "type": "cylinder",
+      "radius": 0.212,
+      "depth": 0.02,
+      "location": [
+        0,
+        0,
+        1.742
+      ]
+    },
+    {
+      "id": "eye_l",
+      "type": "sphere",
+      "radius": 0.0225,
+      "location": [
+        -0.037,
+        -0.088,
+        1.695
+      ]
+    },
+    {
+      "id": "eye_r",
+      "type": "sphere",
+      "radius": 0.0225,
+      "location": [
+        0.037,
+        -0.088,
+        1.695
+      ]
+    },
+    {
+      "id": "haft",
+      "type": "cylinder",
+      "radius": 0.028,
+      "depth": 0.85,
+      "location": [
+        0.44,
+        -0.04,
+        1.265
+      ]
+    },
+    {
+      "id": "pick_head",
+      "type": "cube",
+      "size": [
+        0.36,
+        0.085,
+        0.085
+      ],
+      "location": [
+        0.44,
+        -0.04,
+        1.705
+      ]
+    }
   ],
-
   "modifiers": [
-    {"target": "vest", "type": "subdivision", "levels": 4, "apply": true},
-    {"target": "trousers", "type": "subdivision", "levels": 4, "apply": true},
-    {"target": "boot_l", "type": "subdivision", "levels": 3, "apply": true},
-    {"target": "boot_r", "type": "subdivision", "levels": 3, "apply": true},
-    {"target": "haft", "type": "smooth_shade"},
-    {"target": "hat_crown", "type": "smooth_shade"}
+    {
+      "target": "hat_crown",
+      "type": "smooth_shade"
+    },
+    {
+      "target": "haft",
+      "type": "smooth_shade"
+    },
+    {
+      "target": "eye_l",
+      "type": "smooth_shade"
+    },
+    {
+      "target": "eye_r",
+      "type": "smooth_shade"
+    }
   ],
-
-  "fit": [
-    {"object": "vest", "onto": "Miner_Body", "offset": 0.014, "thickness": 0.015},
-    {"object": "trousers", "onto": "Miner_Body", "offset": 0.012, "thickness": 0.013},
-    {"object": "boot_l", "onto": "Miner_Body", "offset": 0.018, "thickness": 0.016},
-    {"object": "boot_r", "onto": "Miner_Body", "offset": 0.018, "thickness": 0.016}
-  ],
-
   "armature": {
     "name": "Miner_Rig",
     "bones": [
-      {"name": "Hips",  "head": [0, 0, 0.92], "tail": [0, 0, 1.04]},
-      {"name": "Spine", "head": [0, 0, 1.04], "tail": [0, 0, 1.20], "parent": "Hips", "connect": true},
-      {"name": "Chest", "head": [0, 0, 1.20], "tail": [0, 0, 1.42], "parent": "Spine", "connect": true},
-      {"name": "Neck",  "head": [0, 0, 1.42], "tail": [0, 0, 1.52], "parent": "Chest", "connect": true},
-      {"name": "Head",  "head": [0, 0, 1.52], "tail": [0, 0, 1.80], "parent": "Neck", "connect": true},
-
-      {"name": "Shoulder_R", "head": [0.04, 0, 1.42], "tail": [0.18, 0, 1.43], "parent": "Chest"},
-      {"name": "UpperArm_R", "head": [0.18, 0, 1.43], "tail": [0.31, 0, 1.14], "parent": "Shoulder_R", "connect": true},
-      {"name": "Forearm_R",  "head": [0.31, 0, 1.14], "tail": [0.42, 0, 0.88], "parent": "UpperArm_R", "connect": true},
-      {"name": "Hand_R",     "head": [0.42, 0, 0.88], "tail": [0.44, 0, 0.78], "parent": "Forearm_R", "connect": true},
-
-      {"name": "Pick",     "head": [0.44, -0.04, 0.84], "tail": [0.44, -0.04, 1.69], "parent": "Hand_R"},
-      {"name": "HaftHold", "head": [0.44, -0.04, 1.02], "tail": [0.44, -0.04, 1.10], "parent": "Pick"},
-
-      {"name": "Shoulder_L", "head": [-0.04, 0, 1.42], "tail": [-0.18, 0, 1.43], "parent": "Chest"},
-      {"name": "UpperArm_L", "head": [-0.18, 0, 1.43], "tail": [-0.31, 0, 1.14], "parent": "Shoulder_L", "connect": true},
-      {"name": "Forearm_L",  "head": [-0.31, 0, 1.14], "tail": [-0.42, 0, 0.88], "parent": "UpperArm_L", "connect": true},
-      {"name": "Hand_L",     "head": [-0.42, 0, 0.88], "tail": [-0.44, 0, 0.78], "parent": "Forearm_L", "connect": true},
-
-      {"name": "Thigh_R", "head": [0.09, 0, 0.90], "tail": [0.09, 0, 0.50], "parent": "Hips"},
-      {"name": "Shin_R",  "head": [0.09, 0, 0.50], "tail": [0.09, 0, 0.13], "parent": "Thigh_R", "connect": true},
-      {"name": "Foot_R",  "head": [0.09, 0, 0.13], "tail": [0.09, -0.16, 0.03], "parent": "Shin_R", "connect": true},
-
-      {"name": "Thigh_L", "head": [-0.09, 0, 0.90], "tail": [-0.09, 0, 0.50], "parent": "Hips"},
-      {"name": "Shin_L",  "head": [-0.09, 0, 0.50], "tail": [-0.09, 0, 0.13], "parent": "Thigh_L", "connect": true},
-      {"name": "Foot_L",  "head": [-0.09, 0, 0.13], "tail": [-0.09, -0.16, 0.03], "parent": "Shin_L", "connect": true}
+      {
+        "name": "Hips",
+        "head": [
+          0,
+          0,
+          0.92
+        ],
+        "tail": [
+          0,
+          0,
+          1.04
+        ]
+      },
+      {
+        "name": "Spine",
+        "head": [
+          0,
+          0,
+          1.04
+        ],
+        "tail": [
+          0,
+          0,
+          1.2
+        ],
+        "parent": "Hips",
+        "connect": true
+      },
+      {
+        "name": "Chest",
+        "head": [
+          0,
+          0,
+          1.2
+        ],
+        "tail": [
+          0,
+          0,
+          1.42
+        ],
+        "parent": "Spine",
+        "connect": true
+      },
+      {
+        "name": "Neck",
+        "head": [
+          0,
+          0,
+          1.42
+        ],
+        "tail": [
+          0,
+          0,
+          1.52
+        ],
+        "parent": "Chest",
+        "connect": true
+      },
+      {
+        "name": "Head",
+        "head": [
+          0,
+          0,
+          1.52
+        ],
+        "tail": [
+          0,
+          0,
+          1.8
+        ],
+        "parent": "Neck",
+        "connect": true
+      },
+      {
+        "name": "Shoulder_R",
+        "head": [
+          0.04,
+          0,
+          1.42
+        ],
+        "tail": [
+          0.18,
+          0,
+          1.43
+        ],
+        "parent": "Chest"
+      },
+      {
+        "name": "UpperArm_R",
+        "head": [
+          0.18,
+          0,
+          1.43
+        ],
+        "tail": [
+          0.31,
+          0,
+          1.14
+        ],
+        "parent": "Shoulder_R",
+        "connect": true
+      },
+      {
+        "name": "Forearm_R",
+        "head": [
+          0.31,
+          0,
+          1.14
+        ],
+        "tail": [
+          0.42,
+          0,
+          0.88
+        ],
+        "parent": "UpperArm_R",
+        "connect": true
+      },
+      {
+        "name": "Hand_R",
+        "head": [
+          0.42,
+          0,
+          0.88
+        ],
+        "tail": [
+          0.44,
+          0,
+          0.78
+        ],
+        "parent": "Forearm_R",
+        "connect": true
+      },
+      {
+        "name": "Pick",
+        "head": [
+          0.44,
+          -0.04,
+          0.84
+        ],
+        "tail": [
+          0.44,
+          -0.04,
+          1.69
+        ],
+        "parent": "Hand_R"
+      },
+      {
+        "name": "HaftHold",
+        "head": [
+          0.44,
+          -0.04,
+          1.02
+        ],
+        "tail": [
+          0.44,
+          -0.04,
+          1.1
+        ],
+        "parent": "Pick"
+      },
+      {
+        "name": "Shoulder_L",
+        "head": [
+          -0.04,
+          0,
+          1.42
+        ],
+        "tail": [
+          -0.18,
+          0,
+          1.43
+        ],
+        "parent": "Chest"
+      },
+      {
+        "name": "UpperArm_L",
+        "head": [
+          -0.18,
+          0,
+          1.43
+        ],
+        "tail": [
+          -0.31,
+          0,
+          1.14
+        ],
+        "parent": "Shoulder_L",
+        "connect": true
+      },
+      {
+        "name": "Forearm_L",
+        "head": [
+          -0.31,
+          0,
+          1.14
+        ],
+        "tail": [
+          -0.42,
+          0,
+          0.88
+        ],
+        "parent": "UpperArm_L",
+        "connect": true
+      },
+      {
+        "name": "Hand_L",
+        "head": [
+          -0.42,
+          0,
+          0.88
+        ],
+        "tail": [
+          -0.44,
+          0,
+          0.78
+        ],
+        "parent": "Forearm_L",
+        "connect": true
+      },
+      {
+        "name": "Thigh_R",
+        "head": [
+          0.09,
+          0,
+          0.9
+        ],
+        "tail": [
+          0.09,
+          0,
+          0.5
+        ],
+        "parent": "Hips"
+      },
+      {
+        "name": "Shin_R",
+        "head": [
+          0.09,
+          0,
+          0.5
+        ],
+        "tail": [
+          0.09,
+          0,
+          0.13
+        ],
+        "parent": "Thigh_R",
+        "connect": true
+      },
+      {
+        "name": "Foot_R",
+        "head": [
+          0.09,
+          0,
+          0.13
+        ],
+        "tail": [
+          0.09,
+          -0.16,
+          0.03
+        ],
+        "parent": "Shin_R",
+        "connect": true
+      },
+      {
+        "name": "Thigh_L",
+        "head": [
+          -0.09,
+          0,
+          0.9
+        ],
+        "tail": [
+          -0.09,
+          0,
+          0.5
+        ],
+        "parent": "Hips"
+      },
+      {
+        "name": "Shin_L",
+        "head": [
+          -0.09,
+          0,
+          0.5
+        ],
+        "tail": [
+          -0.09,
+          0,
+          0.13
+        ],
+        "parent": "Thigh_L",
+        "connect": true
+      },
+      {
+        "name": "Foot_L",
+        "head": [
+          -0.09,
+          0,
+          0.13
+        ],
+        "tail": [
+          -0.09,
+          -0.16,
+          0.03
+        ],
+        "parent": "Shin_L",
+        "connect": true
+      }
     ],
-
-    "auto_bind": ["Miner_Body", "vest", "trousers", "boot_l", "boot_r"],
-
+    "auto_bind": [
+      "Miner_Body",
+      "vest",
+      "trousers",
+      "boots",
+      "hair"
+    ],
     "bind": {
       "hat_crown": "Head",
       "hat_brim": "Head",
+      "eye_l": "Head",
+      "eye_r": "Head",
       "haft": "Pick",
       "pick_head": "Pick"
     },
-
     "ik": [
-      {"bone": "Forearm_L", "subtarget": "HaftHold", "chain_count": 2}
+      {
+        "bone": "Forearm_L",
+        "subtarget": "HaftHold",
+        "chain_count": 2
+      }
     ]
   },
-
   "animations": [
     {
       "name": "swing",
       "frames": 24,
       "keys": [
-        {"frame": 1, "bone": "Hips", "rotation": [0, 0, 0]},
-        {"frame": 1, "bone": "Spine", "rotation": [0, 0, 0]},
-        {"frame": 1, "bone": "Chest", "rotation": [2, 0, 0]},
-        {"frame": 1, "bone": "Shoulder_R", "rotation": [0, 0, -10]},
-        {"frame": 1, "bone": "UpperArm_R", "rotation": [-10, 0, -34]},
-        {"frame": 1, "bone": "Forearm_R", "rotation": [-22, 0, 0]},
-        {"frame": 1, "bone": "Pick", "rotation": [168, 0, 0]},
-
-        {"frame": 6, "bone": "Hips", "rotation": [-4, 0, 0]},
-        {"frame": 6, "bone": "Spine", "rotation": [-7, 0, 0]},
-        {"frame": 6, "bone": "Chest", "rotation": [-10, 0, 0]},
-        {"frame": 6, "bone": "Shoulder_R", "rotation": [0, 0, -14]},
-        {"frame": 6, "bone": "UpperArm_R", "rotation": [-40, 0, -26]},
-        {"frame": 6, "bone": "Forearm_R", "rotation": [-82, 0, 0]},
-        {"frame": 6, "bone": "Pick", "rotation": [46, 0, 0]},
-
-        {"frame": 8, "bone": "Hips", "rotation": [-4, 0, 0]},
-        {"frame": 8, "bone": "Spine", "rotation": [-7, 0, 0]},
-        {"frame": 8, "bone": "Chest", "rotation": [-10, 0, 0]},
-        {"frame": 8, "bone": "Shoulder_R", "rotation": [0, 0, -14]},
-        {"frame": 8, "bone": "UpperArm_R", "rotation": [-40, 0, -26]},
-        {"frame": 8, "bone": "Forearm_R", "rotation": [-82, 0, 0]},
-        {"frame": 8, "bone": "Pick", "rotation": [46, 0, 0]},
-
-        {"frame": 12, "bone": "Hips", "rotation": [8, 0, 0]},
-        {"frame": 12, "bone": "Spine", "rotation": [14, 0, 0]},
-        {"frame": 12, "bone": "Chest", "rotation": [17, 0, 0]},
-        {"frame": 12, "bone": "Shoulder_R", "rotation": [0, 0, -6]},
-        {"frame": 12, "bone": "UpperArm_R", "rotation": [16, 0, -30]},
-        {"frame": 12, "bone": "Forearm_R", "rotation": [-28, 0, 0]},
-        {"frame": 12, "bone": "Pick", "rotation": [118, 0, 0]},
-
-        {"frame": 16, "bone": "Hips", "rotation": [4, 0, 0]},
-        {"frame": 16, "bone": "Spine", "rotation": [7, 0, 0]},
-        {"frame": 16, "bone": "Chest", "rotation": [9, 0, 0]},
-        {"frame": 16, "bone": "Shoulder_R", "rotation": [0, 0, -9]},
-        {"frame": 16, "bone": "UpperArm_R", "rotation": [0, 0, -32]},
-        {"frame": 16, "bone": "Forearm_R", "rotation": [-24, 0, 0]},
-        {"frame": 16, "bone": "Pick", "rotation": [148, 0, 0]},
-
-        {"frame": 24, "bone": "Hips", "rotation": [0, 0, 0]},
-        {"frame": 24, "bone": "Spine", "rotation": [0, 0, 0]},
-        {"frame": 24, "bone": "Chest", "rotation": [2, 0, 0]},
-        {"frame": 24, "bone": "Shoulder_R", "rotation": [0, 0, -10]},
-        {"frame": 24, "bone": "UpperArm_R", "rotation": [-10, 0, -34]},
-        {"frame": 24, "bone": "Forearm_R", "rotation": [-22, 0, 0]},
-        {"frame": 24, "bone": "Pick", "rotation": [168, 0, 0]}
+        {
+          "frame": 1,
+          "bone": "Hips",
+          "rotation": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 1,
+          "bone": "Spine",
+          "rotation": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 1,
+          "bone": "Chest",
+          "rotation": [
+            2,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 1,
+          "bone": "Shoulder_R",
+          "rotation": [
+            0,
+            0,
+            -10
+          ]
+        },
+        {
+          "frame": 1,
+          "bone": "UpperArm_R",
+          "rotation": [
+            -10,
+            0,
+            -34
+          ]
+        },
+        {
+          "frame": 1,
+          "bone": "Forearm_R",
+          "rotation": [
+            -22,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 1,
+          "bone": "Pick",
+          "rotation": [
+            168,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 6,
+          "bone": "Hips",
+          "rotation": [
+            -4,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 6,
+          "bone": "Spine",
+          "rotation": [
+            -7,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 6,
+          "bone": "Chest",
+          "rotation": [
+            -9,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 6,
+          "bone": "Shoulder_R",
+          "rotation": [
+            0,
+            0,
+            -13
+          ]
+        },
+        {
+          "frame": 6,
+          "bone": "UpperArm_R",
+          "rotation": [
+            -34,
+            0,
+            -28
+          ]
+        },
+        {
+          "frame": 6,
+          "bone": "Forearm_R",
+          "rotation": [
+            -66,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 6,
+          "bone": "Pick",
+          "rotation": [
+            22,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 8,
+          "bone": "Hips",
+          "rotation": [
+            -4,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 8,
+          "bone": "Spine",
+          "rotation": [
+            -7,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 8,
+          "bone": "Chest",
+          "rotation": [
+            -9,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 8,
+          "bone": "Shoulder_R",
+          "rotation": [
+            0,
+            0,
+            -13
+          ]
+        },
+        {
+          "frame": 8,
+          "bone": "UpperArm_R",
+          "rotation": [
+            -34,
+            0,
+            -28
+          ]
+        },
+        {
+          "frame": 8,
+          "bone": "Forearm_R",
+          "rotation": [
+            -66,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 8,
+          "bone": "Pick",
+          "rotation": [
+            22,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 12,
+          "bone": "Hips",
+          "rotation": [
+            8,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 12,
+          "bone": "Spine",
+          "rotation": [
+            14,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 12,
+          "bone": "Chest",
+          "rotation": [
+            17,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 12,
+          "bone": "Shoulder_R",
+          "rotation": [
+            0,
+            0,
+            -6
+          ]
+        },
+        {
+          "frame": 12,
+          "bone": "UpperArm_R",
+          "rotation": [
+            14,
+            0,
+            -30
+          ]
+        },
+        {
+          "frame": 12,
+          "bone": "Forearm_R",
+          "rotation": [
+            -26,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 12,
+          "bone": "Pick",
+          "rotation": [
+            125,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 16,
+          "bone": "Hips",
+          "rotation": [
+            4,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 16,
+          "bone": "Spine",
+          "rotation": [
+            7,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 16,
+          "bone": "Chest",
+          "rotation": [
+            9,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 16,
+          "bone": "Shoulder_R",
+          "rotation": [
+            0,
+            0,
+            -9
+          ]
+        },
+        {
+          "frame": 16,
+          "bone": "UpperArm_R",
+          "rotation": [
+            0,
+            0,
+            -32
+          ]
+        },
+        {
+          "frame": 16,
+          "bone": "Forearm_R",
+          "rotation": [
+            -24,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 16,
+          "bone": "Pick",
+          "rotation": [
+            150,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 24,
+          "bone": "Hips",
+          "rotation": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 24,
+          "bone": "Spine",
+          "rotation": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 24,
+          "bone": "Chest",
+          "rotation": [
+            2,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 24,
+          "bone": "Shoulder_R",
+          "rotation": [
+            0,
+            0,
+            -10
+          ]
+        },
+        {
+          "frame": 24,
+          "bone": "UpperArm_R",
+          "rotation": [
+            -10,
+            0,
+            -34
+          ]
+        },
+        {
+          "frame": 24,
+          "bone": "Forearm_R",
+          "rotation": [
+            -22,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 24,
+          "bone": "Pick",
+          "rotation": [
+            168,
+            0,
+            0
+          ]
+        }
       ],
       "holds": [
-        {"frame": 6, "bone": "UpperArm_R", "interpolation": "CONSTANT"},
-        {"frame": 6, "bone": "Forearm_R", "interpolation": "CONSTANT"},
-        {"frame": 6, "bone": "Chest", "interpolation": "CONSTANT"},
-        {"frame": 6, "bone": "Pick", "interpolation": "CONSTANT"},
-        {"frame": 8, "bone": "UpperArm_R", "interpolation": "SINE", "easing": "EASE_IN"},
-        {"frame": 8, "bone": "Forearm_R", "interpolation": "SINE", "easing": "EASE_IN"},
-        {"frame": 8, "bone": "Pick", "interpolation": "SINE", "easing": "EASE_IN"}
+        {
+          "frame": 6,
+          "bone": "UpperArm_R",
+          "interpolation": "CONSTANT"
+        },
+        {
+          "frame": 6,
+          "bone": "Forearm_R",
+          "interpolation": "CONSTANT"
+        },
+        {
+          "frame": 6,
+          "bone": "Chest",
+          "interpolation": "CONSTANT"
+        },
+        {
+          "frame": 6,
+          "bone": "Pick",
+          "interpolation": "CONSTANT"
+        },
+        {
+          "frame": 8,
+          "bone": "UpperArm_R",
+          "interpolation": "SINE",
+          "easing": "EASE_IN"
+        },
+        {
+          "frame": 8,
+          "bone": "Forearm_R",
+          "interpolation": "SINE",
+          "easing": "EASE_IN"
+        },
+        {
+          "frame": 8,
+          "bone": "Pick",
+          "interpolation": "SINE",
+          "easing": "EASE_IN"
+        }
       ]
     },
     {
       "name": "idle",
       "frames": 48,
       "keys": [
-        {"frame": 1, "bone": "Chest", "rotation": [2, 0, 0]},
-        {"frame": 1, "bone": "Spine", "rotation": [0, 0, 0]},
-        {"frame": 24, "bone": "Chest", "rotation": [-0.5, 0, 0]},
-        {"frame": 24, "bone": "Spine", "rotation": [1.5, 0, 0]},
-        {"frame": 48, "bone": "Chest", "rotation": [2, 0, 0]},
-        {"frame": 48, "bone": "Spine", "rotation": [0, 0, 0]}
+        {
+          "frame": 1,
+          "bone": "Chest",
+          "rotation": [
+            2,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 1,
+          "bone": "Spine",
+          "rotation": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 24,
+          "bone": "Chest",
+          "rotation": [
+            -0.5,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 24,
+          "bone": "Spine",
+          "rotation": [
+            1.5,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 48,
+          "bone": "Chest",
+          "rotation": [
+            2,
+            0,
+            0
+          ]
+        },
+        {
+          "frame": 48,
+          "bone": "Spine",
+          "rotation": [
+            0,
+            0,
+            0
+          ]
+        }
       ],
       "holds": []
     }
   ],
-
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": false
   },
-
   "export": {
     "format": "fbx",
     "path": "",

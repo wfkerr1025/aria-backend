@@ -63,6 +63,7 @@ RESULT_CLOSE = "###ARIA_BLENDER_RESULT_CLOSE###"
 # What a modifier may be. Checked against the enum this Blender build
 # actually accepts, rather than trusted from the caller.
 MODIFIER_TYPES = frozenset({
+    "MASK",
     "SUBSURF", "BEVEL", "MIRROR", "ARRAY", "BOOLEAN", "SOLIDIFY",
     "DECIMATE", "MULTIRES", "ARMATURE", "SHRINKWRAP", "LATTICE",
     "SIMPLE_DEFORM", "CAST",
@@ -2357,6 +2358,137 @@ def set_geometry_input(params: Dict[str, Any]) -> str:
             f'_note("set_geometry_input", object=_target.name, input=_label)')
 
 
+def duplicate_object(params: Dict[str, Any]) -> str:
+    """A copy of an object, with its own mesh data.
+
+    Its own data, not a link: a linked duplicate shares vertices with
+    the original, so masking the copy would cut holes in the body the
+    garment is being made from.
+
+    Modifiers are not carried over. A copy of a rigged body that still
+    had its armature modifier would deform twice.
+    """
+    return (f'_src = _obj({_text(params.get("object"))})\n'
+            f'_name = {_named(params, "Copy")}\n'
+            f'_old = bpy.data.objects.get(_name)\n'
+            f'if _old is not None:\n'
+            f'    bpy.data.objects.remove(_old, do_unlink=True)\n'
+            f'_copy = _src.copy()\n'
+            f'_copy.data = _src.data.copy()\n'
+            f'_copy.name = _name\n'
+            f'_copy.data.name = _name\n'
+            f'_copy.modifiers.clear()\n'
+            f'_copy.parent = None\n'
+            f'bpy.context.collection.objects.link(_copy)\n'
+            f'bpy.context.view_layer.objects.active = _copy\n'
+            f'_copy.select_set(True)\n'
+            f'_RESULT["created"].append(_copy.name)\n'
+            f'_note("duplicate_object", source=_src.name, copy=_copy.name, '
+            f'verts=len(_copy.data.vertices))')
+
+
+def vertex_group_by_region(params: Dict[str, Any]) -> str:
+    """Put every vertex inside a box into a named vertex group.
+
+    How a garment says which part of a body it covers. The box is in
+    WORLD metres, which is how the body was measured -- waist at 1.02,
+    chest 1.26 to 1.44 -- so a recipe can name the region it means
+    rather than working in some local space it cannot see.
+
+    `soft` fades the membership over that many metres at the boundary,
+    which is what stops a masked garment ending in a hard ring. Zero
+    for a hem that should be a clean edge, a couple of centimetres for
+    one that should not announce itself.
+
+    Leaving a bound out leaves that side open: a vest needs a top and a
+    bottom and does not care about x at all.
+    """
+    def bound(key, default):
+        value = params.get(key)
+        return "None" if value is None or str(value).strip() == "" else _num(value, default)
+
+    return (f'_target = _obj({_text(params.get("object"))})\n'
+            f'_gname = {_named(params, "ARIA_Region")}\n'
+            f'_grp = _target.vertex_groups.get(_gname) or _target.vertex_groups.new(name=_gname)\n'
+            f'_lo = [{bound("x_min", 0)}, {bound("y_min", 0)}, {bound("z_min", 0)}]\n'
+            f'_hi = [{bound("x_max", 0)}, {bound("y_max", 0)}, {bound("z_max", 0)}]\n'
+            f'_soft = {_num(params.get("soft"), 0.0)}\n'
+            f'_M = _target.matrix_world\n'
+            f'_in = 0\n'
+            f'for _v in _target.data.vertices:\n'
+            f'    _w = _M.__matmul__(_v.co)\n'
+            f'    _weight = 1.0\n'
+            f'    for _axis, _value in enumerate((_w.x, _w.y, _w.z)):\n'
+            f'        _a, _b = _lo[_axis], _hi[_axis]\n'
+            f'        if _a is not None:\n'
+            f'            if _value < _a - _soft:\n'
+            f'                _weight = 0.0\n'
+            f'            elif _soft > 0 and _value < _a:\n'
+            f'                _weight = min(_weight, (_value - (_a - _soft)) / _soft)\n'
+            f'        if _b is not None:\n'
+            f'            if _value > _b + _soft:\n'
+            f'                _weight = 0.0\n'
+            f'            elif _soft > 0 and _value > _b:\n'
+            f'                _weight = min(_weight, ((_b + _soft) - _value) / _soft)\n'
+            f'    if _weight > 0.0:\n'
+            f'        _grp.add([_v.index], _weight, "REPLACE")\n'
+            f'        _in += 1\n'
+            f'_note("vertex_group_by_region", object=_target.name, group=_gname, '
+            f'vertices=_in, of=len(_target.data.vertices))')
+
+
+def apply_mask(params: Dict[str, Any]) -> str:
+    """Throw away everything outside a vertex group.
+
+    The cut. What is left is the part of the body the garment covers,
+    in exactly the body's shape -- so a trouser leg is already a leg,
+    two of them, without anybody having to model or wrap one.
+
+    Applied by default: a live mask hides geometry rather than removing
+    it, and hidden geometry still exports.
+    """
+    invert = "True" if params.get("invert") else "False"
+
+    return (f'_target = _active(_obj({_text(params.get("object"))}))\n'
+            f'_gname = {_text(params.get("group"))}\n'
+            f'if _target.vertex_groups.get(_gname) is None:\n'
+            f'    raise RuntimeError("%r has no vertex group %r -- it has: %s" % ('
+            f'_target.name, _gname, ", ".join(g.name for g in _target.vertex_groups) or "none"))\n'
+            f'_mod = _target.modifiers.new(name="ARIA_Mask", type="MASK")\n'
+            f'_mod.vertex_group = _gname\n'
+            f'_mod.invert_vertex_group = {invert}\n'
+            f'_mod.threshold = {_num(params.get("threshold"), 0.05)}\n'
+            f'{"bpy.ops.object.modifier_apply(modifier=_mod.name)" if params.get("apply", True) else "pass"}\n'
+            f'_note("apply_mask", object=_target.name, group=_gname, '
+            f'verts=len(_target.data.vertices))')
+
+
+def inflate(params: Dict[str, Any]) -> str:
+    """Move every vertex out along its own normal by a fixed distance.
+
+    For getting a garment clear of the skin it was cut from. Negative
+    shrinks, which is how you get a lining.
+
+    A displace modifier with NO texture: displacement is
+    (texture - mid_level) * strength, and an absent texture reads as
+    1.0, so mid_level 0 and strength d moves everything exactly d.
+
+    Not shrinkwrap, which cannot do this at all: a mesh wrapped onto
+    the thing it was copied from finds every vertex already on the
+    target at distance zero, where there is no direction to offset
+    along. The surfaces stay coincident and z-fight into speckle.
+    """
+    return (f'_target = _active(_obj({_text(params.get("object"))}))\n'
+            f'_mod = _target.modifiers.new(name="ARIA_Inflate", type="DISPLACE")\n'
+            f'_mod.texture = None\n'
+            f'_mod.mid_level = 0.0\n'
+            f'_mod.strength = {_num(params.get("distance"), 0.012)}\n'
+            f'_mod.direction = "NORMAL"\n'
+            f'{"bpy.ops.object.modifier_apply(modifier=_mod.name)" if params.get("apply", True) else "pass"}\n'
+            f'_note("inflate", object=_target.name, '
+            f'distance={_num(params.get("distance"), 0.012)})')
+
+
 TEMPLATES = {
     "apply_transforms": apply_transforms,
     "remove_stray_meshes": remove_stray_meshes,
@@ -2407,6 +2539,10 @@ TEMPLATES = {
     "apply_lattice": apply_lattice,
     "move_lattice_point": move_lattice_point,
     "join_objects": join_objects,
+    "duplicate_object": duplicate_object,
+    "inflate": inflate,
+    "vertex_group_by_region": vertex_group_by_region,
+    "apply_mask": apply_mask,
     "add_geometry_nodes": add_geometry_nodes,
     "scatter_on_surface": scatter_on_surface,
     "set_geometry_input": set_geometry_input,
