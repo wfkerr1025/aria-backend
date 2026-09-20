@@ -1,0 +1,187 @@
+{
+  "name": "human_base_meshes_landmarks",
+  "of": "human_base_meshes",
+  "units": "meters",
+  "measured_by": "aria_models/measure_base_landmarks.py",
+  "slice_step": 0.005,
+  "slice_band": 0.02,
+  "note": "Heights are world metres on the body AS A RECIPE SEES IT: appended, scaled to `height`, transforms applied, origin on the floor. A recipe names these rather than carrying numbers, so a garment cut for one body fits another.",
+  "bases": {
+    "GEO-body_male_stylized": {
+      "height": 1.8,
+      "faces": "-Y",
+      "z": {
+        "sole": 0.0,
+        "ankle": 0.15,
+        "calf": 0.355,
+        "knee": 0.49,
+        "crotch": 0.72,
+        "hip": 0.72,
+        "waist": 1.07,
+        "chest": 1.2,
+        "armpit": 1.24,
+        "shoulder": 1.245,
+        "neck": 1.495,
+        "chin": 1.555,
+        "head": 1.63,
+        "crown": 1.8,
+        "fingertip": 0.72,
+        "wrist": 0.902
+      },
+      "half_width": {
+        "ankle": 0.0293,
+        "calf": 0.0587,
+        "knee": 0.0429,
+        "hip": 0.1536,
+        "waist": 0.1179,
+        "chest": 0.159,
+        "shoulder": 0.315,
+        "neck": 0.0709,
+        "head": 0.1401,
+        "reach": 0.4401,
+        "hand_inner": 0.3482
+      },
+      "y": {
+        "toe": -0.1544,
+        "heel": 0.1055,
+        "face": -0.1154,
+        "skull": 0.1445,
+        "chest_front": -0.1012,
+        "chest_back": 0.1218
+      },
+      "verts": 12502
+    },
+    "GEO-body_female_stylized": {
+      "height": 1.62,
+      "faces": "-Y",
+      "z": {
+        "sole": 0.0,
+        "ankle": 0.125,
+        "calf": 0.335,
+        "knee": 0.46,
+        "crotch": 0.68,
+        "hip": 0.735,
+        "waist": 1.025,
+        "chest": 1.105,
+        "armpit": 1.15,
+        "shoulder": 1.15,
+        "neck": 1.335,
+        "chin": 1.36,
+        "head": 1.46,
+        "crown": 1.62,
+        "fingertip": 0.715,
+        "wrist": 0.8672
+      },
+      "half_width": {
+        "ankle": 0.0244,
+        "calf": 0.0528,
+        "knee": 0.0415,
+        "hip": 0.1644,
+        "waist": 0.0843,
+        "chest": 0.0962,
+        "shoulder": 0.2118,
+        "neck": 0.0437,
+        "head": 0.1402,
+        "reach": 0.3611,
+        "hand_inner": 0.3052
+      },
+      "y": {
+        "toe": -0.1369,
+        "heel": 0.0798,
+        "face": -0.0949,
+        "skull": 0.1291,
+        "chest_front": -0.0727,
+        "chest_back": 0.0954
+      },
+      "verts": 12502
+    },
+    "GEO-body_male_realistic": {
+      "height": 1.69,
+      "faces": "-Y",
+      "z": {
+        "sole": 0.0001,
+        "ankle": 0.1251,
+        "calf": 0.3151,
+        "knee": 0.4051,
+        "crotch": 0.6551,
+        "hip": 0.6901,
+        "waist": 1.0651,
+        "chest": 1.1351,
+        "armpit": 1.1701,
+        "shoulder": 1.1701,
+        "neck": 1.4701,
+        "chin": 1.5201,
+        "head": 1.5701,
+        "crown": 1.6901,
+        "fingertip": 0.7151,
+        "wrist": 0.8743
+      },
+      "half_width": {
+        "ankle": 0.0292,
+        "calf": 0.0547,
+        "knee": 0.0472,
+        "hip": 0.1906,
+        "waist": 0.1463,
+        "chest": 0.1596,
+        "shoulder": 0.3006,
+        "neck": 0.0609,
+        "head": 0.0912,
+        "reach": 0.4404,
+        "hand_inner": 0.3513
+      },
+      "y": {
+        "toe": -0.1,
+        "heel": 0.1382,
+        "face": -0.1218,
+        "skull": 0.0819,
+        "chest_front": -0.1038,
+        "chest_back": 0.1186
+      },
+      "verts": 10582
+    },
+    "GEO-body_female_realistic": {
+      "height": 1.64,
+      "faces": "-Y",
+      "z": {
+        "sole": 0.0001,
+        "ankle": 0.1201,
+        "calf": 0.3101,
+        "knee": 0.4001,
+        "crotch": 0.7251,
+        "hip": 0.7501,
+        "waist": 1.0501,
+        "chest": 1.1151,
+        "armpit": 1.1501,
+        "shoulder": 1.1701,
+        "neck": 1.4151,
+        "chin": 1.4801,
+        "head": 1.5101,
+        "crown": 1.6401,
+        "fingertip": 0.7251,
+        "wrist": 0.8738
+      },
+      "half_width": {
+        "ankle": 0.027,
+        "calf": 0.0523,
+        "knee": 0.0476,
+        "hip": 0.1814,
+        "waist": 0.1137,
+        "chest": 0.1225,
+        "shoulder": 0.2368,
+        "neck": 0.0534,
+        "head": 0.0877,
+        "reach": 0.4206,
+        "hand_inner": 0.3157
+      },
+      "y": {
+        "toe": -0.1205,
+        "heel": 0.1137,
+        "face": -0.1421,
+        "skull": 0.0659,
+        "chest_front": -0.1199,
+        "chest_back": 0.0906
+      },
+      "verts": 10582
+    }
+  }
+}

@@ -31,6 +31,29 @@ answer and `aria_recipes/blender/` builds those procedurally.
 | `blender/human/human_base_meshes_bundle.blend` | the bundle itself, 49 MB |
 | `blender/human/thumbnails/` | one picture per asset |
 | `fetch_human_base_meshes.py` | re-downloads and verifies the .blend against the manifest's sha256 |
+| `landmarks_human_base_meshes.json` | where each body's parts are -- ankle, knee, crotch, waist, chest, armpit, neck, chin, crown -- in the world metres a recipe sees |
+| `measure_base_landmarks.py` | re-derives that table by slicing the bodies in Blender |
+
+## Why the landmarks are measured and not estimated
+
+A garment recipe is a box in world metres: keep the body between 0.97
+and 1.47 and what is left is a vest. Those numbers are the whole
+recipe, and being three centimetres out puts the trousers above the
+navel. The first four garments were cut with numbers read off a
+viewport by eye and every one of them took three passes to stop being
+a crop top.
+
+So the bodies are sliced instead, every 5mm, and the landmarks fall
+out of the shape: the crotch is where two leg-shaped clusters become
+one torso, the armpit is the top of the run where a slice cuts left
+arm, torso and right arm, the waist is the narrowest torso between
+them. Recipes then name a landmark -- `z_min: waist` -- rather
+than carrying a number, so one pair of trousers fits every body here
+instead of only the one it was measured against.
+
+    python aria_models/measure_base_landmarks.py
+
+It needs Blender and the .blend, and it rewrites the table in place.
 
 ## The .blend is not in git
 

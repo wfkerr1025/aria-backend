@@ -1,37 +1,54 @@
 {
   "name": "base_hat",
-  "version": "1.0",
-  "description": "Primitive blockout hat designed to fit the Base Stylized Body. Used as the foundation for all hat and headwear variants.",
+  "version": "2.0",
+  "description": "A soft hat -- a crown and a brim -- standing on the head rather than cut from it, because a hat is not the shape of a head. Every measurement is taken off the head it sits on, so the same recipe fits a tall figure and a short one.",
   "units": "meters",
-
+  "base": {
+    "library": "human_base_meshes",
+    "object": "GEO-body_male_stylized",
+    "as": "Hat_Body",
+    "height": 1.8,
+    "keep": false
+  },
   "objects": [
     {
-      "id": "hat_crown",
+      "id": "crown",
       "type": "cylinder",
-      "radius": 0.20,
-      "depth": 0.18,
-      "location": [0, 0, 1.90]
+      "radius": "head_x-0.012",
+      "depth": 0.15,
+      "location": [
+        0,
+        0,
+        "crown+0.005"
+      ]
     },
     {
-      "id": "hat_brim",
+      "id": "brim",
       "type": "cylinder",
-      "radius": 0.28,
-      "depth": 0.04,
-      "location": [0, 0, 1.82]
+      "radius": "head_x+0.072",
+      "depth": 0.02,
+      "location": [
+        0,
+        0,
+        "crown-0.058"
+      ]
     }
   ],
-
   "modifiers": [
-    { "target": "hat_crown", "type": "smooth_shade" },
-    { "target": "hat_brim", "type": "smooth_shade" }
+    {
+      "target": "crown",
+      "type": "smooth_shade"
+    },
+    {
+      "target": "brim",
+      "type": "smooth_shade"
+    }
   ],
-
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_hat.fbx",

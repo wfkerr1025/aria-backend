@@ -1,32 +1,35 @@
 {
   "name": "base_boots",
-  "version": "1.0",
-  "description": "Primitive blockout boots designed to fit the Base Stylized Body. Used as the foundation for all boot variants.",
+  "version": "2.0",
+  "description": "Boots: the foot and the ankle, up to mid-calf. No x bound at all -- at that height the only thing on the body is two feet, so the one cut makes the pair.",
   "units": "meters",
-
-  "objects": [
+  "base": {
+    "library": "human_base_meshes",
+    "object": "GEO-body_male_stylized",
+    "as": "Boots_Body",
+    "height": 1.8,
+    "keep": false
+  },
+  "garments": [
     {
-      "id": "boot_left",
-      "type": "cube",
-      "size": [0.22, 0.12, 0.18],
-      "location": [-0.12, 0.05, 0.30]
-    },
-    {
-      "id": "boot_right",
-      "type": "cube",
-      "size": [0.22, 0.12, 0.18],
-      "location": [0.12, 0.05, 0.30]
+      "id": "boots",
+      "from": "Boots_Body",
+      "z_min": "sole-0.01",
+      "z_max": "ankle+0.12",
+      "soft": 0.01,
+      "offset": 0.018,
+      "thickness": 0.02,
+      "relax": {
+        "factor": 0.7,
+        "iterations": 10
+      }
     }
   ],
-
-  "modifiers": [],
-
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_boots.fbx",

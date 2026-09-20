@@ -1,41 +1,39 @@
 {
   "name": "base_helmet",
-  "version": "1.0",
-  "description": "Primitive blockout helmet designed to fit the Base Stylized Body. Used as the foundation for all helmet, headgear, and armor variants.",
+  "version": "2.0",
+  "description": "A helmet: the skull from just above the widest part of the head up over the crown, pushed out and nudged toward a sphere so it reads as something beaten out of metal rather than a scalp. The cast is gentle on purpose -- a strong one collapses a skullcap into a dish, because casting a shallow shell toward a sphere pulls it flat before it pulls it round.",
   "units": "meters",
-
-  "objects": [
+  "base": {
+    "library": "human_base_meshes",
+    "object": "GEO-body_male_stylized",
+    "as": "Helmet_Body",
+    "height": 1.8,
+    "keep": false
+  },
+  "garments": [
     {
-      "id": "helmet_shell",
-      "type": "sphere",
-      "radius": 0.22,
-      "location": [0, 0, 1.90],
-      "subdivision": 1
-    },
-    {
-      "id": "helmet_front_plate",
-      "type": "cube",
-      "size": [0.30, 0.06, 0.20],
-      "location": [0, 0.18, 1.85]
-    },
-    {
-      "id": "helmet_back_plate",
-      "type": "cube",
-      "size": [0.30, 0.06, 0.20],
-      "location": [0, -0.18, 1.85]
+      "id": "helmet",
+      "from": "Helmet_Body",
+      "z_min": "head+0.04",
+      "z_max": "crown+0.03",
+      "soft": 0.01,
+      "offset": 0.026,
+      "thickness": 0.012,
+      "relax": {
+        "factor": 0.8,
+        "iterations": 14
+      },
+      "cast": {
+        "shape": "SPHERE",
+        "factor": 0.12
+      }
     }
   ],
-
-  "modifiers": [
-    { "target": "helmet_shell", "type": "smooth_shade" }
-  ],
-
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_helmet.fbx",

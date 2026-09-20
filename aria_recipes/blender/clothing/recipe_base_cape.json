@@ -1,32 +1,38 @@
 {
   "name": "base_cape",
-  "version": "1.0",
-  "description": "Primitive blockout cape designed to fit the Base Stylized Body. Used as the foundation for all cape, cloak, and mantle variants.",
+  "version": "2.0",
+  "description": "A shoulder mantle, cut from the back of the torso. The y bound is taken off the measured depth of the chest rather than the middle of the body: a cut down the centre line runs parallel to the flanks and tears them, while one just inside the back keeps only surface that faces the cut. It stops at the chest because a cut can only give back surface the body actually has, and nothing hangs below a standing figure to make a full-length cape out of.",
   "units": "meters",
-
-  "objects": [
+  "base": {
+    "library": "human_base_meshes",
+    "object": "GEO-body_male_stylized",
+    "as": "Cape_Body",
+    "height": 1.8,
+    "keep": false
+  },
+  "garments": [
     {
-      "id": "cape_top",
-      "type": "cube",
-      "size": [0.34, 0.06, 0.12],
-      "location": [0, 0, 1.55]
-    },
-    {
-      "id": "cape_body",
-      "type": "cube",
-      "size": [0.50, 0.05, 1.00],
-      "location": [0, 0, 1.00]
+      "id": "cape",
+      "from": "Cape_Body",
+      "z_min": "waist-0.02",
+      "z_max": "shoulder+0.01",
+      "y_min": 0.02,
+      "x_min": "-chest_x-0.01",
+      "x_max": "chest_x+0.01",
+      "soft": 0.025,
+      "offset": 0.045,
+      "thickness": 0.012,
+      "relax": {
+        "factor": 0.9,
+        "iterations": 22
+      }
     }
   ],
-
-  "modifiers": [],
-
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_cape.fbx",

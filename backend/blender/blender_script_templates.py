@@ -2358,6 +2358,83 @@ def set_geometry_input(params: Dict[str, Any]) -> str:
             f'_note("set_geometry_input", object=_target.name, input=_label)')
 
 
+def relax_surface(params: Dict[str, Any]) -> str:
+    """Average each vertex toward its neighbours -- take the anatomy out.
+
+    THIS IS WHAT MAKES A CUT GARMENT READ AS CLOTH. Cutting trousers
+    out of a body gives a shape that fits perfectly and looks like
+    bare legs, because it IS bare legs: it has kneecaps, a calf muscle
+    and an ankle bone, and cloth has none of those. Rendered, the first
+    pair came out as skin with a seam.
+
+    Smoothing is the fix and it is the cheap one. A few iterations
+    round the kneecap out of the knee and the tendon out of the ankle
+    while leaving the silhouette, which is the difference between a
+    leg and a trouser leg.
+
+    It SHRINKS as it smooths -- averaging toward neighbours pulls a
+    convex surface inward -- so this belongs before the inflate that
+    pushes the garment back off the body, never after it.
+
+    `axis` narrows it: smoothing only across x and y keeps a hem's
+    height while still rounding the shape it sits on.
+
+    `group` is what keeps the hem straight, and a cut garment always
+    has the right one to hand. Smoothing averages every vertex toward
+    its neighbours INCLUDING the ones on an open boundary, which have
+    neighbours on one side only -- so an unweighted pass drags the
+    waistband into a wavy frill. The region group a garment was cut
+    with already fades to nothing at its own edges, so handing it back
+    here smooths the middle hard and leaves the hem where it was cut.
+    """
+    axis = str(params.get("axis") or "xyz").lower()
+    rounds = _int(params.get("iterations"), 6, 1, 200)
+    group = params.get("group")
+    return (f'_target = _active(_obj({_text(params.get("object"))}))\n'
+            f'_mod = _target.modifiers.new(name="ARIA_Relax", type="SMOOTH")\n'
+            f'_mod.factor = {_num(params.get("factor"), 0.5)}\n'
+            f'_mod.iterations = {rounds}\n'
+            + (f'if _target.vertex_groups.get({_text(group)}) is not None:\n'
+               f'    _mod.vertex_group = {_text(group)}\n' if group else '')
+            + f'_mod.use_x = {"x" in axis}\n'
+            f'_mod.use_y = {"y" in axis}\n'
+            f'_mod.use_z = {"z" in axis}\n'
+            f'{"bpy.ops.object.modifier_apply(modifier=_mod.name)" if params.get("apply", True) else "pass"}\n'
+            f'_note("relax_surface", object=_target.name, '
+            f'iterations={rounds})')
+
+
+def delete_object(params: Dict[str, Any]) -> str:
+    """Remove one named object from the scene, and say that it went.
+
+    THIS IS THE OTHER HALF OF CUTTING A GARMENT OUT OF A BODY. A pair
+    of trousers is made by copying the body, keeping the part the
+    trousers cover and throwing the rest away -- which means the body
+    is standing in the scene when the trousers are finished. Exporting
+    then gives a pair of trousers with a naked man inside them, because
+    `export_fbx` writes every mesh in the file rather than a selection.
+
+    Narrow on purpose: one object, by name, and a miss is an error
+    rather than a shrug. `remove_stray_meshes` is the one that decides
+    for itself what to drop, and it only does it inside a rigged file.
+
+    Children are not orphaned -- they are re-parented to whatever the
+    object itself hung from, so deleting a base does not send the hat
+    that was parented to its head back to the world origin.
+    """
+    return (f'_doomed = _obj({_text(params.get("object"))})\n'
+            f'_up = _doomed.parent\n'
+            f'for _child in list(_doomed.children):\n'
+            f'    _keep = _child.matrix_world.copy()\n'
+            f'    _child.parent = _up\n'
+            f'    _child.matrix_world = _keep\n'
+            f'_gone = _doomed.name\n'
+            f'bpy.data.objects.remove(_doomed, do_unlink=True)\n'
+            f'_RESULT["modified"].append(_gone)\n'
+            f'_note("delete_object", object=_gone, '
+            f'left=len([_o for _o in bpy.data.objects if _o.type == "MESH"]))')
+
+
 def duplicate_object(params: Dict[str, Any]) -> str:
     """A copy of an object, with its own mesh data.
 
@@ -2540,6 +2617,8 @@ TEMPLATES = {
     "move_lattice_point": move_lattice_point,
     "join_objects": join_objects,
     "duplicate_object": duplicate_object,
+    "delete_object": delete_object,
+    "relax_surface": relax_surface,
     "inflate": inflate,
     "vertex_group_by_region": vertex_group_by_region,
     "apply_mask": apply_mask,

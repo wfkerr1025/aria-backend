@@ -35,10 +35,18 @@ def test_every_recipe_becomes_valid_blender_python(name):
     compile(source, f"<{name}>", "exec")
 
 
+# The three ways a recipe can put geometry in the scene. Primitives
+# were the only one when the library was blockouts; a garment cut out
+# of a base adds nothing at all -- it appends a body and copies it --
+# so a test that only counted add_* called the new clothing empty.
+MAKES_GEOMETRY = ("append_from_blend", "duplicate_object")
+
+
 @pytest.mark.parametrize("name", recipes.names())
 def test_every_recipe_makes_something(name):
     built = [step for step in recipes.actions(name)
-             if step["action"].startswith("add_")]
+             if step["action"].startswith("add_")
+             or step["action"] in MAKES_GEOMETRY]
 
     assert built, f"{name} builds no objects"
 
@@ -72,10 +80,16 @@ def test_parts_are_named_for_their_recipe():
 
 def test_part_names_match_what_the_build_creates():
     """A rig names the mesh it binds to before the build has run, so the
-    two have to agree or it binds to nothing."""
+    two have to agree or it binds to nothing.
+
+    Both ways a recipe makes a mesh count: a primitive it adds, and a
+    garment it cuts out of the base by copying it. The cut clothing is
+    exactly what auto_bind is handed, so leaving duplicates out here
+    would check the half that was never in doubt."""
     for name in recipes.names():
-        made = [s["params"]["name"] for s in recipes.actions(name)
-                if s["action"].startswith("add_")]
+        made = [step["params"]["name"] for step in recipes.actions(name)
+                if step["action"].startswith("add_")
+                or step["action"] == "duplicate_object"]
         assert made == recipes.part_names(name), name
 
 
@@ -148,8 +162,13 @@ def test_a_sentence_reaches_the_library():
 
     assert got is not None
     assert "recipe:helmet" in got["matched"]
-    assert any(s["params"].get("name", "").startswith("Helmet_")
-               for s in got["actions"] if s["action"].startswith("add_"))
+    # However the helmet is made -- added as a primitive, or cut out of
+    # a base by copying it -- something in the scene has to be called
+    # after it, or the sentence reached a recipe that built nothing.
+    assert any(str(s["params"].get("name", "")).startswith("Helmet")
+               for s in got["actions"]
+               if s["action"].startswith("add_")
+               or s["action"] == "duplicate_object")
 
 
 def test_a_sentence_still_reaches_the_hardcoded_builders():
@@ -197,3 +216,193 @@ def test_a_base_reports_whether_this_clone_actually_has_the_file():
 
 def test_bases_can_be_narrowed_by_use():
     assert [b["object"] for b in recipes.base_models("stylised male")] == ["GEO-body_male_stylized"]
+
+
+# ======================================================
+# Landmarks
+# ======================================================
+#
+# A garment is cut with a box in world metres, and those metres used to
+# be written into the recipe -- which made every clothing recipe true
+# of one body at one height. These cover the translation that lets a
+# recipe say "the waist" instead.
+
+MALE = "GEO-body_male_stylized"
+
+
+def test_the_landmark_table_was_measured():
+    """Without it, every clothing recipe in the library is unbuildable."""
+    marks = recipes.landmarks(MALE)
+
+    assert marks, "no landmarks -- run aria_models/measure_base_landmarks.py"
+    assert marks["z"]["crown"] == pytest.approx(1.8, abs=0.01)
+    assert marks["faces"] == "-Y"
+
+
+@pytest.mark.parametrize("base", [
+    "GEO-body_male_stylized", "GEO-body_female_stylized",
+    "GEO-body_male_realistic", "GEO-body_female_realistic"])
+def test_the_landmarks_are_in_the_order_a_body_is(base):
+    """A table that says the knee is above the chest is a table that
+    builds trousers onto a torso, silently. This is the check that
+    caught the derivation reading a crotch inside a skull."""
+    heights = recipes.landmarks(base)["z"]
+    order = ["sole", "ankle", "calf", "knee", "crotch", "waist",
+             "chest", "armpit", "neck", "chin", "head", "crown"]
+    got = [heights[key] for key in order]
+
+    assert got == sorted(got), dict(zip(order, got))
+
+
+def test_a_number_is_still_metres():
+    assert recipes.resolve(1.07, recipes.landmarks(MALE)) == 1.07
+    assert recipes.resolve(None, recipes.landmarks(MALE)) is None
+
+
+def test_a_name_is_the_measurement():
+    marks = recipes.landmarks(MALE)
+
+    assert recipes.resolve("waist", marks) == marks["z"]["waist"]
+
+
+def test_a_name_can_carry_an_offset():
+    marks = recipes.landmarks(MALE)
+    waist = marks["z"]["waist"]
+
+    assert recipes.resolve("waist+0.04", marks) == pytest.approx(waist + 0.04)
+    assert recipes.resolve("waist-0.04", marks) == pytest.approx(waist - 0.04)
+
+
+def test_a_leading_minus_mirrors_before_it_offsets():
+    """A recipe reads the sign as "which side", so the offset after it
+    has to keep meaning "inward" rather than flipping with it."""
+    marks = recipes.landmarks(MALE)
+    reach = marks["half_width"]["shoulder"]
+
+    assert recipes.resolve("-shoulder_x", marks) == pytest.approx(-reach)
+    assert recipes.resolve("-shoulder_x+0.02", marks) == pytest.approx(-reach + 0.02)
+
+
+def test_heights_and_widths_do_not_collide():
+    """Nearly every landmark exists on two axes. One flat namespace
+    would have answered "chest" with whichever table was read first,
+    and a chest HEIGHT used as a chest width is a garment 1.2m across."""
+    marks = recipes.landmarks(MALE)
+
+    assert recipes.resolve("chest", marks) == marks["z"]["chest"]
+    assert recipes.resolve("chest_x", marks) == marks["half_width"]["chest"]
+    assert recipes.resolve("chest_front_y", marks) == marks["y"]["chest_front"]
+    assert recipes.resolve("chest", marks) != recipes.resolve("chest_x", marks)
+
+
+def test_an_unknown_landmark_is_refused_and_lists_the_real_ones():
+    """A bound that quietly became "no bound at all" is a vest up to
+    the eyebrows, and the recipe looks correct while it does it."""
+    with pytest.raises(recipes.UnsupportedRecipe) as raised:
+        recipes.resolve("shoulderblade", recipes.landmarks(MALE), "vest z_max")
+
+    assert "shoulderblade" in str(raised.value)
+    assert "vest z_max" in str(raised.value)
+    assert "waist" in str(raised.value)
+
+
+def test_a_landmark_with_no_table_says_how_to_get_one():
+    with pytest.raises(recipes.UnsupportedRecipe) as raised:
+        recipes.resolve("waist", {}, "vest z_max")
+
+    assert "measure_base_landmarks" in str(raised.value)
+
+
+def test_a_recipe_is_cut_where_the_body_actually_is():
+    """The end of it: base_pants says "ankle+0.04", and what reaches
+    Blender has to be the measured ankle rather than a typed number."""
+    marks = recipes.landmarks(MALE)
+    region = next(step for step in recipes.actions("base_pants")
+                  if step["action"] == "vertex_group_by_region")
+
+    assert region["params"]["z_min"] == pytest.approx(marks["z"]["ankle"] + 0.04)
+    assert region["params"]["z_max"] == pytest.approx(marks["z"]["waist"] + 0.02)
+
+
+# ======================================================
+# Cutting a garment out of a body
+# ======================================================
+
+def test_several_regions_become_one_group():
+    """Gloves are the case that forced it: two hands at the same
+    height with the hips between them, so no single box reaches both.
+    The same group name each time, and a vertex group is a union."""
+    cuts = [step for step in recipes.actions("base_gloves")
+            if step["action"] == "vertex_group_by_region"]
+
+    assert len(cuts) == 2
+    assert len({step["params"]["name"] for step in cuts}) == 1
+    assert cuts[0]["params"]["x_min"] > 0
+    assert cuts[1]["params"]["x_max"] < 0
+
+
+def test_smoothing_runs_before_the_garment_is_pushed_off_the_body():
+    """Smoothing shrinks as it works, so after the inflate it would
+    pull the garment back into the body it was just lifted off."""
+    order = [step["action"] for step in recipes.actions("base_pants")]
+
+    assert order.index("relax_surface") < order.index("inflate")
+    assert order.index("inflate") < order.index("apply_solidify")
+
+
+def test_smoothing_is_held_back_at_the_hem():
+    """An unweighted smooth drags an open boundary into a frill. The
+    group the cut was made with already fades out at its own edges, so
+    handing it back is what keeps the waistband straight."""
+    steps = recipes.actions("base_pants")
+    relax = next(s for s in steps if s["action"] == "relax_surface")
+    cut = next(s for s in steps if s["action"] == "vertex_group_by_region")
+
+    assert relax["params"]["group"] == cut["params"]["name"]
+
+
+def test_a_cast_shapes_the_garment_after_it_is_lifted_clear():
+    """base_helmet is the one that uses it -- a skullcap nudged toward
+    a sphere. Before the inflate it would be casting the body."""
+    order = [step["action"] for step in recipes.actions("base_helmet")]
+
+    assert order.index("inflate") < order.index("apply_cast")
+    assert order.index("apply_cast") < order.index("apply_solidify")
+
+
+def test_scaffolding_is_dropped_before_the_export():
+    """A garment recipe has to stand a body up to cut the garment out
+    of, and export_fbx writes every mesh in the file. Without the drop,
+    base_pants exports a naked man wearing them."""
+    steps = recipes.actions("base_pants", export=True)
+    order = [step["action"] for step in steps]
+    dropped = next(s for s in steps if s["action"] == "delete_object")
+
+    assert dropped["params"]["object"] == "Pants_Body"
+    assert order.index("apply_mask") < order.index("delete_object")
+    assert order.index("delete_object") < order.index("export_fbx")
+
+
+def test_a_body_recipe_keeps_its_body():
+    """base_stylized_body IS the body. Dropping it would export air."""
+    assert not any(step["action"] == "delete_object"
+                   for step in recipes.actions("base_stylized_body"))
+
+
+def test_a_part_does_not_stutter_its_own_recipe_name():
+    """base_pants calling its trousers "Pants_Pants" carries the
+    stutter into the FBX, the prefab and the Unity hierarchy."""
+    assert recipes.part_names("base_pants") == ["Pants"]
+    assert recipes.part_names("base_underwear_female") == [
+        "UnderwearFemale_Top", "UnderwearFemale_Briefs"]
+
+
+def test_a_rig_can_be_placed_off_the_body_it_is_for():
+    """A rig written in metres belongs to one body at one height."""
+    marks = recipes.landmarks(MALE)
+    bone = next(step for step in recipes.rig_actions("base_stylized_body")
+                if step["action"] == "add_bone"
+                and step["params"]["name"] == "Head")
+
+    assert bone["params"]["head"][2] == pytest.approx(marks["z"]["neck"])
+    assert bone["params"]["tail"][2] == pytest.approx(marks["z"]["crown"])

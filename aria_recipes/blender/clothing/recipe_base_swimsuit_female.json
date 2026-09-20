@@ -1,33 +1,40 @@
 {
   "name": "base_swimsuit_female",
-  "version": "1.0",
-  "description": "Primitive blockout female swimsuit designed to fit the Base Stylized Body.",
+  "version": "2.0",
+  "description": "A one-piece on the female base: one cut from the hips to the chest, so it is a single closed garment rather than two.",
   "units": "meters",
-
-  "objects": [
+  "base": {
+    "library": "human_base_meshes",
+    "object": "GEO-body_female_stylized",
+    "as": "SwimsuitFemale_Body",
+    "height": 1.62,
+    "keep": false
+  },
+  "garments": [
     {
-      "id": "swim_top",
-      "type": "cube",
-      "size": [0.36, 0.22, 0.30],
-      "location": [0, 0, 1.45]
-    },
-    {
-      "id": "swim_bottom",
-      "type": "cube",
-      "size": [0.32, 0.20, 0.22],
-      "location": [0, 0, 1.05]
+      "id": "swimsuit",
+      "from": "SwimsuitFemale_Body",
+      "z_min": "crotch-0.05",
+      "z_max": "chest+0.07",
+      "x_min": "-chest_x-0.05",
+      "x_max": "chest_x+0.05",
+      "soft": 0.012,
+      "offset": 0.009,
+      "thickness": 0.007,
+      "relax": {
+        "factor": 0.5,
+        "iterations": 6
+      }
     }
   ],
-
   "cleanup": {
     "apply_transforms": true,
+    "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_swimsuit_female.fbx",
     "apply_scale": true
   }
 }
-

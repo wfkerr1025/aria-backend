@@ -1,44 +1,37 @@
 {
   "name": "base_belt",
-  "version": "1.0",
-  "description": "Primitive blockout belt designed to fit the Base Stylized Body. Used as the foundation for all belt, waist-gear, and utility strap variants.",
+  "version": "2.0",
+  "description": "A belt: a band four centimetres either side of the waist. Barely inflated and thick, because a belt is the one garment that should sit ON the clothes rather than on the skin.",
   "units": "meters",
-
-  "objects": [
+  "base": {
+    "library": "human_base_meshes",
+    "object": "GEO-body_male_stylized",
+    "as": "Belt_Body",
+    "height": 1.8,
+    "keep": false
+  },
+  "garments": [
     {
-      "id": "belt_main",
-      "type": "cube",
-      "size": [0.38, 0.10, 0.12],
-      "location": [0, 0, 1.00]
-    },
-    {
-      "id": "belt_buckle",
-      "type": "cube",
-      "size": [0.14, 0.06, 0.10],
-      "location": [0.18, 0.05, 1.00]
-    },
-    {
-      "id": "belt_loop_left",
-      "type": "cube",
-      "size": [0.06, 0.04, 0.10],
-      "location": [-0.20, -0.05, 1.00]
-    },
-    {
-      "id": "belt_loop_right",
-      "type": "cube",
-      "size": [0.06, 0.04, 0.10],
-      "location": [0.20, -0.05, 1.00]
+      "id": "belt",
+      "from": "Belt_Body",
+      "z_min": "waist-0.045",
+      "z_max": "waist+0.045",
+      "x_min": "-hip_x-0.04",
+      "x_max": "hip_x+0.04",
+      "soft": 0.0,
+      "offset": 0.042,
+      "thickness": 0.012,
+      "relax": {
+        "factor": 0.9,
+        "iterations": 14
+      }
     }
   ],
-
-  "modifiers": [],
-
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_belt.fbx",

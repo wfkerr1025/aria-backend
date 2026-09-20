@@ -1,103 +1,51 @@
 {
   "name": "base_stylized_body",
-  "version": "1.0",
-  "description": "Stylized humanoid blockout with exaggerated proportions for cosmetics and readability.",
+  "version": "2.0",
+  "description": "The stylised human figure the clothing library is cut from: Blender Studio's CC0 stylised male base, appended, scaled to 1.8m and stood on the floor. It was twelve boxes and spheres, and twelve boxes and spheres are a blockout -- a figure with no shoulders, no anatomy and nothing a garment can be cut out of. This brings in the real thing, 12,502 quads with UVs, and keeps it: a body is the one recipe whose output IS the body. See aria_models/README.md for why the mesh is authored rather than generated, and base_humanoid for the primitives version, which is still the right start for proportions no human has.",
   "units": "meters",
 
-  "objects": [
-    {
-      "id": "head",
-      "type": "sphere",
-      "radius": 0.16,
-      "location": [0, 0, 1.78],
-      "subdivision": 2
-    },
-    {
-      "id": "torso_upper",
-      "type": "cube",
-      "size": [0.34, 0.22, 0.40],
-      "location": [0, 0, 1.45]
-    },
-    {
-      "id": "torso_lower",
-      "type": "cube",
-      "size": [0.30, 0.20, 0.30],
-      "location": [0, 0, 1.15]
-    },
-    {
-      "id": "pelvis",
-      "type": "cube",
-      "size": [0.32, 0.22, 0.22],
-      "location": [0, 0, 0.95]
-    },
-    {
-      "id": "arm_left",
-      "type": "cylinder",
-      "radius": 0.07,
-      "depth": 0.50,
-      "location": [-0.30, 0, 1.45],
-      "rotation": [0, 0, 90]
-    },
-    {
-      "id": "arm_right",
-      "type": "cylinder",
-      "radius": 0.07,
-      "depth": 0.50,
-      "location": [0.30, 0, 1.45],
-      "rotation": [0, 0, -90]
-    },
-    {
-      "id": "hand_left",
-      "type": "cube",
-      "size": [0.14, 0.10, 0.18],
-      "location": [-0.55, 0, 1.25]
-    },
-    {
-      "id": "hand_right",
-      "type": "cube",
-      "size": [0.14, 0.10, 0.18],
-      "location": [0.55, 0, 1.25]
-    },
-    {
-      "id": "leg_left",
-      "type": "cylinder",
-      "radius": 0.09,
-      "depth": 0.60,
-      "location": [-0.12, 0, 0.70]
-    },
-    {
-      "id": "leg_right",
-      "type": "cylinder",
-      "radius": 0.09,
-      "depth": 0.60,
-      "location": [0.12, 0, 0.70]
-    },
-    {
-      "id": "foot_left",
-      "type": "cube",
-      "size": [0.20, 0.10, 0.10],
-      "location": [-0.12, 0.05, 0.30]
-    },
-    {
-      "id": "foot_right",
-      "type": "cube",
-      "size": [0.20, 0.10, 0.10],
-      "location": [0.12, 0.05, 0.30]
-    }
-  ],
+  "base": {
+    "library": "human_base_meshes",
+    "object": "GEO-body_male_stylized",
+    "as": "StylizedBody",
+    "height": 1.8,
+    "keep": true
+  },
 
-  "modifiers": [
-    { "target": "head", "type": "smooth_shade" },
-    { "target": "arm_left", "type": "smooth_shade" },
-    { "target": "arm_right", "type": "smooth_shade" },
-    { "target": "leg_left", "type": "smooth_shade" },
-    { "target": "leg_right", "type": "smooth_shade" }
-  ],
+  "armature": {
+    "name": "StylizedBody_Rig",
+    "bones": [
+      { "name": "Hips", "head": [0, 0, "crotch+0.2"], "tail": [0, 0, "waist-0.03"] },
+      { "name": "Spine", "head": [0, 0, "waist-0.03"], "tail": [0, 0, "chest-0.06"], "parent": "Hips", "connect": true },
+      { "name": "Chest", "head": [0, 0, "chest-0.06"], "tail": [0, 0, "armpit+0.02"], "parent": "Spine", "connect": true },
+      { "name": "Neck", "head": [0, 0, "armpit+0.02"], "tail": [0, 0, "neck"], "parent": "Chest", "connect": true },
+      { "name": "Head", "head": [0, 0, "neck"], "tail": [0, 0, "crown"], "parent": "Neck", "connect": true },
+
+      { "name": "Shoulder_R", "head": [0.04, 0, "armpit+0.02"], "tail": ["chest_x+0.02", 0, "armpit+0.03"], "parent": "Chest" },
+      { "name": "UpperArm_R", "head": ["chest_x+0.02", 0, "armpit+0.03"], "tail": ["chest_x+0.15", 0, "chest-0.10"], "parent": "Shoulder_R", "connect": true },
+      { "name": "Forearm_R", "head": ["chest_x+0.15", 0, "chest-0.10"], "tail": ["hand_inner_x", 0, "wrist"], "parent": "UpperArm_R", "connect": true },
+      { "name": "Hand_R", "head": ["hand_inner_x", 0, "wrist"], "tail": ["hand_inner_x+0.03", 0, "wrist-0.10"], "parent": "Forearm_R", "connect": true },
+
+      { "name": "Shoulder_L", "head": [-0.04, 0, "armpit+0.02"], "tail": ["-chest_x-0.02", 0, "armpit+0.03"], "parent": "Chest" },
+      { "name": "UpperArm_L", "head": ["-chest_x-0.02", 0, "armpit+0.03"], "tail": ["-chest_x-0.15", 0, "chest-0.10"], "parent": "Shoulder_L", "connect": true },
+      { "name": "Forearm_L", "head": ["-chest_x-0.15", 0, "chest-0.10"], "tail": ["-hand_inner_x", 0, "wrist"], "parent": "UpperArm_L", "connect": true },
+      { "name": "Hand_L", "head": ["-hand_inner_x", 0, "wrist"], "tail": ["-hand_inner_x-0.03", 0, "wrist-0.10"], "parent": "Forearm_L", "connect": true },
+
+      { "name": "Thigh_R", "head": [0.09, 0, "crotch+0.18"], "tail": [0.09, 0, "knee"], "parent": "Hips" },
+      { "name": "Shin_R", "head": [0.09, 0, "knee"], "tail": [0.09, 0, "ankle-0.02"], "parent": "Thigh_R", "connect": true },
+      { "name": "Foot_R", "head": [0.09, 0, "ankle-0.02"], "tail": [0.09, "toe_y+0.02", "sole+0.03"], "parent": "Shin_R", "connect": true },
+
+      { "name": "Thigh_L", "head": [-0.09, 0, "crotch+0.18"], "tail": [-0.09, 0, "knee"], "parent": "Hips" },
+      { "name": "Shin_L", "head": [-0.09, 0, "knee"], "tail": [-0.09, 0, "ankle-0.02"], "parent": "Thigh_L", "connect": true },
+      { "name": "Foot_L", "head": [-0.09, 0, "ankle-0.02"], "tail": [-0.09, "toe_y+0.02", "sole+0.03"], "parent": "Shin_L", "connect": true }
+    ],
+    "auto_bind": ["StylizedBody"]
+  },
 
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
-    "origin_to_geometry": true
+    "origin_to_geometry": false
   },
 
   "export": {

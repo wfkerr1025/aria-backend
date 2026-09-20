@@ -1,45 +1,47 @@
 {
   "name": "base_jacket",
-  "version": "1.0",
-  "description": "Primitive blockout jacket designed to fit the Base Stylized Body. Used as the foundation for all jacket, coat, and outerwear variants.",
+  "version": "2.0",
+  "description": "A jacket: the torso from the hip to the neck, and sleeves all the way down to the wrist. The sleeve cut stops at the wrist landmark rather than at a height, so it ends where the hand begins on whichever body it is built on.",
   "units": "meters",
-
-  "objects": [
+  "base": {
+    "library": "human_base_meshes",
+    "object": "GEO-body_male_stylized",
+    "as": "Jacket_Body",
+    "height": 1.8,
+    "keep": false
+  },
+  "garments": [
     {
-      "id": "jacket_torso",
-      "type": "cube",
-      "size": [0.42, 0.26, 0.50],
-      "location": [0, 0, 1.45]
-    },
-    {
-      "id": "sleeve_left",
-      "type": "cylinder",
-      "radius": 0.11,
-      "depth": 0.38,
-      "location": [-0.34, 0, 1.45],
-      "rotation": [0, 0, 90]
-    },
-    {
-      "id": "sleeve_right",
-      "type": "cylinder",
-      "radius": 0.11,
-      "depth": 0.38,
-      "location": [0.34, 0, 1.45],
-      "rotation": [0, 0, -90]
+      "id": "jacket",
+      "from": "Jacket_Body",
+      "regions": [
+        {
+          "z_min": "crotch+0.06",
+          "z_max": "neck",
+          "x_min": "-hip_x-0.05",
+          "x_max": "hip_x+0.05"
+        },
+        {
+          "z_min": "wrist",
+          "z_max": "neck",
+          "x_min": "-reach_x",
+          "x_max": "reach_x"
+        }
+      ],
+      "soft": 0.012,
+      "offset": 0.026,
+      "thickness": 0.018,
+      "relax": {
+        "factor": 0.85,
+        "iterations": 18
+      }
     }
   ],
-
-  "modifiers": [
-    { "target": "sleeve_left", "type": "smooth_shade" },
-    { "target": "sleeve_right", "type": "smooth_shade" }
-  ],
-
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_jacket.fbx",

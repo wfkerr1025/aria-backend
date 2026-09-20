@@ -21,21 +21,43 @@ the whole reason the library was written as JSON.
 
 WHAT THE RECIPES ACTUALLY CONTAIN
 ---------------------------------
-Measured across all twenty-nine rather than assumed, because a
-translation built for a schema the files do not use is one that works
-on the two examples anybody checks:
+Originally, blockouts: primitives at places, a smooth_shade or two, a
+cleanup and an export. Every clothing recipe was a cube for the body
+and two cylinders for the limbs, which is a fine way to say where a
+jacket goes and no way at all to make one.
 
-    primitives   cube 65, cylinder 37, sphere 16, cone 1
-    object keys  id, type, size, location, radius, depth, rotation,
-                 subdivision
-    modifiers    smooth_shade, 54 times, and nothing else
-    cleanup      apply_transforms, merge_by_distance, origin_to_geometry
-    export       format, path, apply_scale
+The clothing is now CUT OUT OF THE BODY THAT WEARS IT -- copy the
+base, keep the box the garment covers, throw the rest away, smooth the
+anatomy out of what is left, push it clear and thicken it. A trouser
+leg is then already a leg, and a hem exists wherever the cut ended.
+See `garment_actions` for why that replaced wrapping blanks onto a
+figure, and `relax_surface` for why the smoothing is not optional.
 
-Small enough to translate completely, so anything outside it is refused
-rather than skipped. A recipe whose parts quietly failed to appear gets
-found by noticing the model has no left arm, which is a slow and
-irritating way to learn it.
+So a recipe may carry:
+
+    base        a named mesh out of aria_models, scaled and stood up.
+                `keep: false` drops it again once the garment is cut,
+                because export_fbx writes every mesh in the file
+    objects     primitives, as before -- still the right way to make a
+                hat, which is not the shape of a head
+    garments    boxes to cut out of the base. `regions` for a garment
+                that covers two places a single box cannot reach
+                between, `relax` to take the anatomy out, `cast` to
+                push the result toward a sphere or a cylinder
+    fit         shrinkwrap a blank onto something (the older way)
+    modifiers   smooth_shade, subdivision, bevel, mirror, solidify
+    armature    bones, bind, auto_bind, ik
+    animations  keyed poses and the shape of the curves between them
+    cleanup     apply_transforms, merge_by_distance, origin_to_geometry
+    export      format, path, apply_scale
+
+Anything outside that is refused rather than skipped. A recipe whose
+parts quietly failed to appear gets found by noticing the model has no
+left arm, which is a slow and irritating way to learn it.
+
+Bounds and positions may be NAMED rather than measured -- "waist"
+instead of 1.07 -- which is what stops a garment belonging to one body
+at one height. See the landmark section below.
 
 A NOTE ON CUBES
 ---------------
@@ -58,11 +80,14 @@ from logger import get_logger
 logger = get_logger(__name__)
 
 __all__ = [
+    "LANDMARK_FILE",
     "MODEL_ROOT",
     "RECIPE_ROOT",
     "UnknownRecipe",
     "UnsupportedRecipe",
     "actions",
+    "landmarks",
+    "resolve",
     "animation_actions",
     "base_actions",
     "base_models",
@@ -85,6 +110,10 @@ RECIPE_ROOT = Path(__file__).resolve().parents[2] / "aria_recipes" / "blender"
 # adding it. See aria_models/README.md for why these are authored and
 # not generated.
 MODEL_ROOT = Path(__file__).resolve().parents[2] / "aria_models"
+
+# Where each base body's parts are, measured rather than estimated, by
+# aria_models/measure_base_landmarks.py. See `resolve`.
+LANDMARK_FILE = MODEL_ROOT / "landmarks_human_base_meshes.json"
 
 # What a recipe may be made of, and the action that makes it. The
 # shaping of each one's parameters is in _one_object.
@@ -130,6 +159,162 @@ class UnsupportedRecipe(ValueError):
 def _pascal(text: str) -> str:
     """"arm_left" becomes "ArmLeft", so a hierarchy reads."""
     return "".join(part[:1].upper() + part[1:] for part in str(text).split("_") if part)
+
+
+def _name(head: str, part: Any, fallback: str = "Part") -> str:
+    """What one part of a recipe is called once it is in the scene.
+
+    The recipe's prefix, then the part's own id -- except when those
+    are the same word. A clothing recipe is usually ONE garment with
+    the same name as the recipe it is in, and `base_pants` naming its
+    trousers "Pants_Pants" carries that stutter into the FBX, the
+    prefab and the Unity hierarchy, where somebody has to look at it.
+    """
+    tail = _pascal(part or fallback)
+    return tail if tail == head else f"{head}_{tail}"
+
+
+# ======================================================
+# Landmarks: saying "the waist" instead of saying 1.07
+# ======================================================
+#
+# A garment is cut with a box in world metres, so a recipe used to have
+# to carry the numbers -- z 0.97 to 1.47 for a vest. Those numbers are
+# true of ONE body at ONE height. Put the same recipe on the female
+# base and the vest is a collar; scale the miner to 1.6m and the
+# trousers start at his ribs.
+#
+# So a bound may instead be the NAME of a landmark on whatever base the
+# recipe is built on:
+#
+#     "z_min": "waist"            the waist, wherever this body's is
+#     "z_max": "chest+0.04"       four centimetres above the chest
+#     "x_max": "hip_x"            the right edge of the hips
+#     "x_min": "-hip_x"           and the left edge
+#     "x_min": "-shoulder_x+0.02" negate first, then offset
+#
+# A bare name is a height; _x is a half-width and _y a depth. See
+# _flatten for why the suffixes have to be there.
+#
+# Plain numbers still mean metres, so nothing that already worked
+# stops working.
+
+_SIGNS = {"+": 1.0, "-": -1.0}
+
+
+def landmarks(base_object: str) -> Dict[str, Any]:
+    """Every measured landmark of one base mesh, by its object name."""
+    if not LANDMARK_FILE.is_file():
+        return {}
+    try:
+        table = json.loads(LANDMARK_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        logger.warning("landmark table could not be read: %s", error)
+        return {}
+    return (table.get("bases") or {}).get(str(base_object)) or {}
+
+
+def _flatten(marks: Dict[str, Any]) -> Dict[str, float]:
+    """Heights, half-widths and depths in one namespace, by axis.
+
+    A bare name is a HEIGHT -- "waist" is 1.07, the height of the waist
+    -- because that is what almost every bound in a garment recipe is.
+    Half-widths take _x and depths take _y:
+
+        waist      1.07     how far up the waist is
+        waist_x    0.1179   how far out from the middle it reaches
+        face_y    -0.1154   how far forward the face is
+
+    The suffixes are not decoration. Nearly every landmark exists on
+    two axes -- waist, chest, hip, knee, neck, head and shoulder all
+    have both a height and a half-width -- so one flat namespace would
+    have silently answered "chest" with whichever table was read first.
+    """
+    found: Dict[str, float] = {}
+    for section, suffix in (("z", ""), ("half_width", "_x"), ("y", "_y")):
+        for name, value in (marks.get(section) or {}).items():
+            if value is not None:
+                found[f"{name}{suffix}"] = float(value)
+    return found
+
+
+def resolve(value: Any, marks: Dict[str, Any], where: str = "") -> Any:
+    """One bound: a number as it is, a landmark name as its measurement.
+
+    An unknown name is refused rather than dropped. A garment whose
+    z_max quietly became "no upper bound" is a vest that reaches the
+    character's eyebrows, and the recipe looks correct while it does it.
+    """
+    if value is None or isinstance(value, (int, float)):
+        return value
+    if not isinstance(value, str):
+        return value
+
+    text = value.strip()
+    if not text:
+        return None
+
+    # A plain number written as a string is still a number.
+    try:
+        return float(text)
+    except ValueError:
+        pass
+
+    sign = 1.0
+    if text[:1] in _SIGNS:
+        sign = _SIGNS[text[0]]
+        text = text[1:].strip()
+
+    offset = 0.0
+    for mark in ("+", "-"):
+        head, found, tail = text.partition(mark)
+        if found and tail.strip():
+            try:
+                offset = _SIGNS[mark] * float(tail.strip())
+            except ValueError:
+                continue
+            text = head.strip()
+            break
+
+    table = _flatten(marks)
+    if not table:
+        raise UnsupportedRecipe(
+            f"{where or 'a bound'} names the landmark {value!r}, but no "
+            f"landmarks are known for this recipe's base. Run "
+            f"aria_models/measure_base_landmarks.py, or use metres.")
+    if text not in table:
+        raise UnsupportedRecipe(
+            f"{where or 'a bound'} names {value!r}, and {text!r} is not a "
+            f"landmark. This base has: {', '.join(sorted(table))}")
+
+    return sign * table[text] + offset
+
+
+def _marks_for(recipe: Dict[str, Any]) -> Dict[str, Any]:
+    """The landmark table for whatever base this recipe stands on."""
+    base = recipe.get("base") or {}
+    return landmarks(base.get("object", "")) if base else {}
+
+
+def _point(value: Any, marks: Dict[str, Any], where: str = "") -> Any:
+    """An [x, y, z] whose components may each be a landmark."""
+    if not isinstance(value, (list, tuple)):
+        return value
+    return [resolve(item, marks, where) for item in value]
+
+
+def _boxes(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The one or more boxes a garment is cut with.
+
+    A garment usually covers one region and writes its bounds straight
+    onto itself. Some cover two places that a single box cannot reach
+    between -- gloves being the case that forced this -- and those list
+    them under "regions" instead.
+    """
+    listed = item.get("regions")
+    if isinstance(listed, list) and listed:
+        return [box for box in listed if isinstance(box, dict)]
+    return [item]
 
 
 def _files() -> List[Path]:
@@ -198,17 +383,27 @@ def prefix_for(name: str) -> str:
 
 
 def part_names(name: str, prefix: Optional[str] = None) -> List[str]:
-    """What the objects will be called, without building anything.
+    """What the meshes will be called, without building anything.
 
     So a rig can name the mesh it binds to before the build has run.
+
+    Garments count. They are meshes the build creates, they are named
+    the same way objects are, and `auto_bind` binds them by name -- so
+    a list that left them out was a list a rig could not be checked
+    against, which is the one job this has.
+
+    In build order: primitives first, then the garments cut from the
+    base, because that is the order `actions` emits them in.
     """
     recipe = load(name)
     head = prefix or prefix_for(name)
-    return [f"{head}_{_pascal(item.get('id') or 'Part')}"
-            for item in recipe.get("objects", [])]
+    return ([_name(head, item.get("id")) for item in recipe.get("objects", [])]
+            + [_name(head, item.get("id"), "Garment")
+               for item in recipe.get("garments", [])])
 
 
-def _one_object(item: Dict[str, Any], head: str) -> List[Dict[str, Any]]:
+def _one_object(item: Dict[str, Any], head: str,
+                marks: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     kind = str(item.get("type", "")).lower()
     action = PRIMITIVES.get(kind)
     if action is None:
@@ -216,9 +411,16 @@ def _one_object(item: Dict[str, Any], head: str) -> List[Dict[str, Any]]:
             f"{item.get('id')!r} is a {kind!r}, and this translation knows "
             f"{', '.join(sorted(PRIMITIVES))}")
 
-    name = f"{head}_{_pascal(item.get('id') or 'Part')}"
-    location = item.get("location") or [0, 0, 0]
-    size = item.get("size")
+    marks = marks or {}
+    name = _name(head, item.get("id"))
+    where = f"{item.get('id')}"
+    location = _point(item.get("location") or [0, 0, 0], marks, where + " location")
+
+    def dim(key, default):
+        """A radius or a depth, which may also be named off the body."""
+        return resolve(item.get(key, default), marks, f"{where} {key}")
+
+    size = _point(item.get("size"), marks, where + " size")
     steps: List[Dict[str, Any]] = []
 
     if kind == "cube":
@@ -231,36 +433,36 @@ def _one_object(item: Dict[str, Any], head: str) -> List[Dict[str, Any]]:
             steps.append({"action": "scale",
                           "params": {"object": name, "x": x, "y": y, "z": z}})
         elif size is not None:
-            steps[-1]["params"]["size"] = size
+            steps[-1]["params"]["size"] = resolve(size, marks, where + " size")
 
     elif kind == "sphere":
         steps.append({"action": "add_sphere",
-                      "params": {"name": name, "radius": item.get("radius", 1.0),
+                      "params": {"name": name, "radius": dim("radius", 1.0),
                                  "location": location}})
 
     elif kind == "cylinder":
         steps.append({"action": "add_cylinder",
-                      "params": {"name": name, "radius": item.get("radius", 1.0),
-                                 "depth": item.get("depth", 2.0),
+                      "params": {"name": name, "radius": dim("radius", 1.0),
+                                 "depth": dim("depth", 2.0),
                                  "location": location}})
 
     elif kind == "cone":
         steps.append({"action": "add_cone",
-                      "params": {"name": name, "radius": item.get("radius", 1.0),
-                                 "radius_top": item.get("radius_top", 0.0),
-                                 "depth": item.get("depth", 2.0),
+                      "params": {"name": name, "radius": dim("radius", 1.0),
+                                 "radius_top": dim("radius_top", 0.0),
+                                 "depth": dim("depth", 2.0),
                                  "location": location}})
 
     elif kind == "plane":
         steps.append({"action": "add_plane",
-                      "params": {"name": name, "size": size or 2.0,
+                      "params": {"name": name, "size": dim("size", 2.0),
                                  "location": location}})
 
     elif kind == "torus":
         steps.append({"action": "add_torus",
                       "params": {"name": name,
-                                 "major_radius": item.get("major_radius", 1.0),
-                                 "minor_radius": item.get("minor_radius", 0.25),
+                                 "major_radius": dim("major_radius", 1.0),
+                                 "minor_radius": dim("minor_radius", 0.25),
                                  "location": location}})
 
     rotation = item.get("rotation")
@@ -293,6 +495,7 @@ def actions(name: str, *, prefix: Optional[str] = None,
     """
     recipe = load(name)
     head = prefix or prefix_for(name)
+    marks = _marks_for(recipe)
 
     steps: List[Dict[str, Any]] = []
     if clear:
@@ -303,7 +506,7 @@ def actions(name: str, *, prefix: Optional[str] = None,
     steps.extend(base_actions(name, prefix=head))
 
     for item in recipe.get("objects", []):
-        steps.extend(_one_object(item, head))
+        steps.extend(_one_object(item, head, marks))
 
     for modifier in recipe.get("modifiers", []):
         kind = str(modifier.get("type", "")).lower()
@@ -315,7 +518,7 @@ def actions(name: str, *, prefix: Optional[str] = None,
 
         params = {key: value for key, value in modifier.items()
                   if key not in ("type", "target")}
-        params["object"] = f"{head}_{_pascal(modifier.get('target') or 'Part')}"
+        params["object"] = _name(head, modifier.get("target"))
         steps.append({"action": action, "params": params})
 
     # Garments are cut from the base, so the base has to exist and the
@@ -326,6 +529,16 @@ def actions(name: str, *, prefix: Optional[str] = None,
     # every origin and a wrap done afterwards would be aiming at a body
     # that has since shifted under it.
     steps.extend(fit_actions(name, prefix=head))
+
+    # And now the base can go, if it was only ever scaffolding. A
+    # recipe for a garment ALONE still has to stand a body up to cut
+    # the garment out of, and export_fbx writes every mesh in the file
+    # -- so without this, base_pants exports a naked man wearing them.
+    base = recipe.get("base") or {}
+    if base and not base.get("keep", True):
+        steps.append({"action": "delete_object",
+                      "params": {"object": base.get("as")
+                                 or f"{head}_Base"}})
 
     if cleanup:
         asked = recipe.get("cleanup") or {}
@@ -416,18 +629,25 @@ def rig_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]
 
     head = prefix or prefix_for(name)
     arm = spec.get("name") or f"{head}_Rig"
+    marks = _marks_for(recipe)
 
     steps: List[Dict[str, Any]] = [
         {"action": "create_armature",
-         "params": {"name": arm, "location": spec.get("location") or [0, 0, 0]}},
+         "params": {"name": arm,
+                    "location": _point(spec.get("location") or [0, 0, 0], marks,
+                                       f"{name} armature location")}},
     ]
 
+    # Bones may be placed by landmark too, which is what stops a rig
+    # from belonging to one body: "Neck" at ["neck"] is at the neck of
+    # whatever this recipe stands on.
     for bone in spec.get("bones", []):
+        where = f"{name}/{bone.get('name')}"
         steps.append({"action": "add_bone",
                       "params": {"armature": arm,
                                  "name": bone.get("name"),
-                                 "head": bone.get("head"),
-                                 "tail": bone.get("tail"),
+                                 "head": _point(bone.get("head"), marks, where + " head"),
+                                 "tail": _point(bone.get("tail"), marks, where + " tail"),
                                  "parent": bone.get("parent"),
                                  "connect": bool(bone.get("connect"))}})
 
@@ -437,7 +657,7 @@ def rig_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]
             raise UnsupportedRecipe(
                 f"{name}: bind names {part!r}, which is not one of its objects "
                 f"({', '.join(sorted(str(k) for k in known))})")
-        mesh = f"{head}_{_pascal(part)}"
+        mesh = _name(head, part)
         steps.append({"action": "bind_to_bone",
                       "params": {"mesh": mesh, "bone": bone, "weight": 1.0}})
         steps.append({"action": "parent_mesh_to_armature",
@@ -460,7 +680,7 @@ def rig_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]
         # it will be called, and prefixing it invented CrewMiner_Miner
         # Body, which nothing had ever made.
         if whole in known_ids:
-            mesh = f"{head}_{_pascal(whole)}"
+            mesh = _name(head, whole)
         elif whole == base_called or not whole.startswith(head):
             mesh = whole
         else:
@@ -615,6 +835,10 @@ def base_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]
                     "name": called, "location": spec.get("location") or [0, 0, 0]}},
     ]
 
+    # Scaled BEFORE anything is measured against it, because the
+    # landmark table describes the body at its recipe height and a
+    # garment box cut against an unscaled one would miss entirely.
+
     if spec.get("height"):
         steps.append({"action": "scale_to_height",
                       "params": {"object": called, "height": spec["height"]}})
@@ -638,20 +862,22 @@ def fit_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]
     """
     recipe = load(name)
     head = prefix or prefix_for(name)
+    marks = _marks_for(recipe)
     steps: List[Dict[str, Any]] = []
 
     for item in recipe.get("fit", []):
-        worn = f"{head}_{_pascal(item.get('object') or 'Part')}"
+        worn = _name(head, item.get("object"))
         onto = item.get("onto")
         if onto and not onto.startswith(head) and onto not in {o.get("id") for o in recipe.get("objects", [])}:
             body = onto                      # a base's own name, used as written
         else:
-            body = f"{head}_{_pascal(onto or 'Base')}"
+            body = _name(head, onto, "Base")
 
         steps.append({"action": "apply_shrinkwrap",
                       "params": {"object": worn, "target": body,
                                  "method": item.get("method", "NEAREST_SURFACEPOINT"),
-                                 "offset": item.get("offset", 0.014),
+                                 "offset": resolve(item.get("offset", 0.014), marks,
+                                                   f"{name} fit offset"),
                                  "apply": True}})
 
         thickness = item.get("thickness")
@@ -686,26 +912,52 @@ def garment_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, A
     recipe = load(name)
     head = prefix or prefix_for(name)
     base_called = (recipe.get("base") or {}).get("as") or f"{head}_Base"
+    marks = _marks_for(recipe)
 
     steps: List[Dict[str, Any]] = []
 
     for item in recipe.get("garments", []):
-        worn = f"{head}_{_pascal(item.get('id') or 'Garment')}"
+        worn = _name(head, item.get("id"), "Garment")
         body = item.get("from") or base_called
         group = "Region_" + _pascal(item.get("id") or "Garment")
 
         steps.append({"action": "duplicate_object",
                       "params": {"object": body, "name": worn}})
 
-        region = {"object": worn, "name": group, "soft": item.get("soft", 0.015)}
-        for key in ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max"):
-            if item.get(key) is not None:
-                region[key] = item[key]
-        steps.append({"action": "vertex_group_by_region", "params": region})
+        # A garment may be cut from several boxes at once. The same
+        # group name every time, and a vertex group is a union, so the
+        # boxes add up. This is how a pair of GLOVES is one garment:
+        # the hands are two places at the same height, and the single
+        # box that would hold both would hold the hips between them.
+        for box in _boxes(item):
+            region = {"object": worn, "name": group,
+                      "soft": resolve(box.get("soft", item.get("soft", 0.015)),
+                                      marks, f"{name}/{item.get('id')} soft")}
+            for key in ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max"):
+                if box.get(key) is not None:
+                    region[key] = resolve(box[key], marks,
+                                          f"{name}/{item.get('id')} {key}")
+            steps.append({"action": "vertex_group_by_region", "params": region})
 
         steps.append({"action": "apply_mask",
                       "params": {"object": worn, "group": group,
                                  "threshold": item.get("threshold", 0.05), "apply": True}})
+
+        # Smoothing goes BEFORE the inflate and before the thickness.
+        # It is what turns a leg-shaped cut into a trouser leg -- see
+        # relax_surface -- and it shrinks slightly as it works, so the
+        # inflate that follows is also what puts back what it took.
+        easing = item.get("relax")
+        if easing:
+            steps.append({"action": "relax_surface",
+                          "params": {"object": worn,
+                                     "factor": easing.get("factor", 0.5),
+                                     "iterations": easing.get("iterations", 6),
+                                     "axis": easing.get("axis", "xyz"),
+                                     # The group the cut was made with,
+                                     # which fades out at the hem.
+                                     "group": group,
+                                     "apply": True}})
 
         # Out along its own normals, NOT by shrinkwrapping onto the body
         # it was copied from: every vertex would find itself at distance
@@ -714,6 +966,21 @@ def garment_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, A
         steps.append({"action": "inflate",
                       "params": {"object": worn,
                                  "distance": item.get("offset", 0.012), "apply": True}})
+
+        # Optional, and the answer to clothing that fits so well it
+        # reads as paint. A garment cut from a body is body-shaped by
+        # construction, so trousers come out as leggings and a coat as
+        # a wetsuit; a cast toward a cylinder gives the shape back the
+        # bulk that says cloth rather than skin.
+        shaping = item.get("cast")
+        if shaping:
+            steps.append({"action": "apply_cast",
+                          "params": {"object": worn,
+                                     "shape": shaping.get("shape", "CYLINDER"),
+                                     "factor": shaping.get("factor", 0.25),
+                                     "radius": shaping.get("radius", 0.0),
+                                     "size": shaping.get("size", 0.0),
+                                     "apply": True}})
 
         if item.get("thickness"):
             steps.append({"action": "apply_solidify",

@@ -1,42 +1,40 @@
 {
   "name": "base_mask",
-  "version": "1.0",
-  "description": "Primitive blockout mask designed to fit the Base Stylized Body. Used as the foundation for all mask, visor, and face-cover variants.",
+  "version": "2.0",
+  "description": "A mask: a shell off the front of the face. The y_max bound is what makes it a mask and not a hood, and it sits well forward of the middle of the head on purpose -- a cut plane through the centre runs almost parallel to the surface of the cheeks, and a cut that grazes a surface shreds it. Forward of the brow the face meets the plane closer to square and the edge comes out clean. The bases face -Y, so the face is the negative side.",
   "units": "meters",
-
-  "objects": [
+  "base": {
+    "library": "human_base_meshes",
+    "object": "GEO-body_male_stylized",
+    "as": "Mask_Body",
+    "height": 1.8,
+    "keep": false
+  },
+  "garments": [
     {
-      "id": "mask_plate",
-      "type": "cube",
-      "size": [0.28, 0.10, 0.18],
-      "location": [0, 0.12, 1.85]
-    },
-    {
-      "id": "mask_strap_left",
-      "type": "cube",
-      "size": [0.10, 0.04, 0.10],
-      "location": [-0.22, 0, 1.85]
-    },
-    {
-      "id": "mask_strap_right",
-      "type": "cube",
-      "size": [0.10, 0.04, 0.10],
-      "location": [0.22, 0, 1.85]
+      "id": "mask",
+      "from": "Mask_Body",
+      "z_min": "chin+0.01",
+      "z_max": "head+0.07",
+      "y_max": "face_y+0.07",
+      "soft": 0.0,
+      "offset": 0.009,
+      "thickness": 0.007,
+      "relax": {
+        "factor": 0.6,
+        "iterations": 8
+      },
+      "threshold": 0.5
     }
   ],
-
-  "modifiers": [],
-
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_mask.fbx",
     "apply_scale": true
   }
 }
-

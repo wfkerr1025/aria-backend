@@ -1,38 +1,100 @@
 {
   "name": "base_backpack",
-  "version": "1.0",
-  "description": "Primitive blockout backpack designed to fit the Base Stylized Body. Used as the foundation for all backpack, satchel, and gear-pack variants.",
+  "version": "2.0",
+  "description": "A pack and its straps, standing off the body rather than cut from it -- a pack is not the shape of a back. Every piece is placed off the measured depth of the chest, so it sits against whichever figure wears it instead of at a fixed distance from the world origin.",
   "units": "meters",
-
+  "base": {
+    "library": "human_base_meshes",
+    "object": "GEO-body_male_stylized",
+    "as": "Backpack_Body",
+    "height": 1.8,
+    "keep": false
+  },
   "objects": [
     {
-      "id": "pack_body",
+      "id": "pack",
       "type": "cube",
-      "size": [0.32, 0.18, 0.45],
-      "location": [0, -0.10, 1.30]
+      "size": [
+        0.26,
+        0.15,
+        0.36
+      ],
+      "location": [
+        0,
+        "chest_back_y+0.085",
+        "chest-0.04"
+      ]
+    },
+    {
+      "id": "lid",
+      "type": "cube",
+      "size": [
+        0.27,
+        0.16,
+        0.08
+      ],
+      "location": [
+        0,
+        "chest_back_y+0.085",
+        "chest+0.155"
+      ]
     },
     {
       "id": "strap_left",
       "type": "cube",
-      "size": [0.08, 0.06, 0.50],
-      "location": [-0.20, 0.05, 1.35]
+      "size": [
+        0.05,
+        0.055,
+        0.34
+      ],
+      "location": [
+        "-chest_x+0.055",
+        "chest_front_y+0.035",
+        "chest+0.01"
+      ]
     },
     {
       "id": "strap_right",
       "type": "cube",
-      "size": [0.08, 0.06, 0.50],
-      "location": [0.20, 0.05, 1.35]
+      "size": [
+        0.05,
+        0.055,
+        0.34
+      ],
+      "location": [
+        "chest_x-0.055",
+        "chest_front_y+0.035",
+        "chest+0.01"
+      ]
     }
   ],
-
-  "modifiers": [],
-
+  "modifiers": [
+    {
+      "target": "pack",
+      "type": "bevel",
+      "width": 0.02
+    },
+    {
+      "target": "lid",
+      "type": "bevel",
+      "width": 0.012
+    },
+    {
+      "target": "strap_left",
+      "type": "bevel",
+      "width": 0.012
+    },
+    {
+      "target": "strap_right",
+      "type": "bevel",
+      "width": 0.012
+    }
+  ],
   "cleanup": {
     "apply_transforms": true,
     "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_backpack.fbx",

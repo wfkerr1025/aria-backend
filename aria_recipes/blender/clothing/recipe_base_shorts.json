@@ -1,35 +1,37 @@
 {
   "name": "base_shorts",
-  "version": "1.0",
-  "description": "Primitive blockout shorts designed to fit the Base Stylized Body.",
+  "version": "2.0",
+  "description": "Shorts: the hips down to just above the knee. Same cut as the trousers with the hem moved up, which is all shorts are.",
   "units": "meters",
-
-  "objects": [
+  "base": {
+    "library": "human_base_meshes",
+    "object": "GEO-body_male_stylized",
+    "as": "Shorts_Body",
+    "height": 1.8,
+    "keep": false
+  },
+  "garments": [
     {
-      "id": "shorts_upper",
-      "type": "cube",
-      "size": [0.36, 0.24, 0.25],
-      "location": [0, 0, 1.05]
-    },
-    {
-      "id": "short_left",
-      "type": "cube",
-      "size": [0.22, 0.22, 0.25],
-      "location": [-0.12, 0, 0.85]
-    },
-    {
-      "id": "short_right",
-      "type": "cube",
-      "size": [0.22, 0.22, 0.25],
-      "location": [0.12, 0, 0.85]
+      "id": "shorts",
+      "from": "Shorts_Body",
+      "z_min": "knee+0.03",
+      "z_max": "waist+0.02",
+      "x_min": "-hip_x-0.03",
+      "x_max": "hip_x+0.03",
+      "soft": 0.012,
+      "offset": 0.03,
+      "thickness": 0.02,
+      "relax": {
+        "factor": 0.85,
+        "iterations": 18
+      }
     }
   ],
-
   "cleanup": {
     "apply_transforms": true,
+    "merge_by_distance": false,
     "origin_to_geometry": true
   },
-
   "export": {
     "format": "fbx",
     "path": "D:/Users/William/Game Development/Aria-Output/models/base_shorts.fbx",
