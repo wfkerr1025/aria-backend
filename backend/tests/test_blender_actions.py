@@ -199,6 +199,9 @@ EVERY_ACTION = [
                   "depth": 1.0, "location": [0, 0, 0]}),
     ("smooth_shade", {"object": "Cube", "smooth": True}),
     ("load_image", {"path": "C:/art/head.png", "name": "head"}),
+    ("add_light", {"name": "Sun", "type": "SUN", "energy": 3.0,
+                   "elevation": 38, "bearing": -38, "color": [1.0, 0.96, 0.88]}),
+    ("set_world", {"color": [0.42, 0.46, 0.55], "strength": 0.6}),
     ("new_image", {"name": "Bake", "width": 1024, "height": 1024, "colorspace": "Non-Color"}),
     ("save_image", {"image": "Bake", "path": "C:/out/bake.png"}),
     ("bake_texture", {"object": "Head", "image": "Bake", "type": "AO",
@@ -1641,3 +1644,15 @@ def test_set_pose_sets_the_frame_before_the_rotation():
 
     assert source.index("frame_set") < source.index("rotation_euler = tuple")
     assert source.index("rotation_euler = tuple") < source.index("keyframe_insert")
+
+
+def test_fbx_export_leaves_the_lights_behind():
+    """Baking a painted light needs a lamp in the scene. An export that
+    took everything took the lamp into the prefab and into the game,
+    where a 3.2 intensity Directional Light blew out a painted quarry --
+    the model looked right and the sky went white."""
+    source = templates.TEMPLATES["export_fbx"]({"path": "C:/out/miner.fbx"})
+
+    assert "object_types=" in source
+    assert "MESH" in source and "ARMATURE" in source
+    assert "LIGHT" not in source and "CAMERA" not in source

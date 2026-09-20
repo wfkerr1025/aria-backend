@@ -132,6 +132,12 @@ STAMP_TEXTURE_TYPES = frozenset({"CLOUDS", "NOISE", "MUSGRAVE", "VORONOI", "DIST
 # which is what an image stamp wants.
 DISPLACE_COORDS = frozenset({"LOCAL", "GLOBAL", "OBJECT", "UV"})
 
+# Lamps Blender will make. SUN is the one that matters for baking a
+# painted look: it is directional, so every part of a figure takes the
+# light from the same angle, which is what an artist painting a
+# character does by hand.
+LIGHT_TYPES = frozenset({"SUN", "POINT", "SPOT", "AREA"})
+
 
 # ======================================================
 # Values
@@ -806,9 +812,23 @@ def _export_preamble(params: Dict[str, Any]) -> str:
 
 
 def export_fbx(params: Dict[str, Any]) -> str:
+    """Write the model out as FBX.
+
+    MESHES AND ARMATURES ONLY, AND THAT IS NOT A DETAIL
+    Baking a painted light into a texture needs a lamp in the scene,
+    and an export that took everything took the lamp too: into the
+    FBX, into the prefab, and into the game, where a 3.2 intensity
+    Directional Light blew out an entire painted quarry. The model
+    looked right and the sky went white, and nothing about the change
+    announced that it had touched the lighting at all.
+
+    An FBX from here is a model. Lamps and cameras exist to light and
+    frame a bake; they do not travel with it.
+    """
     return (f'{_export_preamble(params)}\n'
             f'_path = {_text(params.get("path"))}\n'
             f'bpy.ops.export_scene.fbx(filepath=_path, use_selection=_use_selection, '
+            f'object_types={{"MESH", "ARMATURE"}}, '
             f'apply_unit_scale=True, bake_space_transform=False, '
             f'add_leaf_bones=False, path_mode="COPY", embed_textures=True)\n'
             f'_RESULT["exported"].append(_path)\n'
@@ -1827,12 +1847,79 @@ def cavity_mask(params: Dict[str, Any]) -> str:
             f'_note("cavity_mask", material=_mat.name, node="ARIA_CavityRamp")')
 
 
+def add_light(params: Dict[str, Any]) -> str:
+    """A lamp, so there is something for a bake to bake.
+
+    THE REASON THIS EXISTS, WHICH IS NOT OBVIOUS
+    Baking AO on a figure built from convex parts gives an almost white
+    map: the only dark places are the faces buried inside neighbouring
+    parts, which nobody ever sees. It looks like a bake that failed and
+    is a bake that worked on a shape with nothing to occlude.
+
+    What a painted character actually carries is light -- warm from the
+    upper left, cool down the other side -- and to bake that there has
+    to be a lamp. A SUN is the one to reach for: it is directional, so
+    every limb takes the light from the same angle, which is what an
+    artist does by hand and what makes the parts look like one figure.
+
+    Angle is in degrees: elevation above the horizon and the bearing it
+    comes from, which is how a person describes a sun and not how
+    Blender stores one.
+    """
+    kind = _choice(params.get("type"), LIGHT_TYPES, "SUN")
+    elevation = _num(params.get("elevation"), 38.0)
+    bearing = _num(params.get("bearing"), -38.0)
+
+    return (f'import math\n'
+            f'_name = {_named(params, "ARIA_Light")}\n'
+            f'_old = bpy.data.objects.get(_name)\n'
+            f'if _old is not None:\n'
+            f'    bpy.data.objects.remove(_old, do_unlink=True)\n'
+            f'_data = bpy.data.lights.new(name=_name, type={kind})\n'
+            f'_data.energy = {_num(params.get("energy"), 3.0)}\n'
+            f'_colour = {_vector(params.get("color"), (1.0, 0.96, 0.88))}\n'
+            f'_data.color = _colour\n'
+            f'if hasattr(_data, "angle"):\n'
+            f'    _data.angle = math.radians({_num(params.get("softness"), 8.0)})\n'
+            f'_lamp = bpy.data.objects.new(_name, _data)\n'
+            f'bpy.context.collection.objects.link(_lamp)\n'
+            f'_lamp.location = {_vector(params.get("location"), (0.0, 0.0, 6.0))}\n'
+            f'_elev = math.radians({elevation})\n'
+            f'_bear = math.radians({bearing})\n'
+            f'_lamp.rotation_euler = (math.radians(90.0) - _elev, 0.0, _bear)\n'
+            f'_note("add_light", name=_lamp.name, kind={kind}, '
+            f'elevation={elevation}, bearing={bearing})')
+
+
+def set_world(params: Dict[str, Any]) -> str:
+    """The sky the scene sits under -- the fill light, effectively.
+
+    A bake with a black world gives a figure lit from one side and
+    dead on the other, which reads as a cut-out in a cave. Painted art
+    has bounce: the shadow side is cooler and darker, never black. This
+    is that, and it is half of why a baked figure sits beside a painted
+    one at all.
+    """
+    return (f'_world = bpy.context.scene.world or bpy.data.worlds.new("World")\n'
+            f'bpy.context.scene.world = _world\n'
+            f'_world.use_nodes = True\n'
+            f'_bg = _world.node_tree.nodes.get("Background")\n'
+            f'if _bg is None:\n'
+            f'    raise RuntimeError("the world has no Background node")\n'
+            f'_c = {_vector(params.get("color"), (0.42, 0.46, 0.55))}\n'
+            f'_bg.inputs[0].default_value = (_c[0], _c[1], _c[2], 1.0)\n'
+            f'_bg.inputs[1].default_value = {_num(params.get("strength"), 0.6)}\n'
+            f'_note("set_world", strength={_num(params.get("strength"), 0.6)})')
+
+
 TEMPLATES = {
     "apply_transforms": apply_transforms,
     "remove_stray_meshes": remove_stray_meshes,
     "measure_rig": measure_rig,
     "add_cone": add_cone,
     "load_image": load_image,
+    "add_light": add_light,
+    "set_world": set_world,
     "new_image": new_image,
     "save_image": save_image,
     "bake_texture": bake_texture,
