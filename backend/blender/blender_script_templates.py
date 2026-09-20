@@ -107,6 +107,31 @@ INTERPOLATIONS_IMAGE = frozenset({"Linear", "Closest", "Cubic", "Smart"})
 # standing beside one has to match.
 TEXTURE_SLOTS = frozenset({"Base Color", "Emission", "Roughness", "Metallic", "Alpha", "Normal"})
 
+# What Cycles can bake. NORMAL and AO are the two that carry sculpted
+# detail down onto a low-poly mesh, which is the entire point of
+# sculpting on a base model and then not shipping ten million triangles.
+BAKE_TYPES = frozenset({
+    "COMBINED", "AO", "SHADOW", "POSITION", "NORMAL", "UV", "ROUGHNESS",
+    "EMIT", "ENVIRONMENT", "DIFFUSE", "GLOSSY", "TRANSMISSION",
+})
+
+# Inputs on a Principled BSDF worth setting by name. Not the full set:
+# these are the ones a recipe has any business touching, and an
+# allowlist beats a caller inventing "Roughtness" and being ignored.
+SHADER_INPUTS = frozenset({
+    "Base Color", "Metallic", "Roughness", "IOR", "Alpha", "Normal",
+    "Emission Color", "Emission Strength", "Specular IOR Level",
+    "Coat Weight", "Sheen Weight", "Subsurface Weight",
+})
+
+# Brush textures a sculpt stamp may wear.
+STAMP_TEXTURE_TYPES = frozenset({"CLOUDS", "NOISE", "MUSGRAVE", "VORONOI", "DISTORTED_NOISE", "IMAGE"})
+
+# How a displacement texture is laid over a surface. LOCAL follows the
+# object, so detail stays put when it moves; UV follows the unwrap,
+# which is what an image stamp wants.
+DISPLACE_COORDS = frozenset({"LOCAL", "GLOBAL", "OBJECT", "UV"})
+
 
 # ======================================================
 # Values
@@ -1484,12 +1509,339 @@ def set_texture(params: Dict[str, Any]) -> str:
             f'slot={slot}, unlit={unlit!r})')
 
 
+def new_image(params: Dict[str, Any]) -> str:
+    """A blank image for a bake to land in.
+
+    A bake has to have somewhere to go: Cycles writes into whatever
+    image the material's ACTIVE texture node is holding, and if there
+    is no such image the operator fails with a message about no valid
+    image to bake to, which reads like a UV problem and is not one.
+
+    Non-colour for anything that is not colour. A normal map or a
+    cavity mask read through the sRGB transfer curve is subtly and
+    thoroughly wrong, and it is wrong in a way that looks like bad
+    sculpting rather than like a colour space mistake.
+    """
+    data = "False" if params.get("float") in (None, "", False) else "True"
+    alpha = "False" if params.get("alpha") in (None, "", False) else "True"
+
+    return (f'_w = {_int(params.get("width"), 2048, 1, 16384)}\n'
+            f'_h = {_int(params.get("height"), 2048, 1, 16384)}\n'
+            f'_name = {_named(params, "Bake")}\n'
+            f'_img = bpy.data.images.get(_name)\n'
+            f'if _img is not None and (_img.size[0] != _w or _img.size[1] != _h):\n'
+            f'    bpy.data.images.remove(_img)\n'
+            f'    _img = None\n'
+            f'if _img is None:\n'
+            f'    _img = bpy.data.images.new(_name, width=_w, height=_h, '
+            f'alpha={alpha}, float_buffer={data})\n'
+            f'_colour = {_text(params.get("colorspace") or "")}\n'
+            f'if _colour:\n'
+            f'    _img.colorspace_settings.name = _colour\n'
+            f'_note("new_image", image=_img.name, size=list(_img.size))')
+
+
+def save_image(params: Dict[str, Any]) -> str:
+    """Write an image to disk, so a bake can leave the .blend.
+
+    Baked pixels live in memory until this happens. An export that
+    references an unsaved bake arrives in Unity with a pink material
+    and no obvious cause, because the FBX has a texture path pointing
+    at a file nobody ever wrote.
+    """
+    return (f'import os\n'
+            f'_img = bpy.data.images.get({_text(params.get("image"))})\n'
+            f'if _img is None:\n'
+            f'    raise RuntimeError("no image called %r -- the file has: %s" % ('
+            f'{_text(params.get("image"))}, ", ".join(sorted(i.name for i in bpy.data.images))))\n'
+            f'_path = {_text(params.get("path"))}\n'
+            f'os.makedirs(os.path.dirname(_path) or ".", exist_ok=True)\n'
+            f'_img.filepath_raw = _path\n'
+            f'_img.file_format = "PNG"\n'
+            f'_img.save()\n'
+            f'_RESULT["exported"].append(_path)\n'
+            f'_note("save_image", image=_img.name, path=_path)')
+
+
+def bake_texture(params: Dict[str, Any]) -> str:
+    """Bake what the material and the light are doing into an image.
+
+    THE ACTIVE NODE IS THE WHOLE TRICK
+    Cycles bakes into the image held by the material's active texture
+    node -- not a node you name, not a slot you pass, the ACTIVE one.
+    Nothing in the UI makes that obvious and nothing in the API hints
+    at it, so a bake set up correctly in every other respect writes
+    into the wrong image or refuses outright. This selects it.
+
+    Cycles, because EEVEE cannot bake. The engine is set here rather
+    than assumed, and put back afterwards so a recipe that baked does
+    not quietly change how everything after it renders.
+
+    AO and NORMAL are the two worth reaching for: they carry detail
+    sculpted on a dense mesh down onto a light one, which is how a
+    model ends up detailed without shipping the detail as geometry.
+    """
+    kind = _choice(params.get("type"), BAKE_TYPES, "DIFFUSE")
+    selected = "True" if params.get("from_selected") else "False"
+
+    return (f'_target = _active(_obj({_text(params.get("object"))}))\n'
+            f'_img = bpy.data.images.get({_text(params.get("image"))})\n'
+            f'if _img is None:\n'
+            f'    raise RuntimeError("no image called %r -- new_image it first" % '
+            f'{_text(params.get("image"))})\n'
+            f'if not _target.data.uv_layers:\n'
+            f'    raise RuntimeError("%r has no UVs to bake into -- unwrap it first" % _target.name)\n'
+            f'if not _target.data.materials:\n'
+            f'    raise RuntimeError("%r has no material to bake from" % _target.name)\n'
+            f'for _slot in _target.data.materials:\n'
+            f'    if _slot is None or not _slot.node_tree:\n'
+            f'        continue\n'
+            f'    _tree = _slot.node_tree\n'
+            f'    _dest = _tree.nodes.get("ARIA_Bake")\n'
+            f'    if _dest is None:\n'
+            f'        _dest = _tree.nodes.new("ShaderNodeTexImage")\n'
+            f'        _dest.name = "ARIA_Bake"\n'
+            f'        _dest.label = "ARIA_Bake"\n'
+            f'        _dest.location = (-900, -300)\n'
+            f'    _dest.image = _img\n'
+            f'    for _n in _tree.nodes:\n'
+            f'        _n.select = False\n'
+            f'    _dest.select = True\n'
+            f'    _tree.nodes.active = _dest\n'
+            f'_was = bpy.context.scene.render.engine\n'
+            f'bpy.context.scene.render.engine = "CYCLES"\n'
+            f'bpy.context.scene.cycles.samples = {_int(params.get("samples"), 32, 1, 4096)}\n'
+            f'bpy.context.scene.render.bake.margin = {_int(params.get("margin"), 8, 0, 256)}\n'
+            f'bpy.context.scene.render.bake.use_selected_to_active = {selected}\n'
+            f'try:\n'
+            f'    bpy.ops.object.bake(type={kind})\n'
+            f'finally:\n'
+            f'    bpy.context.scene.render.engine = _was\n'
+            f'_note("bake_texture", object=_target.name, image=_img.name, kind={kind})')
+
+
+def set_shader_node(params: Dict[str, Any]) -> str:
+    """Set one named input on a material's Principled BSDF.
+
+    By name and through an allowlist, because the inputs moved: what
+    was "Specular" is "Specular IOR Level" and what was "Emission" is
+    "Emission Color", and a caller setting the old name gets silence
+    rather than an error. A name outside the list is refused while the
+    script is being built, which is before Blender starts.
+    """
+    field = _choice(params.get("input"), SHADER_INPUTS, "Roughness")
+    value = params.get("value")
+
+    if isinstance(value, (list, tuple)):
+        parts = (list(value) + [0.0, 0.0, 0.0, 1.0])[:4]
+        setter = f'_socket.default_value = ({", ".join(_num(v) for v in parts)})\n'
+    else:
+        setter = f'_socket.default_value = {_num(value, 0.5)}\n'
+
+    return (f'_mat = bpy.data.materials.get({_text(params.get("material"))})\n'
+            f'if _mat is None:\n'
+            f'    raise RuntimeError("no material called %r" % {_text(params.get("material"))})\n'
+            f'_bsdf = _mat.node_tree.nodes.get("Principled BSDF")\n'
+            f'if _bsdf is None:\n'
+            f'    raise RuntimeError("%r has no Principled BSDF" % _mat.name)\n'
+            f'_socket = _bsdf.inputs.get({field})\n'
+            f'if _socket is None:\n'
+            f'    raise RuntimeError("this Principled BSDF has no %r -- it has: %s" % ('
+            f'{field}, ", ".join(i.name for i in _bsdf.inputs)))\n'
+            + setter +
+            f'_note("set_shader_node", material=_mat.name, input={field})')
+
+
+def quad_remesh(params: Dict[str, Any]) -> str:
+    """Retopologise to quads with QuadriFlow.
+
+    For after sculpting. A sculpt leaves geometry that is dense, uneven
+    and useless to animate; this lays an even quad mesh over the same
+    shape at a face count you choose. It is Blender's own, not an
+    add-on, and it is slow -- seconds to minutes on a dense mesh --
+    which is worth knowing before it is put in a loop.
+
+    UVs do not survive it. Unwrap after, never before.
+    """
+    return (f'_target = _active(_obj({_text(params.get("object"))}))\n'
+            f'if not _target.data.polygons:\n'
+            f'    raise RuntimeError("%r has no faces to remesh" % _target.name)\n'
+            f'bpy.ops.object.quadriflow_remesh('
+            f'target_faces={_int(params.get("faces"), 5000, 4, 1000000)}, '
+            f'use_preserve_sharp=False, use_preserve_boundary=False, '
+            f'use_mesh_symmetry={"True" if params.get("symmetry") else "False"})\n'
+            f'_note("quad_remesh", object=_target.name, faces=len(_target.data.polygons))')
+
+
+def voxel_remesh(params: Dict[str, Any]) -> str:
+    """Rebuild a mesh as a uniform voxel grid.
+
+    The other retopology, and the one to reach for mid-sculpt rather
+    than at the end: it welds intersecting parts into one continuous
+    surface, which is how a figure assembled from separate primitives
+    becomes something sculptable at all. Quads are not guaranteed and
+    the result is dense -- follow it with quad_remesh when the shape is
+    settled.
+
+    Size is in metres and it is the whole control: halving it roughly
+    quadruples the face count.
+    """
+    return (f'_target = _active(_obj({_text(params.get("object"))}))\n'
+            f'_target.data.remesh_voxel_size = {_num(params.get("size"), 0.02)}\n'
+            f'_target.data.remesh_voxel_adaptivity = {_num(params.get("adaptivity"), 0.0)}\n'
+            f'bpy.ops.object.voxel_remesh()\n'
+            f'_note("voxel_remesh", object=_target.name, faces=len(_target.data.polygons))')
+
+
+def stamp_detail(params: Dict[str, Any]) -> str:
+    """Press a pattern into the surface: cracks, grain, pores, dents.
+
+    A displacement modifier with a procedural texture behind it, NOT a
+    sculpt brush. sculpt_brush explains why at length: a stroke needs
+    screen coordinates and a 3D viewport, --background has neither, and
+    a brush that is configured but never stroked changes nothing at
+    all. This moves vertices, which is the thing that was wanted.
+
+    IT NEEDS GEOMETRY TO MOVE. Displacement pushes existing vertices
+    along their normals; it cannot invent them. On a default cube the
+    result is a slightly larger cube. Subdivide first -- three or four
+    levels applied -- or the recipe will look like it did nothing.
+
+    `apply` bakes it into the mesh. Left off, the modifier stays live
+    and stacks with whatever comes after, which is usually what you
+    want mid-recipe and never what you want before an export.
+    """
+    kind = _choice(params.get("texture"), STAMP_TEXTURE_TYPES, "CLOUDS")
+    coords = _choice(params.get("coords"), DISPLACE_COORDS, "LOCAL")
+    apply_now = bool(params.get("apply"))
+
+    finish = ''
+    if apply_now:
+        finish = (f'bpy.ops.object.modifier_apply(modifier=_mod.name)\n')
+
+    return (f'_target = _active(_obj({_text(params.get("object"))}))\n'
+            f'_tname = {_named(params, "ARIA_Stamp")}\n'
+            f'_tex = bpy.data.textures.get(_tname)\n'
+            f'if _tex is None or _tex.type != {kind}:\n'
+            f'    if _tex is not None:\n'
+            f'        bpy.data.textures.remove(_tex)\n'
+            f'    _tex = bpy.data.textures.new(_tname, type={kind})\n'
+            f'for _field, _value in (("noise_scale", {_num(params.get("scale"), 0.25)}),\n'
+            f'                       ("noise_depth", {_int(params.get("depth"), 2, 0, 16)}),\n'
+            f'                       ("contrast", {_num(params.get("contrast"), 1.0)})):\n'
+            f'    if hasattr(_tex, _field):\n'
+            f'        setattr(_tex, _field, _value)\n'
+            f'_image = {_text(params.get("image"))}\n'
+            f'if _image and _tex.type == "IMAGE":\n'
+            f'    _tex.image = bpy.data.images.get(_image)\n'
+            f'_mod = _target.modifiers.get(_tname)\n'
+            f'if _mod is not None and _mod.type != "DISPLACE":\n'
+            f'    _target.modifiers.remove(_mod)\n'
+            f'    _mod = None\n'
+            f'if _mod is None:\n'
+            f'    _mod = _target.modifiers.new(name=_tname, type="DISPLACE")\n'
+            f'_mod.texture = _tex\n'
+            f'_mod.texture_coords = {coords}\n'
+            f'_mod.strength = {_num(params.get("strength"), 0.05)}\n'
+            f'_mod.mid_level = {_num(params.get("mid_level"), 0.5)}\n'
+            f'_before = len(_target.data.vertices)\n'
+            + finish +
+            f'_note("stamp_detail", object=_target.name, texture=_tex.name, '
+            f'kind={kind}, verts=_before)')
+
+
+def edge_wear(params: Dict[str, Any]) -> str:
+    """A mask that finds the edges, for paint worn off the corners.
+
+    Built from a Bevel node, which is the standard trick and not an
+    obvious one: bevel the shading normal over a small radius and
+    compare it to the true normal, and the two agree everywhere flat
+    and disagree on a corner. The difference IS the edge mask.
+
+    Left as nodes rather than applied. Wire it where it is wanted, or
+    bake it with bake_texture and use it as a map -- which is what it
+    is for, because this only exists in Cycles.
+    """
+    return (f'_mat = bpy.data.materials.get({_text(params.get("material"))})\n'
+            f'if _mat is None:\n'
+            f'    raise RuntimeError("no material called %r" % {_text(params.get("material"))})\n'
+            f'_tree = _mat.node_tree\n'
+            f'_bevel = _tree.nodes.get("ARIA_EdgeBevel") or _tree.nodes.new("ShaderNodeBevel")\n'
+            f'_bevel.name = "ARIA_EdgeBevel"\n'
+            f'_bevel.location = (-900, 400)\n'
+            f'_bevel.inputs["Radius"].default_value = {_num(params.get("radius"), 0.02)}\n'
+            f'_geo = _tree.nodes.get("ARIA_EdgeGeometry") or _tree.nodes.new("ShaderNodeNewGeometry")\n'
+            f'_geo.name = "ARIA_EdgeGeometry"\n'
+            f'_geo.location = (-900, 200)\n'
+            f'_dot = _tree.nodes.get("ARIA_EdgeDot") or _tree.nodes.new("ShaderNodeVectorMath")\n'
+            f'_dot.name = "ARIA_EdgeDot"\n'
+            f'_dot.operation = "DOT_PRODUCT"\n'
+            f'_dot.location = (-700, 300)\n'
+            f'_ramp = _tree.nodes.get("ARIA_EdgeRamp") or _tree.nodes.new("ShaderNodeValToRGB")\n'
+            f'_ramp.name = "ARIA_EdgeRamp"\n'
+            f'_ramp.location = (-500, 300)\n'
+            f'_ramp.color_ramp.elements[0].position = {_num(params.get("softness"), 0.55)}\n'
+            f'_ramp.color_ramp.elements[1].position = {_num(params.get("sharpness"), 0.75)}\n'
+            f'for _l in list(_tree.links):\n'
+            f'    if _l.to_node in (_dot, _ramp):\n'
+            f'        _tree.links.remove(_l)\n'
+            f'_tree.links.new(_bevel.outputs["Normal"], _dot.inputs[0])\n'
+            f'_tree.links.new(_geo.outputs["Normal"], _dot.inputs[1])\n'
+            f'_tree.links.new(_dot.outputs["Value"], _ramp.inputs["Fac"])\n'
+            f'_note("edge_wear", material=_mat.name, node="ARIA_EdgeRamp")')
+
+
+def cavity_mask(params: Dict[str, Any]) -> str:
+    """A mask that finds the creases, for dirt that settles in them.
+
+    The other half of edge_wear and its opposite: an Ambient Occlusion
+    node with a short distance is dark where the surface folds in on
+    itself, which is exactly where grime, rust and shadow collect.
+    Together they are most of what makes a surface look used rather
+    than new.
+
+    Nodes, not pixels. Bake it to get a map.
+    """
+    inside = "True" if params.get("inside") in (None, "", True) else "False"
+
+    return (f'_mat = bpy.data.materials.get({_text(params.get("material"))})\n'
+            f'if _mat is None:\n'
+            f'    raise RuntimeError("no material called %r" % {_text(params.get("material"))})\n'
+            f'_tree = _mat.node_tree\n'
+            f'_ao = _tree.nodes.get("ARIA_Cavity") or _tree.nodes.new("ShaderNodeAmbientOcclusion")\n'
+            f'_ao.name = "ARIA_Cavity"\n'
+            f'_ao.location = (-900, -600)\n'
+            f'_ao.samples = {_int(params.get("samples"), 16, 1, 128)}\n'
+            f'_ao.inside = {inside}\n'
+            f'_ao.only_local = True\n'
+            f'_ao.inputs["Distance"].default_value = {_num(params.get("distance"), 0.08)}\n'
+            f'_ramp = _tree.nodes.get("ARIA_CavityRamp") or _tree.nodes.new("ShaderNodeValToRGB")\n'
+            f'_ramp.name = "ARIA_CavityRamp"\n'
+            f'_ramp.location = (-680, -600)\n'
+            f'_ramp.color_ramp.elements[0].position = {_num(params.get("low"), 0.2)}\n'
+            f'_ramp.color_ramp.elements[1].position = {_num(params.get("high"), 0.8)}\n'
+            f'for _l in list(_tree.links):\n'
+            f'    if _l.to_node is _ramp:\n'
+            f'        _tree.links.remove(_l)\n'
+            f'_tree.links.new(_ao.outputs["Color"], _ramp.inputs["Fac"])\n'
+            f'_note("cavity_mask", material=_mat.name, node="ARIA_CavityRamp")')
+
+
 TEMPLATES = {
     "apply_transforms": apply_transforms,
     "remove_stray_meshes": remove_stray_meshes,
     "measure_rig": measure_rig,
     "add_cone": add_cone,
     "load_image": load_image,
+    "new_image": new_image,
+    "save_image": save_image,
+    "bake_texture": bake_texture,
+    "set_shader_node": set_shader_node,
+    "quad_remesh": quad_remesh,
+    "voxel_remesh": voxel_remesh,
+    "stamp_detail": stamp_detail,
+    "edge_wear": edge_wear,
+    "cavity_mask": cavity_mask,
     "set_texture": set_texture,
     "bind_to_bone": bind_to_bone,
     "smooth_shade": smooth_shade,
