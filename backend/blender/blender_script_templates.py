@@ -81,6 +81,11 @@ DEFORM_METHODS = frozenset({"TWIST", "BEND", "TAPER", "STRETCH"})
 # becomes a soft one without touching a vertex by hand.
 CAST_TYPES = frozenset({"SPHERE", "CYLINDER", "CUBOID"})
 
+# How points get spread over a surface. POISSON keeps them apart, which
+# is what scattered things actually look like; RANDOM lets them clump
+# and overlap, which reads as a mistake more often than as nature.
+DISTRIBUTE_METHODS = frozenset({"RANDOM", "POISSON"})
+
 BOOLEAN_OPERATIONS = frozenset({"DIFFERENCE", "UNION", "INTERSECT"})
 AXES = frozenset({"X", "Y", "Z"})
 SCULPT_BRUSHES = frozenset({
@@ -2177,6 +2182,172 @@ def join_objects(params: Dict[str, Any]) -> str:
             f'verts=len(_keep.data.vertices))')
 
 
+def add_geometry_nodes(params: Dict[str, Any]) -> str:
+    """An empty geometry node group on an object, wired input to output.
+
+    The foundation the other two stand on, and on its own it does
+    nothing -- geometry goes in and the same geometry comes out. That
+    is deliberate: a group that passes through is a group you can add
+    to without having first broken the object.
+
+    Blender 4.0 moved a group's sockets from `group.inputs` and
+    `group.outputs` to `group.interface`, and the old names simply are
+    not there in 5.0 -- not deprecated, absent. A template written
+    against a tutorial from before that change fails on its first line.
+    """
+    return (f'_target = _active(_obj({_text(params.get("object"))}))\n'
+            f'_name = {_named(params, "ARIA_Nodes")}\n'
+            f'_group = bpy.data.node_groups.get(_name)\n'
+            f'if _group is not None:\n'
+            f'    bpy.data.node_groups.remove(_group)\n'
+            f'_group = bpy.data.node_groups.new(_name, "GeometryNodeTree")\n'
+            f'_group.interface.new_socket("Geometry", in_out="INPUT", '
+            f'socket_type="NodeSocketGeometry")\n'
+            f'_group.interface.new_socket("Geometry", in_out="OUTPUT", '
+            f'socket_type="NodeSocketGeometry")\n'
+            f'_in = _group.nodes.new("NodeGroupInput")\n'
+            f'_in.location = (-600, 0)\n'
+            f'_out = _group.nodes.new("NodeGroupOutput")\n'
+            f'_out.location = (600, 0)\n'
+            f'_group.links.new(_in.outputs[0], _out.inputs[0])\n'
+            f'_mod = _target.modifiers.get(_name)\n'
+            f'if _mod is not None and _mod.type != "NODES":\n'
+            f'    _target.modifiers.remove(_mod)\n'
+            f'    _mod = None\n'
+            f'if _mod is None:\n'
+            f'    _mod = _target.modifiers.new(name=_name, type="NODES")\n'
+            f'_mod.node_group = _group\n'
+            f'_note("add_geometry_nodes", object=_target.name, group=_group.name)')
+
+
+def scatter_on_surface(params: Dict[str, Any]) -> str:
+    """Scatter instances of one object across another's faces.
+
+    What geometry nodes are for in a pipeline like this: rivets along a
+    strap, studs on a boot, stones across a quarry floor, clumps on a
+    head. The scattered object is instanced, not copied, so ten
+    thousand of them cost about what one does.
+
+    SAME SEED, SAME SCATTER. That is the whole difference between
+    procedural and random: a recipe run twice puts every stone back
+    where it was, and a recipe run with the seed changed by one gives a
+    different quarry that is just as repeatable.
+
+    REALIZE INSTANCES, WHICH IS THE TRAP
+    Instances are not geometry. They draw, they render, and they export
+    to FBX as nothing at all -- the model arrives in Unity with a bare
+    surface and no rivets, and nothing anywhere says why. A Realize
+    Instances node before the output turns them into real mesh so they
+    survive the trip.
+
+    The original surface is joined back in, because a scatter that
+    replaced the thing it scattered over would be a strange thing to
+    want.
+    """
+    align = "True" if params.get("align", True) else "False"
+
+    return (f'_target = _active(_obj({_text(params.get("object"))}))\n'
+            f'_source = _obj({_text(params.get("scatter") or params.get("source"))})\n'
+            f'_name = {_named(params, "ARIA_Scatter")}\n'
+            f'_group = bpy.data.node_groups.get(_name)\n'
+            f'if _group is not None:\n'
+            f'    bpy.data.node_groups.remove(_group)\n'
+            f'_group = bpy.data.node_groups.new(_name, "GeometryNodeTree")\n'
+            f'_group.interface.new_socket("Geometry", in_out="INPUT", '
+            f'socket_type="NodeSocketGeometry")\n'
+            f'_group.interface.new_socket("Geometry", in_out="OUTPUT", '
+            f'socket_type="NodeSocketGeometry")\n'
+            f'_in = _group.nodes.new("NodeGroupInput"); _in.location = (-900, 0)\n'
+            f'_out = _group.nodes.new("NodeGroupOutput"); _out.location = (700, 0)\n'
+            f'_dist = _group.nodes.new("GeometryNodeDistributePointsOnFaces")\n'
+            f'_dist.location = (-600, 100)\n'
+            f'_dist.distribute_method = '
+            f'{_choice(params.get("method"), DISTRIBUTE_METHODS, "POISSON")}\n'
+            f'_info = _group.nodes.new("GeometryNodeObjectInfo")\n'
+            f'_info.location = (-600, -260)\n'
+            f'_info.inputs["Object"].default_value = _source\n'
+            f'_info.transform_space = "ORIGINAL"\n'
+            f'_rand = _group.nodes.new("FunctionNodeRandomValue")\n'
+            f'_rand.location = (-350, -120)\n'
+            f'_rand.data_type = "FLOAT"\n'
+            f'_rand.inputs[2].default_value = {_num(params.get("scale_min"), 0.8)}\n'
+            f'_rand.inputs[3].default_value = {_num(params.get("scale_max"), 1.2)}\n'
+            f'_rand.inputs["Seed"].default_value = {_int(params.get("seed"), 0, 0, 1000000)}\n'
+            f'_inst = _group.nodes.new("GeometryNodeInstanceOnPoints")\n'
+            f'_inst.location = (-80, 0)\n'
+            f'_real = _group.nodes.new("GeometryNodeRealizeInstances")\n'
+            f'_real.location = (200, 0)\n'
+            f'_join = _group.nodes.new("GeometryNodeJoinGeometry")\n'
+            f'_join.location = (450, 0)\n'
+            f'_L = _group.links\n'
+            f'_L.new(_in.outputs[0], _dist.inputs["Mesh"])\n'
+            f'_L.new(_dist.outputs["Points"], _inst.inputs["Points"])\n'
+            f'_L.new(_info.outputs["Geometry"], _inst.inputs["Instance"])\n'
+            f'_L.new(_rand.outputs[1], _inst.inputs["Scale"])\n'
+            f'if {align}:\n'
+            f'    _L.new(_dist.outputs["Rotation"], _inst.inputs["Rotation"])\n'
+            f'_L.new(_inst.outputs["Instances"], _real.inputs["Geometry"])\n'
+            f'_L.new(_real.outputs["Geometry"], _join.inputs["Geometry"])\n'
+            f'_L.new(_in.outputs[0], _join.inputs["Geometry"])\n'
+            f'_L.new(_join.outputs["Geometry"], _out.inputs[0])\n'
+            f'_seed = _dist.inputs.get("Seed")\n'
+            f'if _seed is not None:\n'
+            f'    _seed.default_value = {_int(params.get("seed"), 0, 0, 1000000)}\n'
+            f'_den = _dist.inputs.get("Density Max") or _dist.inputs.get("Density")\n'
+            f'if _den is not None:\n'
+            f'    _den.default_value = {_num(params.get("density"), 40.0)}\n'
+            f'_mod = _target.modifiers.get(_name)\n'
+            f'if _mod is not None and _mod.type != "NODES":\n'
+            f'    _target.modifiers.remove(_mod); _mod = None\n'
+            f'if _mod is None:\n'
+            f'    _mod = _target.modifiers.new(name=_name, type="NODES")\n'
+            f'_mod.node_group = _group\n'
+            f'{"bpy.ops.object.modifier_apply(modifier=_mod.name)" if params.get("apply") else "pass"}\n'
+            f'_note("scatter_on_surface", object=_target.name, scattered=_source.name, '
+            f'group=_group.name)')
+
+
+def set_geometry_input(params: Dict[str, Any]) -> str:
+    """Turn one number on a geometry node group that already exists.
+
+    So a recipe can try three densities without rebuilding the graph
+    three times, and so a variation layer can change a seed and get a
+    different-but-repeatable result.
+
+    Named sockets on a modifier are addressed by identifier ("Socket_2")
+    rather than by label, which is not guessable -- so this looks the
+    label up in the group's interface and translates. A miss lists the
+    labels that exist.
+    """
+    value = params.get("value")
+    if isinstance(value, (list, tuple)):
+        parts = (list(value) + [0.0, 0.0, 0.0])[:3]
+        literal = "(" + ", ".join(_num(v) for v in parts) + ")"
+    elif isinstance(value, bool):
+        literal = "True" if value else "False"
+    else:
+        literal = _num(value, 0.0)
+
+    return (f'_target = _obj({_text(params.get("object"))})\n'
+            f'_mod = _target.modifiers.get({_text(params.get("group") or params.get("modifier"))})\n'
+            f'if _mod is None or _mod.type != "NODES":\n'
+            f'    raise RuntimeError("%r has no geometry nodes modifier called %r -- it has: %s" % ('
+            f'_target.name, {_text(params.get("group") or params.get("modifier"))}, '
+            f'", ".join(m.name for m in _target.modifiers)))\n'
+            f'_label = {_text(params.get("input"))}\n'
+            f'_found = None\n'
+            f'for _item in _mod.node_group.interface.items_tree:\n'
+            f'    if getattr(_item, "in_out", "") == "INPUT" and _item.name == _label:\n'
+            f'        _found = _item.identifier\n'
+            f'        break\n'
+            f'if _found is None:\n'
+            f'    raise RuntimeError("no input called %r -- the group has: %s" % (_label, '
+            f'", ".join(i.name for i in _mod.node_group.interface.items_tree '
+            f'if getattr(i, "in_out", "") == "INPUT")))\n'
+            f'_mod[_found] = {literal}\n'
+            f'_note("set_geometry_input", object=_target.name, input=_label)')
+
+
 TEMPLATES = {
     "apply_transforms": apply_transforms,
     "remove_stray_meshes": remove_stray_meshes,
@@ -2227,6 +2398,9 @@ TEMPLATES = {
     "apply_lattice": apply_lattice,
     "move_lattice_point": move_lattice_point,
     "join_objects": join_objects,
+    "add_geometry_nodes": add_geometry_nodes,
+    "scatter_on_surface": scatter_on_surface,
+    "set_geometry_input": set_geometry_input,
     "apply_decimate": apply_decimate,
     # transforms
     "move": move,
