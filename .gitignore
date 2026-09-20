@@ -68,3 +68,8 @@ aria_config/plugins.local.json
 # What Ludo.ai has been asked for and what it cost. Machine state, and
 # it doubles as the reuse cache.
 aria_config/ludo_spend.jsonl
+
+# Base model library: 49MB of CC0 Blender Studio meshes.
+# Fetched and checksum-verified by aria_models/fetch_human_base_meshes.py,
+# so the history does not have to carry it forever.
+aria_models/blender/human/human_base_meshes_bundle.blend

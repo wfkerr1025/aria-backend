@@ -1,0 +1,111 @@
+{
+  "name": "human_base_meshes",
+  "version": "1.4.1",
+  "kind": "blender_base_models",
+  "description": "Blender Studio's Human Base Meshes: quad-topology, UV-mapped human figures and body parts to sculpt custom characters from.",
+  "source": {
+    "page": "https://www.blender.org/download/demo-files/#assets",
+    "download": "https://mirror.blender.org/demo/asset-bundles/human-base-meshes/human-base-meshes-bundle-v1.4.1.zip",
+    "note": "The www.blender.org /download/demo/... URL is a 'Thanks!' interstitial and returns HTML, not the zip. The mirror is the file.",
+    "retrieved": "2026-09-20"
+  },
+  "licence": {
+    "id": "CC0",
+    "commercial_use": true,
+    "note": "Creative Commons CC0. Free for commercial use, no attribution required."
+  },
+  "file": {
+    "path": "blender/human/human_base_meshes_bundle.blend",
+    "bytes": 49420489,
+    "sha256": "3c121505651140ceb4d69fd1d8923f7788ffadd81672f5be14845a5f2c75c137"
+  },
+  "bases": [
+    {
+      "object": "GEO-body_male_stylized",
+      "use": "stylised male figure",
+      "verts": 12502,
+      "polys": 12500,
+      "quads": "100%",
+      "height_m": 1.8,
+      "uv": true
+    },
+    {
+      "object": "GEO-body_female_stylized",
+      "use": "stylised female figure",
+      "verts": 12502,
+      "polys": 12500,
+      "quads": "100%",
+      "height_m": 1.62,
+      "uv": true
+    },
+    {
+      "object": "GEO-body_male_realistic",
+      "use": "realistic male figure",
+      "verts": 10582,
+      "polys": 10590,
+      "quads": "100%",
+      "height_m": 1.69,
+      "uv": true
+    },
+    {
+      "object": "GEO-body_female_realistic",
+      "use": "realistic female figure",
+      "verts": 10582,
+      "polys": 10590,
+      "quads": "100%",
+      "height_m": 1.64,
+      "uv": true
+    },
+    {
+      "object": "Head - Generic Topology",
+      "use": "head to sculpt onto",
+      "verts": 318,
+      "polys": 316,
+      "quads": "100%",
+      "uv": true
+    },
+    {
+      "object": "Hand - Stylized",
+      "use": "stylised hand",
+      "verts": 871,
+      "polys": 880,
+      "quads": "98%",
+      "uv": true
+    },
+    {
+      "object": "Foot - Stylized",
+      "use": "stylised foot",
+      "verts": 786,
+      "polys": 798,
+      "quads": "96%",
+      "uv": true
+    },
+    {
+      "object": "Jaw - Stylized",
+      "use": "stylised jaw",
+      "verts": 6566,
+      "polys": 6308,
+      "quads": "100%",
+      "uv": true
+    },
+    {
+      "object": "Eye - Stylized",
+      "use": "stylised eye",
+      "verts": 802,
+      "polys": 832,
+      "quads": "92%",
+      "uv": true
+    }
+  ],
+  "kits": [
+    {
+      "prefix": "GEO-*_male_primitive_stylized",
+      "use": "low-poly stylised body as separate anatomical parts -- arms, belly, chest, ears, eyes and so on, tens of verts each. Closer to a chunky painted look than the smooth 12.5k body, and the thing the hand-built crew miner was reaching for.",
+      "uv": true
+    }
+  ],
+  "totals": {
+    "meshes_in_file": 382,
+    "advertised_assets": 17
+  }
+}
