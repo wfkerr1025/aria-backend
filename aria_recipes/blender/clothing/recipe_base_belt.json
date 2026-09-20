@@ -1,0 +1,47 @@
+{
+  "name": "base_belt",
+  "version": "1.0",
+  "description": "Primitive blockout belt designed to fit the Base Stylized Body. Used as the foundation for all belt, waist-gear, and utility strap variants.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "belt_main",
+      "type": "cube",
+      "size": [0.38, 0.10, 0.12],
+      "location": [0, 0, 1.00]
+    },
+    {
+      "id": "belt_buckle",
+      "type": "cube",
+      "size": [0.14, 0.06, 0.10],
+      "location": [0.18, 0.05, 1.00]
+    },
+    {
+      "id": "belt_loop_left",
+      "type": "cube",
+      "size": [0.06, 0.04, 0.10],
+      "location": [-0.20, -0.05, 1.00]
+    },
+    {
+      "id": "belt_loop_right",
+      "type": "cube",
+      "size": [0.06, 0.04, 0.10],
+      "location": [0.20, -0.05, 1.00]
+    }
+  ],
+
+  "modifiers": [],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_belt.fbx",
+    "apply_scale": true
+  }
+}

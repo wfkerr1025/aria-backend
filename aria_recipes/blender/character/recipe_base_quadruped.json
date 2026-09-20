@@ -1,0 +1,87 @@
+{
+  "name": "base_quadruped",
+  "version": "1.0",
+  "description": "Primitive blockout quadruped used as the foundation for all creature variants.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "body",
+      "type": "cube",
+      "size": [1.6, 0.5, 0.6],
+      "location": [0, 0, 0.8]
+    },
+    {
+      "id": "neck",
+      "type": "cube",
+      "size": [0.4, 0.3, 0.3],
+      "location": [0.9, 0, 1.0]
+    },
+    {
+      "id": "head",
+      "type": "cube",
+      "size": [0.4, 0.3, 0.3],
+      "location": [1.2, 0, 1.0]
+    },
+    {
+      "id": "leg_fl",
+      "type": "cylinder",
+      "radius": 0.10,
+      "depth": 0.7,
+      "location": [0.6, 0.25, 0.35],
+      "rotation": [0, 0, 0]
+    },
+    {
+      "id": "leg_fr",
+      "type": "cylinder",
+      "radius": 0.10,
+      "depth": 0.7,
+      "location": [0.6, -0.25, 0.35],
+      "rotation": [0, 0, 0]
+    },
+    {
+      "id": "leg_rl",
+      "type": "cylinder",
+      "radius": 0.12,
+      "depth": 0.8,
+      "location": [-0.6, 0.25, 0.40],
+      "rotation": [0, 0, 0]
+    },
+    {
+      "id": "leg_rr",
+      "type": "cylinder",
+      "radius": 0.12,
+      "depth": 0.8,
+      "location": [-0.6, -0.25, 0.40],
+      "rotation": [0, 0, 0]
+    },
+    {
+      "id": "tail",
+      "type": "cylinder",
+      "radius": 0.06,
+      "depth": 0.6,
+      "location": [-0.9, 0, 1.0],
+      "rotation": [0, 0, 90]
+    }
+  ],
+
+  "modifiers": [
+    { "target": "leg_fl", "type": "smooth_shade" },
+    { "target": "leg_fr", "type": "smooth_shade" },
+    { "target": "leg_rl", "type": "smooth_shade" },
+    { "target": "leg_rr", "type": "smooth_shade" },
+    { "target": "tail", "type": "smooth_shade" }
+  ],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_quadruped.fbx",
+    "apply_scale": true
+  }
+}

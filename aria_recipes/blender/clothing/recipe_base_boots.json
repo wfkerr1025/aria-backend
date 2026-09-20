@@ -1,0 +1,35 @@
+{
+  "name": "base_boots",
+  "version": "1.0",
+  "description": "Primitive blockout boots designed to fit the Base Stylized Body. Used as the foundation for all boot variants.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "boot_left",
+      "type": "cube",
+      "size": [0.22, 0.12, 0.18],
+      "location": [-0.12, 0.05, 0.30]
+    },
+    {
+      "id": "boot_right",
+      "type": "cube",
+      "size": [0.22, 0.12, 0.18],
+      "location": [0.12, 0.05, 0.30]
+    }
+  ],
+
+  "modifiers": [],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_boots.fbx",
+    "apply_scale": true
+  }
+}

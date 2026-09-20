@@ -1,0 +1,53 @@
+{
+  "name": "base_sword",
+  "version": "1.0",
+  "description": "Primitive blockout sword used as the foundation for all weapon variants.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "blade",
+      "type": "cube",
+      "size": [0.15, 0.6, 2.0],
+      "location": [0, 0, 1.5]
+    },
+    {
+      "id": "guard",
+      "type": "cube",
+      "size": [0.4, 0.15, 0.15],
+      "location": [0, 0, 0.9]
+    },
+    {
+      "id": "handle",
+      "type": "cylinder",
+      "radius": 0.08,
+      "depth": 0.6,
+      "location": [0, 0, 0.6],
+      "rotation": [0, 0, 0]
+    },
+    {
+      "id": "pommel",
+      "type": "sphere",
+      "radius": 0.12,
+      "location": [0, 0, 0.3],
+      "subdivision": 2
+    }
+  ],
+
+  "modifiers": [
+    { "target": "handle", "type": "smooth_shade" },
+    { "target": "pommel", "type": "smooth_shade" }
+  ],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_sword.fbx",
+    "apply_scale": true
+  }
+}

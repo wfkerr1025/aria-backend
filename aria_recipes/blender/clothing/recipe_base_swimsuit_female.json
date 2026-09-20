@@ -1,0 +1,33 @@
+{
+  "name": "base_swimsuit_female",
+  "version": "1.0",
+  "description": "Primitive blockout female swimsuit designed to fit the Base Stylized Body.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "swim_top",
+      "type": "cube",
+      "size": [0.36, 0.22, 0.30],
+      "location": [0, 0, 1.45]
+    },
+    {
+      "id": "swim_bottom",
+      "type": "cube",
+      "size": [0.32, 0.20, 0.22],
+      "location": [0, 0, 1.05]
+    }
+  ],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_swimsuit_female.fbx",
+    "apply_scale": true
+  }
+}
+

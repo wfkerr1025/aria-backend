@@ -75,6 +75,38 @@ SCULPT_BRUSHES = frozenset({
 })
 KEYFRAME_PATHS = frozenset({"location", "rotation_euler", "scale"})
 
+# How a keyframe gets from its own value to the next one. Blender's own
+# enum; BEZIER is its default and is why keyed poses already ease rather
+# than tick. The named curves (SINE..ELASTIC) are the ones worth asking
+# for by hand: CONSTANT holds a pose dead still until it breaks, which
+# is what anticipation is made of.
+INTERPOLATIONS = frozenset({
+    "CONSTANT", "LINEAR", "BEZIER", "SINE", "QUAD", "CUBIC", "QUART",
+    "QUINT", "EXPO", "CIRC", "BACK", "BOUNCE", "ELASTIC",
+})
+
+# Which end of the curve the easing happens at. Only meaningful for the
+# named curves above; BEZIER and LINEAR ignore it.
+EASINGS = frozenset({"AUTO", "EASE_IN", "EASE_OUT", "EASE_IN_OUT"})
+
+# Bones an IK solver may walk up from the constrained one. Blender takes
+# 0 to mean "all the way to the root", which on a full skeleton means an
+# arm that drags the spine with it; the cap is against a typo doing that
+# by accident.
+IK_CHAIN_MAX = 8
+
+# How a texture is sampled between its pixels. "Closest" is the one that
+# matters here: painted game art is read at a size the artist chose, and
+# smoothing it is how hand-drawn work starts looking like a photograph of
+# hand-drawn work.
+INTERPOLATIONS_IMAGE = frozenset({"Linear", "Closest", "Cubic", "Smart"})
+
+# Where a picture may be plugged in. Base Color is the ordinary answer;
+# Emission is how a surface carries its own painted light instead of
+# taking the scene's, which is what a cut-out flat does and what a model
+# standing beside one has to match.
+TEXTURE_SLOTS = frozenset({"Base Color", "Emission", "Roughness", "Metallic", "Alpha", "Normal"})
+
 
 # ======================================================
 # Values
@@ -469,10 +501,25 @@ def assign_material(params: Dict[str, Any]) -> str:
 # ======================================================
 
 def create_armature(params: Dict[str, Any]) -> str:
+    """An empty armature, ready for add_bone.
+
+    EMPTY IS THE POINT. `armature_add` does not make a bare armature --
+    it makes one carrying a default bone called "Bone", and nothing used
+    to take it away, so every rig built through here has had a spare
+    bone standing in it at the origin. That is not cosmetic once
+    auto_weights runs: the stray takes vertex weights off the bones that
+    should have had them, and drags that part of the mesh with it.
+    Measured in Blender 5.0.1, along with the missing parents below.
+    """
     return (f'bpy.ops.object.armature_add(location={_vector(params.get("location"))})\n'
-            f'bpy.context.active_object.name = {_named(params, "Armature")}\n'
-            f'_RESULT["created"].append(bpy.context.active_object.name)\n'
-            f'_note("create_armature", name=bpy.context.active_object.name)')
+            f'_arm = bpy.context.active_object\n'
+            f'_arm.name = {_named(params, "Armature")}\n'
+            f'bpy.ops.object.mode_set(mode="EDIT")\n'
+            f'for _spare in list(_arm.data.edit_bones):\n'
+            f'    _arm.data.edit_bones.remove(_spare)\n'
+            f'bpy.ops.object.mode_set(mode="OBJECT")\n'
+            f'_RESULT["created"].append(_arm.name)\n'
+            f'_note("create_armature", name=_arm.name)')
 
 
 def add_bone(params: Dict[str, Any]) -> str:
@@ -481,14 +528,37 @@ def add_bone(params: Dict[str, Any]) -> str:
     armature.bone_primitive_add exists but names the bone itself and
     places it at the origin, so building a named skeleton means the
     data API either way.
+
+    PARENT IS WHAT MAKES IT A SKELETON
+    ----------------------------------
+    A bone with no parent moves alone. Without this a rig was a pile of
+    bones that happened to be touching: turn the shoulder and the
+    forearm stays hanging in the air where it started. It was invisible
+    because posing ONE bone looks perfectly right, and it is only when a
+    limb has to swing that the rig turns out never to have been one.
+    Measured in Blender 5.0.1 -- every bone came back with parent None.
+
+    `connect` welds the child's head onto the parent's tail, which is
+    what you want along a limb. Leave it off where a bone hangs from a
+    joint without being in line with it, like a hip off a spine.
     """
     return (f'_arm = _active(_obj({_text(params.get("armature"))}))\n'
             f'bpy.ops.object.mode_set(mode="EDIT")\n'
             f'_bone = _arm.data.edit_bones.new({_text(params.get("name") or "Bone")})\n'
             f'_bone.head = {_vector(params.get("head"))}\n'
             f'_bone.tail = {_vector(params.get("tail"), (0.0, 0.0, 1.0))}\n'
+            f'_parent = {_text(params.get("parent"))}\n'
+            f'if _parent:\n'
+            f'    _found = _arm.data.edit_bones.get(_parent)\n'
+            f'    if _found is None:\n'
+            f'        raise RuntimeError("no bone called %r to hang %r from -- '
+            f'the rig has: %s" % (_parent, {_text(params.get("name") or "Bone")}, '
+            f'", ".join(sorted(_b.name for _b in _arm.data.edit_bones))))\n'
+            f'    _bone.parent = _found\n'
+            f'    _bone.use_connect = {"True" if params.get("connect") else "False"}\n'
             f'bpy.ops.object.mode_set(mode="OBJECT")\n'
-            f'_note("add_bone", armature=_arm.name, bone={_text(params.get("name") or "Bone")})')
+            f'_note("add_bone", armature=_arm.name, '
+            f'bone={_text(params.get("name") or "Bone")}, parent=_parent or None)')
 
 
 def parent_mesh_to_armature(params: Dict[str, Any]) -> str:
@@ -569,20 +639,42 @@ def insert_keyframe(params: Dict[str, Any]) -> str:
 
 
 def set_pose(params: Dict[str, Any]) -> str:
+    """Turn one bone, on one frame, and key it there.
+
+    THE FRAME IS SET FIRST, AND THAT IS THE WHOLE FUNCTION
+    -----------------------------------------------------
+    It used to pose the bone and then call frame_set, which reads as
+    the obvious order and is exactly backwards: frame_set re-evaluates
+    the animation, so it OVERWRITES the rotation just assigned with
+    whatever the existing curve says at that frame, and the keyframe
+    records that instead.
+
+    The first key on a bone survived, because a bone with no curve has
+    nothing to be overwritten from. Every key after it recorded the
+    first one's value again. So an animation came out as twenty-four
+    frames of the same pose -- a rig that held still, with a full set of
+    keyframes to prove it had been animated.
+
+    Found by building the crew miner's swing and measuring where the
+    pick head was on each frame: identical, to the millimetre, on all
+    six sampled frames.
+    """
     return (f'import math\n'
             f'_arm = _active(_obj({_text(params.get("armature"))}))\n'
             f'bpy.ops.object.mode_set(mode="POSE")\n'
             f'_pbone = _arm.pose.bones.get({_text(params.get("bone"))})\n'
             f'if _pbone is None:\n'
-            f'    raise RuntimeError("no bone called %r" % {_text(params.get("bone"))})\n'
+            f'    raise RuntimeError("no bone called %r -- the rig has: %s" % ('
+            f'{_text(params.get("bone"))}, ", ".join(sorted(b.name for b in _arm.pose.bones))))\n'
+            f'_frame = {_int(params.get("frame"), 1, 0, 1_000_000)}\n'
+            f'bpy.context.scene.frame_set(_frame)\n'
             f'_pbone.rotation_mode = "XYZ"\n'
             f'_pbone.rotation_euler = tuple(math.radians(a) for a in '
             f'{_vector(params.get("rotation"))})\n'
-            f'_frame = {_int(params.get("frame"), 1, 0, 1_000_000)}\n'
-            f'bpy.context.scene.frame_set(_frame)\n'
             f'_pbone.keyframe_insert(data_path="rotation_euler", frame=_frame)\n'
             f'bpy.ops.object.mode_set(mode="OBJECT")\n'
-            f'_note("set_pose", armature=_arm.name, bone={_text(params.get("bone"))})')
+            f'_note("set_pose", armature=_arm.name, bone={_text(params.get("bone"))}, '
+            f'frame=_frame)')
 
 
 def bake_animation(params: Dict[str, Any]) -> str:
@@ -1106,10 +1198,304 @@ def measure_rig(params: Dict[str, Any]) -> str:
         '_note("measure_rig", **_rig)')
 
 
+def add_ik_constraint(params: Dict[str, Any]) -> str:
+    """Make a limb follow a target instead of being aimed a bone at a time.
+
+    Everything else here is FK: you turn each bone and the hand ends up
+    wherever the arithmetic puts it. That is fine for a wave and wrong
+    for anything a character has to HOLD. A two-handed pickaxe swing
+    keyed in FK means solving both hands onto the haft at every frame,
+    and they come apart the moment a shoulder angle changes -- the hands
+    slide off the handle and the weight goes out of the swing.
+
+    Rebuilt rather than added to. A second IK constraint on a bone does
+    not replace the first, it stacks, and the limb then solves toward
+    two targets at once; re-running a recipe would quietly do that.
+    """
+    target = params.get("target")
+    if target is None or str(target).strip() == "":
+        raise BadValue("add_ik_constraint needs a target for the limb to reach for.")
+
+    pole = params.get("pole_target")
+    pole_source = ""
+    if pole is not None and str(pole).strip() != "":
+        pole_source = (f'_ik.pole_target = _obj({_text(pole)})\n'
+                       f'_ik.pole_subtarget = {_text(params.get("pole_subtarget"))}\n'
+                       f'_ik.pole_angle = math.radians({_num(params.get("pole_angle"), -90.0)})\n')
+
+    return (f'import math\n'
+            f'_arm = _active(_obj({_text(params.get("armature"))}))\n'
+            f'bpy.ops.object.mode_set(mode="POSE")\n'
+            f'_pbone = _arm.pose.bones.get({_text(params.get("bone"))})\n'
+            f'if _pbone is None:\n'
+            f'    raise RuntimeError("no bone called %r -- the rig has: %s" % ('
+            f'{_text(params.get("bone"))}, ", ".join(sorted(b.name for b in _arm.pose.bones))))\n'
+            f'for _old in [_c for _c in _pbone.constraints if _c.type == "IK"]:\n'
+            f'    _pbone.constraints.remove(_old)\n'
+            f'_ik = _pbone.constraints.new("IK")\n'
+            f'_ik.target = _obj({_text(target)})\n'
+            f'_ik.subtarget = {_text(params.get("subtarget"))}\n'
+            f'_ik.chain_count = {_int(params.get("chain_count"), 2, 0, IK_CHAIN_MAX)}\n'
+            + pole_source +
+            f'bpy.ops.object.mode_set(mode="OBJECT")\n'
+            f'_note("add_ik_constraint", armature=_arm.name, '
+            f'bone={_text(params.get("bone"))}, chain=_ik.chain_count)')
+
+
+def set_interpolation(params: Dict[str, Any]) -> str:
+    """How the keys that are already there get from one pose to the next.
+
+    Blender keys BEZIER by default, so a posed rig already eases instead
+    of ticking between frames, and for most motion that is the right
+    answer and this action is not needed. It is needed where the timing
+    has to be deliberate: CONSTANT to hold a wind-up dead still so the
+    chop after it reads as a break, EASE_IN on the way into an impact,
+    LINEAR through a pass where easing would look like hesitation.
+
+    Narrowed by `bone` and `frame` when given, because a swing wants one
+    shape on its wind-up and another on its follow-through, and setting
+    a whole action at once cannot say that.
+
+    THE FCURVES ARE NOT WHERE THE DOCS SAY
+    --------------------------------------
+    Blender 4.4 moved an Action's curves into slotted layers -- strips
+    holding channelbags, one per slot -- and `action.fcurves` is the
+    legacy view of that. It is still present, but on a slotted action it
+    can be empty while the curves are perfectly there, which would make
+    this action silently do nothing. So the layers are walked first and
+    the flat list is the fallback, not the other way round.
+    """
+    frame = params.get("frame")
+    frame_literal = ("None" if frame is None or str(frame).strip() == ""
+                     else _int(frame, 1, 0, 1_000_000))
+
+    return (f'_target = _obj({_text(params.get("object") or params.get("obj"))})\n'
+            f'_anim = _target.animation_data\n'
+            f'_action = _anim.action if _anim else None\n'
+            f'if _action is None:\n'
+            f'    raise RuntimeError("%r has no animation to shape yet" % _target.name)\n'
+            f'_curves = []\n'
+            f'for _layer in getattr(_action, "layers", []):\n'
+            f'    for _strip in getattr(_layer, "strips", []):\n'
+            f'        for _bag in getattr(_strip, "channelbags", []):\n'
+            f'            _curves.extend(_bag.fcurves)\n'
+            f'if not _curves:\n'
+            f'    _curves = list(getattr(_action, "fcurves", []))\n'
+            f'_bone = {_text(params.get("bone"))}\n'
+            f'_only = {frame_literal}\n'
+            f'_touched = 0\n'
+            f'for _curve in _curves:\n'
+            f'    if _bone and (\'pose.bones["%s"]\' % _bone) not in _curve.data_path:\n'
+            f'        continue\n'
+            f'    for _key in _curve.keyframe_points:\n'
+            f'        if _only is not None and int(round(_key.co[0])) != _only:\n'
+            f'            continue\n'
+            f'        _key.interpolation = {_choice(params.get("interpolation"), INTERPOLATIONS, "BEZIER")}\n'
+            f'        _key.easing = {_choice(params.get("easing"), EASINGS, "AUTO")}\n'
+            f'        _touched += 1\n'
+            f'    _curve.update()\n'
+            f'if _touched == 0:\n'
+            f'    raise RuntimeError("no keyframes matched -- bone=%r frame=%r" % (_bone, _only))\n'
+            f'_note("set_interpolation", object=_target.name, keys=_touched)')
+
+
+def add_cone(params: Dict[str, Any]) -> str:
+    """A cone. One recipe in the library uses one, which is reason enough.
+
+    `radius` is the base; a cone with `radius_top` above zero is a
+    truncated one, which is what most game props actually want -- a
+    lamp shade, a spoil heap, a hat.
+    """
+    return (f'bpy.ops.mesh.primitive_cone_add('
+            f'radius1={_num(params.get("radius"), 1.0)}, '
+            f'radius2={_num(params.get("radius_top"), 0.0)}, '
+            f'depth={_num(params.get("depth"), 2.0)}, '
+            f'location={_vector(params.get("location"))})\n'
+            f'bpy.context.active_object.name = {_named(params, "Cone")}\n'
+            f'_RESULT["created"].append(bpy.context.active_object.name)\n'
+            f'_note("add_cone", name=bpy.context.active_object.name)')
+
+
+def smooth_shade(params: Dict[str, Any]) -> str:
+    """Round the shading without touching the geometry.
+
+    Every recipe in the library asks for this on its curved parts -- 54
+    times across 29 files -- and it is the difference between a cylinder
+    that reads as a limb and one that reads as a barrel with facets.
+    `smooth: false` turns it back off, because a sawn stone block wants
+    its edges.
+    """
+    smooth = params.get("smooth", True)
+    call = "shade_smooth" if smooth or smooth is None else "shade_flat"
+
+    return (f'_target = _active(_obj({_text(params.get("object") or params.get("target"))}))\n'
+            f'bpy.ops.object.{call}()\n'
+            f'_note("smooth_shade", object=_target.name, smooth={"True" if call == "shade_smooth" else "False"})')
+
+
+def origin_to_geometry(params: Dict[str, Any]) -> str:
+    """Put the origin at the middle of the thing, not wherever it was made.
+
+    Distinct from origin_to_floor, which drops it to the lowest point so
+    a prop can be stood on a floor. This one centres it, which is what
+    you want before rotating or scaling a part about itself -- and what
+    every recipe in the library asks for in its cleanup.
+
+    With no object named, every mesh in the scene, because a recipe's
+    cleanup applies to the whole build.
+    """
+    named = params.get("object") or params.get("target")
+
+    if named is None or str(named).strip() == "":
+        return ('bpy.ops.object.mode_set(mode="OBJECT")\n'
+                'bpy.ops.object.select_all(action="DESELECT")\n'
+                '_meshes = [o for o in bpy.data.objects if o.type == "MESH"]\n'
+                'for _m in _meshes:\n'
+                '    _m.select_set(True)\n'
+                'if _meshes:\n'
+                '    bpy.context.view_layer.objects.active = _meshes[0]\n'
+                '    bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="MEDIAN")\n'
+                '_note("origin_to_geometry", objects=len(_meshes))')
+
+    return (f'_target = _active(_obj({_text(named)}))\n'
+            f'bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="MEDIAN")\n'
+            f'_note("origin_to_geometry", object=_target.name)')
+
+
+def bind_to_bone(params: Dict[str, Any]) -> str:
+    """Every vertex of one part to one bone, at full weight.
+
+    The rigging move for a blockout made of separate parts, which is
+    what every recipe in the library is. `auto_weights` guesses
+    influence from distance, and on a figure whose upper arm and chest
+    overlap it guesses wrong: the shoulder drags a corner of the chest
+    with it and the seam pulls apart. A forearm is a rigid object and
+    belongs entirely to the forearm bone.
+
+    assign_vertex_group does the same job but wants the vertex indices
+    named, which a recipe on disk cannot know. This reads them off the
+    mesh, which is the only place they exist.
+
+    Pair it with parent_mesh_to_armature, which binds by group NAME --
+    the group made here has to be called after the bone, and is.
+    """
+    return (f'_target = _obj({_text(params.get("mesh") or params.get("object"))})\n'
+            f'_bone = {_text(params.get("bone"))}\n'
+            f'_group = _target.vertex_groups.get(_bone) or _target.vertex_groups.new(name=_bone)\n'
+            f'_group.add([_v.index for _v in _target.data.vertices], '
+            f'{_num(params.get("weight"), 1.0)}, "REPLACE")\n'
+            f'_note("bind_to_bone", object=_target.name, bone=_bone, '
+            f'vertices=len(_target.data.vertices))')
+
+
+def load_image(params: Dict[str, Any]) -> str:
+    """Bring a picture into the file so a material can use it.
+
+    `check_existing` is on, so asking twice for the same file gives the
+    same image rather than loading a second copy called Whatever.001 --
+    which a recipe run twice would otherwise do every time, and only
+    the first copy would be the one any material was pointing at.
+
+    Packed, because the .blend or the FBX may be opened somewhere the
+    original path does not exist. An export with a missing texture is a
+    model that looks fine here and arrives in Unity untextured.
+    """
+    return (f'_path = {_text(params.get("path"))}\n'
+            f'import os\n'
+            f'if not os.path.isfile(_path):\n'
+            f'    raise RuntimeError("no image at %r" % _path)\n'
+            f'_img = bpy.data.images.load(_path, check_existing=True)\n'
+            f'_name = {_text(params.get("name"))}\n'
+            f'if _name:\n'
+            f'    _img.name = _name\n'
+            f'try:\n'
+            f'    _img.pack()\n'
+            f'except Exception:\n'
+            f'    pass\n'
+            f'_note("load_image", image=_img.name, size=list(_img.size))')
+
+
+def set_texture(params: Dict[str, Any]) -> str:
+    """Plug a loaded image into a material.
+
+    Found by name and rebuilt, not added: a second image node wired to
+    the same socket does not replace the first, it simply wins or loses
+    depending on which link was made last, and a recipe run twice would
+    leave a material nobody can reason about.
+
+    UNLIT IS NOT A STYLE SETTING, IT IS THE WHOLE POINT
+    ---------------------------------------------------
+    A painted cut-out carries its own light -- the sun is in the
+    painting, on the upper left, with the cool shadow down the right.
+    A model lit by the scene instead gets a second, disagreeing light
+    laid over the first, and reads as a 3D object among illustrations.
+    Wiring the picture to Emission and taking Base Color to black makes
+    the surface show exactly what was painted and nothing else, which
+    is how a model stands next to a flat without contradicting it.
+    """
+    slot = _choice(params.get("slot"), TEXTURE_SLOTS, "Base Color")
+    unlit = bool(params.get("unlit"))
+    node = params.get("node") or "ARIA_Texture"
+
+    wiring = (f'_socket = _bsdf.inputs[{slot}]\n'
+              f'for _l in list(_tree.links):\n'
+              f'    if _l.to_socket == _socket:\n'
+              f'        _tree.links.remove(_l)\n'
+              f'_tree.links.new(_tex.outputs["Color"], _socket)\n')
+
+    if unlit:
+        wiring = (f'_emit = _bsdf.inputs.get("Emission Color") or _bsdf.inputs.get("Emission")\n'
+                  f'if _emit is None:\n'
+                  f'    raise RuntimeError("this Principled BSDF has no emission input")\n'
+                  f'for _l in list(_tree.links):\n'
+                  f'    if _l.to_socket in (_emit, _bsdf.inputs["Base Color"]):\n'
+                  f'        _tree.links.remove(_l)\n'
+                  f'_tree.links.new(_tex.outputs["Color"], _emit)\n'
+                  f'_bsdf.inputs["Base Color"].default_value = (0.0, 0.0, 0.0, 1.0)\n'
+                  f'_strength = _bsdf.inputs.get("Emission Strength")\n'
+                  f'if _strength is not None:\n'
+                  f'    _strength.default_value = 1.0\n')
+
+    return (f'_mat = bpy.data.materials.get({_text(params.get("material"))})\n'
+            f'if _mat is None:\n'
+            f'    raise RuntimeError("no material called %r -- the file has: %s" % ('
+            f'{_text(params.get("material"))}, ", ".join(sorted(m.name for m in bpy.data.materials))))\n'
+            f'_img = bpy.data.images.get({_text(params.get("image"))})\n'
+            f'if _img is None:\n'
+            f'    raise RuntimeError("no image called %r -- load_image it first. The file has: %s" % ('
+            f'{_text(params.get("image"))}, ", ".join(sorted(i.name for i in bpy.data.images))))\n'
+            f'_tree = _mat.node_tree\n'
+            f'_bsdf = _tree.nodes.get("Principled BSDF")\n'
+            f'if _bsdf is None:\n'
+            f'    raise RuntimeError("%r has no Principled BSDF to plug into" % _mat.name)\n'
+            f'_tex = _tree.nodes.get({_text(node)})\n'
+            f'if _tex is None:\n'
+            f'    _tex = _tree.nodes.new("ShaderNodeTexImage")\n'
+            f'    _tex.name = {_text(node)}\n'
+            f'    _tex.label = {_text(node)}\n'
+            f'    _tex.location = (_bsdf.location.x - 420, _bsdf.location.y)\n'
+            f'_tex.image = _img\n'
+            f'_tex.interpolation = {_choice(params.get("interpolation"), INTERPOLATIONS_IMAGE, "Linear")}\n'
+            + wiring +
+            f'_rough = _bsdf.inputs.get("Roughness")\n'
+            f'if _rough is not None:\n'
+            f'    _rough.default_value = {_num(params.get("roughness"), 1.0)}\n'
+            f'_note("set_texture", material=_mat.name, image=_img.name, '
+            f'slot={slot}, unlit={unlit!r})')
+
+
 TEMPLATES = {
     "apply_transforms": apply_transforms,
     "remove_stray_meshes": remove_stray_meshes,
     "measure_rig": measure_rig,
+    "add_cone": add_cone,
+    "load_image": load_image,
+    "set_texture": set_texture,
+    "bind_to_bone": bind_to_bone,
+    "smooth_shade": smooth_shade,
+    "origin_to_geometry": origin_to_geometry,
+    "add_ik_constraint": add_ik_constraint,
+    "set_interpolation": set_interpolation,
     "import_model": import_model,
     "measure_mesh": measure_mesh,
     "remove_loose": remove_loose,

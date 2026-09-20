@@ -1,0 +1,57 @@
+{
+  "name": "base_tree",
+  "version": "1.0",
+  "description": "Primitive blockout tree used as the foundation for all environment tree variants.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "trunk",
+      "type": "cylinder",
+      "radius": 0.25,
+      "depth": 3.0,
+      "location": [0, 0, 1.5],
+      "rotation": [0, 0, 0]
+    },
+    {
+      "id": "canopy_bottom",
+      "type": "sphere",
+      "radius": 1.4,
+      "location": [0, 0, 3.2],
+      "subdivision": 2
+    },
+    {
+      "id": "canopy_middle",
+      "type": "sphere",
+      "radius": 1.2,
+      "location": [0, 0, 4.2],
+      "subdivision": 2
+    },
+    {
+      "id": "canopy_top",
+      "type": "sphere",
+      "radius": 0.9,
+      "location": [0, 0, 5.0],
+      "subdivision": 2
+    }
+  ],
+
+  "modifiers": [
+    { "target": "trunk", "type": "smooth_shade" },
+    { "target": "canopy_bottom", "type": "smooth_shade" },
+    { "target": "canopy_middle", "type": "smooth_shade" },
+    { "target": "canopy_top", "type": "smooth_shade" }
+  ],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_tree.fbx",
+    "apply_scale": true
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "name": "base_stylized_body",
+  "version": "1.0",
+  "description": "Stylized humanoid blockout with exaggerated proportions for cosmetics and readability.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "head",
+      "type": "sphere",
+      "radius": 0.16,
+      "location": [0, 0, 1.78],
+      "subdivision": 2
+    },
+    {
+      "id": "torso_upper",
+      "type": "cube",
+      "size": [0.34, 0.22, 0.40],
+      "location": [0, 0, 1.45]
+    },
+    {
+      "id": "torso_lower",
+      "type": "cube",
+      "size": [0.30, 0.20, 0.30],
+      "location": [0, 0, 1.15]
+    },
+    {
+      "id": "pelvis",
+      "type": "cube",
+      "size": [0.32, 0.22, 0.22],
+      "location": [0, 0, 0.95]
+    },
+    {
+      "id": "arm_left",
+      "type": "cylinder",
+      "radius": 0.07,
+      "depth": 0.50,
+      "location": [-0.30, 0, 1.45],
+      "rotation": [0, 0, 90]
+    },
+    {
+      "id": "arm_right",
+      "type": "cylinder",
+      "radius": 0.07,
+      "depth": 0.50,
+      "location": [0.30, 0, 1.45],
+      "rotation": [0, 0, -90]
+    },
+    {
+      "id": "hand_left",
+      "type": "cube",
+      "size": [0.14, 0.10, 0.18],
+      "location": [-0.55, 0, 1.25]
+    },
+    {
+      "id": "hand_right",
+      "type": "cube",
+      "size": [0.14, 0.10, 0.18],
+      "location": [0.55, 0, 1.25]
+    },
+    {
+      "id": "leg_left",
+      "type": "cylinder",
+      "radius": 0.09,
+      "depth": 0.60,
+      "location": [-0.12, 0, 0.70]
+    },
+    {
+      "id": "leg_right",
+      "type": "cylinder",
+      "radius": 0.09,
+      "depth": 0.60,
+      "location": [0.12, 0, 0.70]
+    },
+    {
+      "id": "foot_left",
+      "type": "cube",
+      "size": [0.20, 0.10, 0.10],
+      "location": [-0.12, 0.05, 0.30]
+    },
+    {
+      "id": "foot_right",
+      "type": "cube",
+      "size": [0.20, 0.10, 0.10],
+      "location": [0.12, 0.05, 0.30]
+    }
+  ],
+
+  "modifiers": [
+    { "target": "head", "type": "smooth_shade" },
+    { "target": "arm_left", "type": "smooth_shade" },
+    { "target": "arm_right", "type": "smooth_shade" },
+    { "target": "leg_left", "type": "smooth_shade" },
+    { "target": "leg_right", "type": "smooth_shade" }
+  ],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_stylized_body.fbx",
+    "apply_scale": true
+  }
+}

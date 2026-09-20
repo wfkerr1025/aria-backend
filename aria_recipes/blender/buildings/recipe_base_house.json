@@ -1,0 +1,69 @@
+{
+  "name": "base_house",
+  "version": "1.0",
+  "description": "Primitive blockout house used as the foundation for all building variants.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "foundation",
+      "type": "cube",
+      "size": [6.0, 6.0, 0.3],
+      "location": [0, 0, 0.15]
+    },
+    {
+      "id": "walls",
+      "type": "cube",
+      "size": [5.8, 5.8, 2.5],
+      "location": [0, 0, 1.55]
+    },
+    {
+      "id": "roof_main",
+      "type": "cube",
+      "size": [6.2, 6.2, 0.4],
+      "location": [0, 0, 2.9]
+    },
+    {
+      "id": "roof_peak",
+      "type": "cone",
+      "radius": 3.2,
+      "depth": 1.2,
+      "location": [0, 0, 3.5],
+      "rotation": [0, 0, 0]
+    },
+    {
+      "id": "door",
+      "type": "cube",
+      "size": [1.0, 0.2, 2.0],
+      "location": [0, 3.0, 1.0]
+    },
+    {
+      "id": "window_left",
+      "type": "cube",
+      "size": [1.2, 0.2, 1.0],
+      "location": [-2.0, 3.0, 1.6]
+    },
+    {
+      "id": "window_right",
+      "type": "cube",
+      "size": [1.2, 0.2, 1.0],
+      "location": [2.0, 3.0, 1.6]
+    }
+  ],
+
+  "modifiers": [
+    { "target": "roof_peak", "type": "smooth_shade" }
+  ],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_house.fbx",
+    "apply_scale": true
+  }
+}

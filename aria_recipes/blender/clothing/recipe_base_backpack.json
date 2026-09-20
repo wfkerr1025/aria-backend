@@ -1,0 +1,41 @@
+{
+  "name": "base_backpack",
+  "version": "1.0",
+  "description": "Primitive blockout backpack designed to fit the Base Stylized Body. Used as the foundation for all backpack, satchel, and gear-pack variants.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "pack_body",
+      "type": "cube",
+      "size": [0.32, 0.18, 0.45],
+      "location": [0, -0.10, 1.30]
+    },
+    {
+      "id": "strap_left",
+      "type": "cube",
+      "size": [0.08, 0.06, 0.50],
+      "location": [-0.20, 0.05, 1.35]
+    },
+    {
+      "id": "strap_right",
+      "type": "cube",
+      "size": [0.08, 0.06, 0.50],
+      "location": [0.20, 0.05, 1.35]
+    }
+  ],
+
+  "modifiers": [],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_backpack.fbx",
+    "apply_scale": true
+  }
+}

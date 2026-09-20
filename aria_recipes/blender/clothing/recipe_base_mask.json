@@ -1,0 +1,42 @@
+{
+  "name": "base_mask",
+  "version": "1.0",
+  "description": "Primitive blockout mask designed to fit the Base Stylized Body. Used as the foundation for all mask, visor, and face-cover variants.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "mask_plate",
+      "type": "cube",
+      "size": [0.28, 0.10, 0.18],
+      "location": [0, 0.12, 1.85]
+    },
+    {
+      "id": "mask_strap_left",
+      "type": "cube",
+      "size": [0.10, 0.04, 0.10],
+      "location": [-0.22, 0, 1.85]
+    },
+    {
+      "id": "mask_strap_right",
+      "type": "cube",
+      "size": [0.10, 0.04, 0.10],
+      "location": [0.22, 0, 1.85]
+    }
+  ],
+
+  "modifiers": [],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_mask.fbx",
+    "apply_scale": true
+  }
+}
+

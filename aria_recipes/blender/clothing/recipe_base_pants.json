@@ -1,0 +1,46 @@
+{
+  "name": "base_pants",
+  "version": "1.0",
+  "description": "Primitive blockout pants designed to fit the Base Stylized Body. Used as the foundation for all clothing variants.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "pants_upper",
+      "type": "cube",
+      "size": [0.36, 0.24, 0.30],
+      "location": [0, 0, 1.05]
+    },
+    {
+      "id": "leg_left",
+      "type": "cylinder",
+      "radius": 0.11,
+      "depth": 0.60,
+      "location": [-0.12, 0, 0.70]
+    },
+    {
+      "id": "leg_right",
+      "type": "cylinder",
+      "radius": 0.11,
+      "depth": 0.60,
+      "location": [0.12, 0, 0.70]
+    }
+  ],
+
+  "modifiers": [
+    { "target": "leg_left", "type": "smooth_shade" },
+    { "target": "leg_right", "type": "smooth_shade" }
+  ],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_pants.fbx",
+    "apply_scale": true
+  }
+}

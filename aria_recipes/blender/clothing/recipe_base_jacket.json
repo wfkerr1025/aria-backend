@@ -1,0 +1,48 @@
+{
+  "name": "base_jacket",
+  "version": "1.0",
+  "description": "Primitive blockout jacket designed to fit the Base Stylized Body. Used as the foundation for all jacket, coat, and outerwear variants.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "jacket_torso",
+      "type": "cube",
+      "size": [0.42, 0.26, 0.50],
+      "location": [0, 0, 1.45]
+    },
+    {
+      "id": "sleeve_left",
+      "type": "cylinder",
+      "radius": 0.11,
+      "depth": 0.38,
+      "location": [-0.34, 0, 1.45],
+      "rotation": [0, 0, 90]
+    },
+    {
+      "id": "sleeve_right",
+      "type": "cylinder",
+      "radius": 0.11,
+      "depth": 0.38,
+      "location": [0.34, 0, 1.45],
+      "rotation": [0, 0, -90]
+    }
+  ],
+
+  "modifiers": [
+    { "target": "sleeve_left", "type": "smooth_shade" },
+    { "target": "sleeve_right", "type": "smooth_shade" }
+  ],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_jacket.fbx",
+    "apply_scale": true
+  }
+}

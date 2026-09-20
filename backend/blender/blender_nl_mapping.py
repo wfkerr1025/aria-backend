@@ -516,8 +516,50 @@ RECIPES = {
 }
 
 
+def _library_word(recipe_name: str) -> str:
+    """"base_helmet" is asked for as "helmet"."""
+    bare = str(recipe_name)
+    if bare.startswith("base_"):
+        bare = bare[len("base_"):]
+    return bare
+
+
+def library_recipes() -> Dict[str, str]:
+    """Words the JSON library can build, mapped to the recipe's own name.
+
+    Only the ones RECIPES has no answer for. A word in both belongs to
+    the hardcoded builder: those are what the mapper has always done and
+    what its tests describe, and quietly swapping "character" for
+    base_humanoid would change the shape of a model nobody asked to
+    change.
+    """
+    try:
+        from backend.blender import blender_recipes
+        available = blender_recipes.names()
+    except Exception:                                   # library absent or unreadable
+        return {}
+
+    found: Dict[str, str] = {}
+    for name in available:
+        word = _library_word(name)
+        if word and word not in RECIPES:
+            found[word] = name
+    return found
+
+
+def _from_library(recipe_name: str):
+    """A builder for one library recipe, shaped like the hardcoded ones."""
+    def build(text: str) -> List[dict]:
+        from backend.blender import blender_recipes
+        # The caller has already cleared the scene; see the recipe
+        # branch in map_sentence.
+        return blender_recipes.actions(recipe_name, clear=False)
+
+    return build
+
+
 def recipe_names() -> List[str]:
-    return sorted(set(RECIPES))
+    return sorted(set(RECIPES) | set(library_recipes()))
 
 
 # ======================================================
@@ -856,11 +898,22 @@ def map_text(text: str) -> Optional[Dict[str, Any]]:
     # also asks for something to be made -- "the car is red" is not a
     # request to model a car.
     recipe_hit = None
+    from_library = None
     if _MAKE.search(lowered):
         for word in sorted(RECIPES, key=len, reverse=True):
             if re.search(rf"\b{word}s?\b", lowered):
                 recipe_hit = word
                 break
+
+        # Then the JSON library, for the twenty-odd things the
+        # hardcoded builders have never known how to make.
+        if recipe_hit is None:
+            shelf = library_recipes()
+            for word in sorted(shelf, key=len, reverse=True):
+                if re.search(rf"\b{re.escape(word)}s?\b", lowered):
+                    recipe_hit = word
+                    from_library = shelf[word]
+                    break
 
     if recipe_hit:
         # Always start clean for a recipe. Blender's default scene has
@@ -868,7 +921,8 @@ def map_text(text: str) -> Optional[Dict[str, Any]]:
         # stray cube is the sort of thing that is only noticed after
         # the export.
         actions.append({"action": "clear_scene"})
-        actions += RECIPES[recipe_hit](original)
+        builder = _from_library(from_library) if from_library else RECIPES[recipe_hit]
+        actions += builder(original)
         matched.append(f"recipe:{recipe_hit}")
 
     # Operations: verbs acting on what exists. A sentence can have both

@@ -1,0 +1,72 @@
+{
+  "name": "base_truck",
+  "version": "1.0",
+  "description": "Primitive blockout pickup truck used as the foundation for all truck variants.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "cab",
+      "type": "cube",
+      "size": [1.6, 1.4, 1.0],
+      "location": [0.9, 0, 1.0]
+    },
+    {
+      "id": "bed",
+      "type": "cube",
+      "size": [2.0, 1.4, 0.8],
+      "location": [-0.6, 0, 0.9]
+    },
+    {
+      "id": "wheel_fl",
+      "type": "cylinder",
+      "radius": 0.45,
+      "depth": 0.35,
+      "location": [1.2, 0.95, 0.45],
+      "rotation": [90, 0, 0]
+    },
+    {
+      "id": "wheel_fr",
+      "type": "cylinder",
+      "radius": 0.45,
+      "depth": 0.35,
+      "location": [1.2, -0.95, 0.45],
+      "rotation": [90, 0, 0]
+    },
+    {
+      "id": "wheel_rl",
+      "type": "cylinder",
+      "radius": 0.45,
+      "depth": 0.35,
+      "location": [-1.2, 0.95, 0.45],
+      "rotation": [90, 0, 0]
+    },
+    {
+      "id": "wheel_rr",
+      "type": "cylinder",
+      "radius": 0.45,
+      "depth": 0.35,
+      "location": [-1.2, -0.95, 0.45],
+      "rotation": [90, 0, 0]
+    }
+  ],
+
+  "modifiers": [
+    { "target": "wheel_fl", "type": "smooth_shade" },
+    { "target": "wheel_fr", "type": "smooth_shade" },
+    { "target": "wheel_rl", "type": "smooth_shade" },
+    { "target": "wheel_rr", "type": "smooth_shade" }
+  ],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_truck.fbx",
+    "apply_scale": true
+  }
+}

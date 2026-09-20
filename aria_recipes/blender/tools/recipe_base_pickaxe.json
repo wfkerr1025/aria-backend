@@ -1,0 +1,51 @@
+{
+  "name": "base_pickaxe",
+  "version": "1.0",
+  "description": "Primitive blockout pickaxe used as the foundation for all tool variants.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "handle",
+      "type": "cylinder",
+      "radius": 0.05,
+      "depth": 1.2,
+      "location": [0, 0, 0.6],
+      "rotation": [0, 0, 0]
+    },
+    {
+      "id": "head_center",
+      "type": "cube",
+      "size": [0.25, 0.25, 0.25],
+      "location": [0, 0, 1.2]
+    },
+    {
+      "id": "pick_left",
+      "type": "cube",
+      "size": [0.8, 0.15, 0.15],
+      "location": [-0.5, 0, 1.2]
+    },
+    {
+      "id": "pick_right",
+      "type": "cube",
+      "size": [0.8, 0.15, 0.15],
+      "location": [0.5, 0, 1.2]
+    }
+  ],
+
+  "modifiers": [
+    { "target": "handle", "type": "smooth_shade" }
+  ],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_pickaxe.fbx",
+    "apply_scale": true
+  }
+}

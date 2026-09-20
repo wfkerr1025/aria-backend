@@ -1,0 +1,59 @@
+{
+  "name": "base_workbench",
+  "version": "1.0",
+  "description": "Primitive blockout workbench used as the foundation for all workshop table variants.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "table_top",
+      "type": "cube",
+      "size": [2.0, 1.0, 0.15],
+      "location": [0, 0, 0.9]
+    },
+    {
+      "id": "leg_fl",
+      "type": "cube",
+      "size": [0.15, 0.15, 0.9],
+      "location": [0.85, 0.35, 0.45]
+    },
+    {
+      "id": "leg_fr",
+      "type": "cube",
+      "size": [0.15, 0.15, 0.9],
+      "location": [0.85, -0.35, 0.45]
+    },
+    {
+      "id": "leg_rl",
+      "type": "cube",
+      "size": [0.15, 0.15, 0.9],
+      "location": [-0.85, 0.35, 0.45]
+    },
+    {
+      "id": "leg_rr",
+      "type": "cube",
+      "size": [0.15, 0.15, 0.9],
+      "location": [-0.85, -0.35, 0.45]
+    },
+    {
+      "id": "shelf",
+      "type": "cube",
+      "size": [1.8, 0.8, 0.1],
+      "location": [0, 0, 0.3]
+    }
+  ],
+
+  "modifiers": [],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_workbench.fbx",
+    "apply_scale": true
+  }
+}

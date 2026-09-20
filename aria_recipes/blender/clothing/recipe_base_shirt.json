@@ -1,0 +1,48 @@
+{
+  "name": "base_shirt",
+  "version": "1.0",
+  "description": "Primitive blockout shirt designed to fit the Base Stylized Body. Used as the foundation for all clothing variants.",
+  "units": "meters",
+
+  "objects": [
+    {
+      "id": "torso_shirt",
+      "type": "cube",
+      "size": [0.38, 0.24, 0.45],
+      "location": [0, 0, 1.45]
+    },
+    {
+      "id": "sleeve_left",
+      "type": "cylinder",
+      "radius": 0.09,
+      "depth": 0.32,
+      "location": [-0.32, 0, 1.45],
+      "rotation": [0, 0, 90]
+    },
+    {
+      "id": "sleeve_right",
+      "type": "cylinder",
+      "radius": 0.09,
+      "depth": 0.32,
+      "location": [0.32, 0, 1.45],
+      "rotation": [0, 0, -90]
+    }
+  ],
+
+  "modifiers": [
+    { "target": "sleeve_left", "type": "smooth_shade" },
+    { "target": "sleeve_right", "type": "smooth_shade" }
+  ],
+
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": true
+  },
+
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/base_shirt.fbx",
+    "apply_scale": true
+  }
+}

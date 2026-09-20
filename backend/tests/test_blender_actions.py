@@ -193,6 +193,25 @@ EVERY_ACTION = [
     ("apply_transforms", {}),
     ("measure_rig", {}),
     ("remove_stray_meshes", {}),
+
+    # What the recipe library asks for.
+    ("add_cone", {"name": "Cone", "radius": 0.5, "radius_top": 0.0,
+                  "depth": 1.0, "location": [0, 0, 0]}),
+    ("smooth_shade", {"object": "Cube", "smooth": True}),
+    ("load_image", {"path": "C:/art/head.png", "name": "head"}),
+    ("set_texture", {"material": "Skin", "image": "head", "slot": "Base Color",
+                     "interpolation": "Closest", "unlit": True}),
+    ("bind_to_bone", {"mesh": "Miner_Forearm_L", "bone": "Forearm_L", "weight": 1.0}),
+    ("origin_to_geometry", {"object": "Cube"}),
+
+    # Animation.
+    ("add_ik_constraint", {"armature": "Rig", "bone": "Forearm_L",
+                           "target": "Rig", "subtarget": "Haft",
+                           "chain_count": 2, "pole_target": "Rig",
+                           "pole_subtarget": "Elbow_L", "pole_angle": -90}),
+    ("set_interpolation", {"object": "Rig", "bone": "Shoulder_L",
+                           "frame": 12, "interpolation": "CONSTANT",
+                           "easing": "EASE_OUT"}),
 ]
 
 
@@ -1517,3 +1536,97 @@ def test_the_suggested_phrase_would_actually_route_to_ludo(monkeypatch):
     assert ludo_nl_mapping.names_ludo(suggested)
     assert not ludo_nl_mapping.names_another_tool(suggested)
     assert ludo_nl_mapping.map_text(suggested) is not None
+
+
+# ======================================================
+# What running it in Blender turned up
+# ======================================================
+
+def test_ik_constraint_is_rebuilt_not_stacked():
+    """A second IK on a bone does not replace the first, it stacks --
+    and a limb then solves toward two targets at once. A recipe run
+    twice would do that silently, so the template clears first."""
+    source = templates.TEMPLATES["add_ik_constraint"](
+        {"armature": "Rig", "bone": "Forearm_L", "target": "Rig",
+         "subtarget": "Haft", "chain_count": 2})
+
+    assert 'if _c.type == "IK"' in source
+    assert "constraints.remove" in source
+    assert source.index("constraints.remove") < source.index('constraints.new("IK")')
+
+
+def test_ik_constraint_needs_a_target():
+    """An IK constraint with nothing to reach for is not a constraint.
+    Refused while building, so it lands before Blender starts."""
+    with pytest.raises(templates.BadValue):
+        templates.TEMPLATES["add_ik_constraint"]({"armature": "Rig", "bone": "Forearm_L"})
+
+
+def test_set_interpolation_reads_the_slotted_action_first():
+    """Blender 4.4 moved an Action's curves into slotted layers.
+
+    Measured in Blender 5.0.1: a posed rig reports three fcurves
+    through layers and ZERO through `action.fcurves`. Reading the
+    legacy list first would make this action silently do nothing, which
+    is the failure mode the whole module is written against.
+    """
+    source = templates.TEMPLATES["set_interpolation"](
+        {"object": "Rig", "interpolation": "LINEAR"})
+
+    assert "channelbags" in source
+    assert source.index("channelbags") < source.index('getattr(_action, "fcurves"')
+
+
+def test_set_interpolation_complains_when_nothing_matched():
+    """A bone name that keys nothing is a typo, not a no-op."""
+    source = templates.TEMPLATES["set_interpolation"](
+        {"object": "Rig", "bone": "Nonesuch", "interpolation": "LINEAR"})
+
+    assert "_touched == 0" in source
+    assert "raise RuntimeError" in source
+
+
+def test_add_bone_parents_when_asked():
+    """Without a parent a rig is a pile of bones that happen to touch:
+    turn the shoulder and the forearm stays where it was. Measured in
+    Blender 5.0.1 -- every bone came back with parent None."""
+    source = templates.TEMPLATES["add_bone"](
+        {"armature": "Rig", "name": "Forearm", "head": [0, 0, 1.4],
+         "tail": [0, 0, 1.8], "parent": "UpperArm", "connect": True})
+
+    assert "_bone.parent = _found" in source
+    assert "_bone.use_connect = True" in source
+
+
+def test_add_bone_without_a_parent_stays_rootless():
+    source = templates.TEMPLATES["add_bone"](
+        {"armature": "Rig", "name": "Spine", "head": [0, 0, 1], "tail": [0, 0, 1.4]})
+
+    assert "_parent = ''" in source
+
+
+def test_create_armature_throws_away_the_default_bone():
+    """armature_add ships a bone called "Bone". Left there, auto_weights
+    binds mesh to it and that part of the model follows the origin."""
+    source = templates.TEMPLATES["create_armature"]({"name": "Rig"})
+
+    assert "edit_bones.remove" in source
+
+
+def test_set_pose_sets_the_frame_before_the_rotation():
+    """frame_set re-evaluates the animation, so posing first and setting
+    the frame second overwrites the pose with whatever the existing
+    curve says -- and keys that instead.
+
+    The first key on a bone survived (no curve to be overwritten from);
+    every key after it recorded the first one's value again, so a clip
+    came out as N frames of an identical pose with a full set of
+    keyframes to prove it had been animated. Measured on the crew
+    miner's swing: the pick head was in the same place, to the
+    millimetre, on all six sampled frames.
+    """
+    source = templates.TEMPLATES["set_pose"](
+        {"armature": "Rig", "bone": "UpperArm_R", "rotation": [-110, 0, 0], "frame": 6})
+
+    assert source.index("frame_set") < source.index("rotation_euler = tuple")
+    assert source.index("rotation_euler = tuple") < source.index("keyframe_insert")
