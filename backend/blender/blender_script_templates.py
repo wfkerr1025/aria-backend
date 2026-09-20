@@ -281,8 +281,15 @@ def _obj(name):
 
 
 def _active(obj):
-    """Make one object the active selection, which most operators need."""
-    bpy.ops.object.mode_set(mode="OBJECT")
+    """Make one object the active selection, which most operators need.
+
+    The mode_set is guarded because it fails its poll when NOTHING is
+    active -- which is the state a scene is in right after a base mesh
+    has been appended, since linking an object into a collection does
+    not select it.
+    """
+    if bpy.context.view_layer.objects.active is not None:
+        bpy.ops.object.mode_set(mode="OBJECT")
     for other in bpy.context.selected_objects:
         other.select_set(False)
     obj.select_set(True)
@@ -2000,6 +2007,8 @@ def append_from_blend(params: Dict[str, Any]) -> str:
             f'    if _new.data is not None:\n'
             f'        _new.data.name = _rename\n'
             f'_new.location = {_vector(params.get("location"))}\n'
+            f'bpy.context.view_layer.objects.active = _new\n'
+            f'_new.select_set(True)\n'
             f'_RESULT["created"].append(_new.name)\n'
             f'_note("append_from_blend", object=_new.name, '
             f'verts=len(_new.data.vertices) if _new.type == "MESH" else 0, '

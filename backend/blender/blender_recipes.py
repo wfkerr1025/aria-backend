@@ -64,7 +64,9 @@ __all__ = [
     "UnsupportedRecipe",
     "actions",
     "animation_actions",
+    "base_actions",
     "base_models",
+    "fit_actions",
     "animation_names",
     "build_many",
     "catalogue",
@@ -295,6 +297,10 @@ def actions(name: str, *, prefix: Optional[str] = None,
     if clear:
         steps.append({"action": "clear_scene"})
 
+    # The base first: blanks are placed around a body, so the body has
+    # to be standing there before they are.
+    steps.extend(base_actions(name, prefix=head))
+
     for item in recipe.get("objects", []):
         steps.extend(_one_object(item, head))
 
@@ -310,6 +316,11 @@ def actions(name: str, *, prefix: Optional[str] = None,
                   if key not in ("type", "target")}
         params["object"] = f"{head}_{_pascal(modifier.get('target') or 'Part')}"
         steps.append({"action": action, "params": params})
+
+    # Fitting happens before cleanup, because origin_to_geometry moves
+    # every origin and a wrap done afterwards would be aiming at a body
+    # that has since shifted under it.
+    steps.extend(fit_actions(name, prefix=head))
 
     if cleanup:
         asked = recipe.get("cleanup") or {}
@@ -427,6 +438,28 @@ def rig_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]
         steps.append({"action": "parent_mesh_to_armature",
                       "params": {"mesh": mesh, "armature": arm}})
 
+    # A single continuous mesh -- a real base body, or a garment wrapped
+    # onto one -- cannot be nailed to one bone the way a blockout's
+    # separate forearm can. It needs weights that fall off across the
+    # joint, which is what auto_weights computes.
+    known_ids = {item.get("id") for item in recipe.get("objects", [])}
+    base_called = (recipe.get("base") or {}).get("as")
+
+    for whole in spec.get("auto_bind", []):
+        # A recipe's own object ids get the recipe's prefix. The base's
+        # name does not: it is written in the base section as the thing
+        # it will be called, and prefixing it invented CrewMiner_Miner
+        # Body, which nothing had ever made.
+        if whole in known_ids:
+            mesh = f"{head}_{_pascal(whole)}"
+        elif whole == base_called or not whole.startswith(head):
+            mesh = whole
+        else:
+            mesh = whole
+        steps.append({"action": "auto_weights",
+                      "params": {"mesh": mesh, "armature": arm}})
+        steps.append({"action": "normalize_weights", "params": {"mesh": mesh}})
+
     for pull in spec.get("ik", []):
         steps.append({"action": "add_ik_constraint",
                       "params": {"armature": arm,
@@ -536,3 +569,88 @@ def base_models(kind: str = "") -> List[Dict[str, Any]]:
             })
 
     return found
+
+
+# ======================================================
+# Starting from a base, and fitting things to it
+# ======================================================
+
+def _library_blend(library: str) -> str:
+    """The .blend a named library lives in, from its manifest."""
+    for base in base_models():
+        if base.get("bundle") == library:
+            return base["file"]
+    known = sorted({b.get("bundle") for b in base_models()})
+    raise UnknownRecipe(
+        f"no base library called {library!r}. There is: {', '.join(str(k) for k in known) or 'nothing'}")
+
+
+def base_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Bring in the recipe's base mesh, sized and stood on the floor.
+
+    A recipe with no `base` gets nothing, which is right for a rock or
+    a crate -- those are still better made out of primitives, and
+    aria_recipes/blender builds them that way.
+    """
+    recipe = load(name)
+    spec = recipe.get("base")
+    if not spec:
+        return []
+
+    blend = spec.get("blend") or _library_blend(str(spec.get("library", "")))
+    called = spec.get("as") or f"{prefix or prefix_for(name)}_Base"
+
+    steps: List[Dict[str, Any]] = [
+        {"action": "append_from_blend",
+         "params": {"blend": blend, "object": spec.get("object"),
+                    "name": called, "location": spec.get("location") or [0, 0, 0]}},
+    ]
+
+    if spec.get("height"):
+        steps.append({"action": "scale_to_height",
+                      "params": {"object": called, "height": spec["height"]}})
+        steps.append({"action": "apply_transforms", "params": {}})
+        steps.append({"action": "origin_to_floor", "params": {}})
+
+    return steps
+
+
+def fit_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Wrap each blank onto what it is being worn by, then thicken it.
+
+    This is where a cylinder becomes a vest. The blank is a rough shape
+    roughly where the garment goes; the wrap takes it onto the body's
+    own surface so it fits the character it is being worn by, and the
+    solidify gives it thickness so it is cloth rather than paint.
+
+    Order matters and is not obvious: wrap first, THEN thicken. Thicken
+    first and the wrap pulls both surfaces onto the body and the
+    garment has no thickness left at all.
+    """
+    recipe = load(name)
+    head = prefix or prefix_for(name)
+    steps: List[Dict[str, Any]] = []
+
+    for item in recipe.get("fit", []):
+        worn = f"{head}_{_pascal(item.get('object') or 'Part')}"
+        onto = item.get("onto")
+        if onto and not onto.startswith(head) and onto not in {o.get("id") for o in recipe.get("objects", [])}:
+            body = onto                      # a base's own name, used as written
+        else:
+            body = f"{head}_{_pascal(onto or 'Base')}"
+
+        steps.append({"action": "apply_shrinkwrap",
+                      "params": {"object": worn, "target": body,
+                                 "method": item.get("method", "NEAREST_SURFACEPOINT"),
+                                 "offset": item.get("offset", 0.014),
+                                 "apply": True}})
+
+        thickness = item.get("thickness")
+        if thickness:
+            steps.append({"action": "apply_solidify",
+                          "params": {"object": worn, "thickness": thickness, "apply": True}})
+
+        if item.get("smooth", True):
+            steps.append({"action": "smooth_shade", "params": {"object": worn}})
+
+    return steps
