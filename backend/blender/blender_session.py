@@ -58,7 +58,7 @@ logger = get_logger(__name__)
 __all__ = ["Session", "LiveSession", "answer_command", "picture_markdown", "plan", "summarize", "main"]
 
 DEFAULT_SESSION = "chat"
-RENDER_ACTIONS = ("render_preview", "render_image", "compare_reference")
+RENDER_ACTIONS = ("render_preview", "render_image", "compare_reference", "hero_shot", "turntable")
 
 # Actions that change nothing in the scene.
 READ_ONLY_ACTIONS = frozenset(RENDER_ACTIONS) | {"describe_scene", "measure_mesh", "measure_rig"}
@@ -68,7 +68,7 @@ READ_ONLY_ACTIONS = frozenset(RENDER_ACTIONS) | {"describe_scene", "measure_mesh
 # missed, and the picture alone does not always show it.
 REPORTING_STEPS = ("measure_mesh", "measure_rig", "describe_scene", "sculpt_stroke",
                    "fit_to_reference", "mirror_shape_key", "transfer_weights", "find_landmarks", "auto_rig", "add_clip",
-                   "make_game_ready", "export_fbx")
+                   "make_game_ready", "export_fbx", "turntable", "hero_shot")
 
 Work = Union[str, Sequence[Dict[str, Any]]]
 
@@ -274,6 +274,10 @@ class Session:
             # Baked maps live with the scene that uses them.
             if entry["action"] == "make_game_ready" and not entry["params"].get("folder"):
                 entry["params"]["folder"] = str(self.folder / "textures")
+            if entry["action"] == "turntable":
+                if not entry["params"].get("folder"):
+                    entry["params"]["folder"] = str(self.renders / f"step_{step:04d}_{index:02d}_turntable")
+                continue
             if entry["action"] in RENDER_ACTIONS and not (entry["params"].get("path") or "").strip():
                 entry["params"]["path"] = str(
                     self.renders / f"step_{step:04d}_{index:02d}_{entry['action']}.png")
@@ -976,6 +980,102 @@ def _answer_pose(said: str, asked: tuple, session: "Session") -> dict:
     return outcome
 
 
+_HERO = re.compile(r"\b(?:hero|beauty|marketing|promo(?:tional)?|store|steam|kickstarter|capsule)\s+"
+                   r"(?:shot|render|picture|image|art)\b|\brender (?:him|her|it|them) (?:properly|nicely|for real)\b",
+                   re.I)
+_TURNTABLE = re.compile(r"\bturn\s?-?table\b|\bspin(?:ning)? (?:him|her|it|them) (?:round|around)\b|\b360\b", re.I)
+_LIGHTING_WORDS = ("warm", "dramatic", "sunset", "night", "studio")
+
+
+def turntable_movie(folder: Union[str, Path], fps: int = 24) -> dict:
+    """The turntable frames as an MP4 and a GIF, beside the folder. ffmpeg does both."""
+    import subprocess
+
+    folder = Path(folder)
+    frames = sorted(folder.glob("frame_*.png"))
+    if not frames:
+        return {"success": False, "error": f"no frames in {folder}"}
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        return {"success": False, "error": "ffmpeg is not installed, so only the frames were made", "frames": len(frames)}
+    pattern = str(folder / "frame_%04d.png")
+    mp4, gif = folder.with_suffix(".mp4"), folder.with_suffix(".gif")
+    made = {}
+    video = subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-framerate", str(fps), "-i", pattern,
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
+                            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", str(mp4)], capture_output=True, text=True)
+    if video.returncode == 0:
+        made["mp4"] = str(mp4)
+    # A GIF with its own palette -- the default one bands every gradient.
+    loop = subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-framerate", str(fps), "-i", pattern,
+                           "-vf", "scale=480:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];"
+                                  "[b][p]paletteuse=dither=bayer:bayer_scale=4", "-loop", "0", str(gif)],
+                          capture_output=True, text=True)
+    if loop.returncode == 0:
+        made["gif"] = str(gif)
+    if not made:
+        return {"success": False, "error": (video.stderr or loop.stderr).strip()[-400:]}
+    return {"success": True, "frames": len(frames), **made}
+
+
+def _shot_params(said: str, session: "Session") -> Dict[str, Any]:
+    params: Dict[str, Any] = {}
+    lighting = next((w for w in _LIGHTING_WORDS if re.search(r"\b" + w + r"\b", said, re.I)), None)
+    if lighting:
+        params["lighting"] = lighting
+    if re.search(r"\b(?:transparent|see-?through|no background|cut ?out)\b", said, re.I):
+        params["backdrop"] = "transparent"
+    elif re.search(r"\b(?:light|white) (?:background|backdrop)\b", said, re.I):
+        params["backdrop"] = "light"
+    if re.search(r"\bcycles\b|\bfinal quality\b|\bhigh quality\b", said, re.I):
+        params["engine"] = "cycles"
+    scene = session.describe().get("scene") or {}
+    meshes = [o["name"] for o in scene.get("objects") or [] if o.get("type") == "MESH"
+              and not o["name"].endswith("_Sculpt") and not re.search(r"_LOD[1-9]\d*$", o["name"])]
+    named = [m for m in meshes if re.search(r"\b" + re.escape(m) + r"\b", said, re.I)]
+    if named:
+        params["objects"] = named
+    return params
+
+
+def _answer_hero(said: str, session: "Session") -> dict:
+    params = _shot_params(said, session)
+    if re.search(r"\b(?:portrait|tall|vertical|capsule)\b", said, re.I):
+        params.update(width=1080, height=1350)
+    for word, angle in (("front", "front"), ("low", "low"), ("side", "side")):
+        if re.search(r"\b" + word + r"\b", said, re.I):
+            params["angle"] = angle
+    outcome = session.run([{"action": "hero_shot", "params": params}])
+    if outcome.get("success"):
+        picture = (outcome.get("renders") or [None])[0]
+        outcome["text"] = "\n\n".join([
+            f"A {params.get('lighting', 'studio')}-lit shot"
+            + (" on a transparent background" if params.get("backdrop") == "transparent" else "")
+            + (" (Cycles)" if params.get("engine") == "cycles" else " (EEVEE -- say \"in high quality\" for Cycles)")
+            + ".", picture_markdown([picture], "Hero shot") if picture else ""])
+    return outcome
+
+
+def _answer_turntable(said: str, session: "Session") -> dict:
+    params = _shot_params(said, session)
+    outcome = session.run([{"action": "turntable", "params": params}])
+    if not outcome.get("success"):
+        return outcome
+    note = next((n for n in outcome.get("notes") or [] if n.get("step") == "turntable"), {})
+    folder = note.get("folder") or next((a["params"]["folder"] for a in outcome.get("actions") or []
+                                         if a["action"] == "turntable"), None)
+    movie = turntable_movie(folder) if folder else {"success": False, "error": "no frames"}
+    lines = [f"A turntable: {note.get('frames', '?')} frames, one full turn."]
+    if movie.get("success"):
+        lines.append("Video: " + movie.get("mp4", "(none)") + "\nGIF: " + movie.get("gif", "(none)"))
+        if movie.get("gif"):
+            lines.append(picture_markdown([movie["gif"]], "Turntable"))
+    else:
+        lines.append(f"The frames are in {folder}; {movie.get('error')}.")
+    outcome["text"] = "\n\n".join(lines)
+    return outcome
+
+
 _MATERIAL_WORD = re.compile(
     r"\b(?:make|turn|paint|give|change)\s+(?:it|him|her|them|this|that|the\s+[\w-]+|[A-Z][\w-]*)\b"
     r"[\w\s'-]{0,25}?\b(wood(?:en)?|metal(?:lic)?|steel|iron|stone|stony|rock|cloth|fabric|leather|"
@@ -1140,6 +1240,12 @@ def answer_command(text: str, session: Optional["Session"] = None, *,
             return {"ran": True, **sent}
     if changes_allowed and _MATCH.search(said) and _PICTURE.search(said):
         return {"ran": True, **_answer_match(said, session)}
+    # Pictures for a store page. They change nothing, but they take a while
+    # and write files, so they are asked for the way changes are.
+    if changes_allowed and _TURNTABLE.search(said):
+        return {"ran": True, **_answer_turntable(said, session)}
+    if changes_allowed and _HERO.search(said):
+        return {"ran": True, **_answer_hero(said, session)}
     posed = _pose_asked(said) if changes_allowed else None
     if posed:
         return {"ran": True, **_answer_pose(said, posed, session)}

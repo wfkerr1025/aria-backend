@@ -720,6 +720,240 @@ def pose_character(params: Dict[str, Any]) -> str:
             f'_note("pose_character", armature=_rig.name, pose={pose!r}, side={side!r}, action=_posed)')
 
 
+# ======================================================
+# Marketing renders: a lit studio, a hero shot, a turntable
+# ======================================================
+
+LIGHTINGS = ("studio", "warm", "dramatic", "sunset", "night")
+SHOT_ANGLES = ("three_quarter", "front", "low", "side")
+BACKDROPS = ("dark", "light", "transparent")
+
+_SHOT_KIT = r'''
+_SHOT_LIGHTS = {
+    # key (elevation, bearing, power, colour), fill, rim; world colour
+    "studio":   ((40, -35, 1.0, (1.0, 0.96, 0.9)), (15, 55, 0.35, (0.85, 0.9, 1.0)), (30, 165, 0.8, (1.0, 1.0, 1.0))),
+    "warm":     ((35, -40, 1.0, (1.0, 0.82, 0.6)), (15, 60, 0.3, (0.9, 0.75, 0.6)), (25, 160, 0.7, (1.0, 0.9, 0.75))),
+    "dramatic": ((55, -70, 1.3, (1.0, 0.95, 0.9)), (10, 70, 0.08, (0.6, 0.7, 1.0)), (20, 170, 1.4, (0.7, 0.8, 1.0))),
+    "sunset":   ((12, -60, 1.2, (1.0, 0.6, 0.3)), (20, 70, 0.25, (0.5, 0.6, 1.0)), (15, 150, 1.0, (1.0, 0.45, 0.25))),
+    "night":    ((50, -30, 0.5, (0.55, 0.65, 1.0)), (10, 60, 0.1, (0.4, 0.5, 0.9)), (25, 160, 1.2, (0.6, 0.8, 1.0))),
+}
+_SHOT_BACK = {"dark": (0.035, 0.037, 0.045), "light": (0.8, 0.8, 0.82)}
+
+
+def _shot_studio(restore, scene, centre, radius, lighting, backdrop, floor_z, toward):
+    import math
+    for other in scene.objects:
+        if other.type == "LIGHT" and not other.hide_render:
+            restore.set(other, "hide_render", True)       # this shot brings its own light
+    for name, (elevation, bearing, power, colour) in zip(("Key", "Fill", "Rim"), _SHOT_LIGHTS[lighting]):
+        data = restore.made(bpy.data.lights.new("ARIA_Shot_" + name, "AREA"))
+        data.shape = "DISK"
+        data.size = radius * 1.5
+        distance = radius * 4.0
+        data.energy = power * 180.0 * distance * distance
+        data.color = colour
+        lamp = restore.made(bpy.data.objects.new("ARIA_Shot_" + name, data))
+        scene.collection.objects.link(lamp)
+        e, b = math.radians(elevation), math.radians(bearing)
+        offset = mathutils.Vector((math.sin(b) * math.cos(e), -math.cos(b) * math.cos(e), math.sin(e)))
+        lamp.location = centre + offset * distance
+        lamp.rotation_euler = (-offset).to_track_quat("-Z", "Y").to_euler()
+    world = restore.made(bpy.data.worlds.new("ARIA_Shot_World"))
+    back = _SHOT_BACK.get(backdrop, (0.035, 0.037, 0.045))
+    world.color = back
+    if world.node_tree is not None:
+        node = world.node_tree.nodes.get("Background")
+        if node is not None:
+            node.inputs[0].default_value = (back[0], back[1], back[2], 1.0)
+            node.inputs[1].default_value = 1.0
+    restore.set(scene, "world", world)
+    restore.set(scene.render, "film_transparent", backdrop == "transparent")
+    # A sweep, as a photo studio has: floor curving up into a wall behind the
+    # subject, so there is no horizon line (a flat floor showed its far edge
+    # as a hard line across every shot). Built with +Y as "away from camera".
+    mesh = restore.made(bpy.data.meshes.new("ARIA_Shot_Floor"))
+    front, behind, bend, top, half = radius * 30.0, radius * 1.6, radius * 3.0, radius * 40.0, radius * 60.0
+    profile = [(-front, 0.0), (behind, 0.0)]
+    for step in range(1, 13):
+        a = (math.pi / 2.0) * step / 12.0
+        profile.append((behind + bend * math.sin(a), bend * (1.0 - math.cos(a))))
+    profile.append((behind + bend, top))
+    verts, faces = [], []
+    for x in (-half, half):
+        for y, z in profile:
+            verts.append((x, y, z))
+    n = len(profile)
+    for i in range(n - 1):
+        faces.append((i, i + 1, n + i + 1, n + i))
+    mesh.from_pydata(verts, [], faces)
+    for poly in mesh.polygons:
+        poly.use_smooth = True
+    floor = restore.made(bpy.data.objects.new("ARIA_Shot_Floor", mesh))
+    floor.location = (centre.x, centre.y, floor_z)
+    away = mathutils.Vector((-toward.x, -toward.y, 0.0))
+    if away.length > 1e-6:
+        away.normalize()
+        floor.rotation_euler = (0.0, 0.0, math.atan2(-away.x, away.y))
+    scene.collection.objects.link(floor)
+    mat = restore.made(bpy.data.materials.new("ARIA_Shot_Floor"))
+    tree = mat.node_tree
+    bsdf = next(n for n in tree.nodes if n.type == "BSDF_PRINCIPLED")
+    # Lit by the same lamps as the subject, so a dark backdrop has to be darker
+    # than it looks: at the backdrop colour itself it rendered light grey.
+    shade = 0.35 if backdrop != "light" else 1.0
+    bsdf.inputs["Base Color"].default_value = (back[0] * shade, back[1] * shade, back[2] * shade, 1.0)
+    bsdf.inputs["Roughness"].default_value = 1.0
+    # Matte like backdrop paper: seen at a low angle, the default specular
+    # mirrored the big lamps and turned a near-black sweep light grey.
+    for name in ("Specular IOR Level", "Specular"):
+        if name in bsdf.inputs:
+            bsdf.inputs[name].default_value = 0.0
+    mesh.materials.append(mat)
+    if backdrop == "transparent" and hasattr(floor, "is_shadow_catcher"):
+        floor.is_shadow_catcher = True
+
+
+def _shot_camera(restore, scene, centre, radius, angle, width, height, lens=70.0):
+    import math
+    data = restore.made(bpy.data.cameras.new("ARIA_Shot_Camera"))
+    data.lens = lens
+    cam = restore.made(bpy.data.objects.new("ARIA_Shot_Camera", data))
+    scene.collection.objects.link(cam)
+    bearing, elevation = {"three_quarter": (-35.0, 12.0), "front": (0.0, 8.0), "low": (-25.0, -8.0),
+                          "side": (-90.0, 8.0)}[angle]
+    # Blender fits the sensor to the longer side; the subject's sphere must
+    # fit the SHORTER side's view, with a margin.
+    wide = 2.0 * math.atan(data.sensor_width / (2.0 * lens))
+    short = 2.0 * math.atan(math.tan(wide / 2.0) * min(width, height) / max(width, height))
+    distance = radius * 1.15 / math.sin(short / 2.0)
+    b, e = math.radians(bearing), math.radians(elevation)
+    offset = mathutils.Vector((math.sin(b) * math.cos(e), -math.cos(b) * math.cos(e), math.sin(e)))
+    cam.location = centre + offset * distance
+    cam.rotation_euler = (-offset).to_track_quat("-Z", "Y").to_euler()
+    restore.set(scene, "camera", cam)
+    restore.set(scene.render, "resolution_x", int(width))
+    restore.set(scene.render, "resolution_y", int(height))
+    restore.set(scene.render, "resolution_percentage", 100)
+    return cam, centre, distance, offset
+
+
+def _shot_setup(restore, scene, names, lighting, backdrop, angle, width, height, engine, samples):
+    targets = _aria_targets(names)
+    if not targets:
+        raise RuntimeError("there is nothing to photograph")
+    points, centre, radius = _aria_bounds(targets)
+    centre = mathutils.Vector(centre)
+    floor_z = min(p[2] for p in points)
+    chosen = set(t.name for t in targets)
+    if names:
+        for other in scene.objects:
+            if other.type in {"MESH", "CURVE", "SURFACE", "META", "FONT"} and other.name not in chosen:
+                restore.set(other, "hide_render", True)
+    restore.set(scene.render, "engine", _aria_engine("CYCLES" if engine == "cycles" else "EEVEE"))
+    if engine == "cycles":
+        restore.set(scene.cycles, "samples", samples)
+        if hasattr(scene.cycles, "use_denoising"):
+            restore.set(scene.cycles, "use_denoising", True)
+    elif hasattr(scene, "eevee"):
+        restore.set(scene.eevee, "taa_render_samples", samples)
+        for flag in ("use_shadows", "use_raytracing"):
+            if hasattr(scene.eevee, flag):
+                restore.set(scene.eevee, flag, True)
+    restore.set(scene.view_settings, "view_transform", "AgX")
+    try:
+        restore.set(scene.view_settings, "look", "AgX - Medium High Contrast")
+    except TypeError:
+        pass
+    restore.set(scene.render.image_settings, "file_format", "PNG")
+    restore.set(scene.render.image_settings, "color_mode", "RGBA" if backdrop == "transparent" else "RGB")
+    shot = _shot_camera(restore, scene, centre, radius, angle, width, height)
+    _shot_studio(restore, scene, centre, radius, lighting, backdrop, floor_z, shot[3])
+    return shot
+'''
+
+
+def hero_shot(params: Dict[str, Any]) -> str:
+    """A finished picture of the work: a lit studio, a lens, a floor.
+
+    For a store page or a campaign, not for checking the modelling (that
+    is render_preview). Three area lights -- key, fill, rim -- in one of
+    the lighting moods (studio, warm, dramatic, sunset, night), a floor
+    the subject casts its shadow on, a 70 mm camera from three_quarter,
+    front, low or side, framed on `objects` (or everything). backdrop:
+    dark, light or transparent (a PNG with alpha, the shadow kept).
+    engine: eevee (seconds) or cycles (minutes, for the final one).
+    Whatever it adds is removed after; the scene is left as it was.
+    """
+    lighting = _choice(params.get("lighting"), LIGHTINGS, "studio").strip("'\"")
+    angle = _choice(params.get("angle"), SHOT_ANGLES, "three_quarter").strip("'\"")
+    backdrop = _choice(params.get("backdrop"), BACKDROPS, "dark").strip("'\"")
+    engine = "cycles" if str(params.get("engine") or "").lower() == "cycles" else "eevee"
+    samples = _int(params.get("samples"), 128 if engine == "cycles" else 64, 1, 4096)
+    return (_RENDER_KIT + _SHOT_KIT +
+            f'_scene = bpy.context.scene\n'
+            f'_path = _aria_folder({_text(params.get("path"))})\n'
+            f'_restore = _AriaRestore()\n'
+            f'try:\n'
+            f'    _shot_setup(_restore, _scene, {_names(params.get("objects") or params.get("object"))}, '
+            f'{lighting!r}, {backdrop!r}, {angle!r}, {_int(params.get("width"), 1920, 64, 8192)}, '
+            f'{_int(params.get("height"), 1080, 64, 8192)}, {engine!r}, {samples})\n'
+            f'    _scene.render.filepath = _path\n'
+            f'    bpy.ops.render.render(write_still=True)\n'
+            f'finally:\n'
+            f'    _restore.undo()\n'
+            f'_RESULT.setdefault("renders", []).append(_path)\n'
+            f'_note("hero_shot", path=_path, lighting={lighting!r}, angle={angle!r}, backdrop={backdrop!r}, '
+            f'engine={engine!r})')
+
+
+def turntable(params: Dict[str, Any]) -> str:
+    """The subject turning once in the studio, as numbered PNG frames.
+
+    The camera circles; the subject holds still (a character keeps its
+    pose -- a turntable of a walk cycle is a walk in circles). Frames go
+    to `folder` as frame_0001.png...; ARIA makes the GIF and MP4 from
+    them. Same lighting and backdrop choices as hero_shot.
+    """
+    lighting = _choice(params.get("lighting"), LIGHTINGS, "studio").strip("'\"")
+    backdrop = _choice(params.get("backdrop"), BACKDROPS, "dark").strip("'\"")
+    engine = "cycles" if str(params.get("engine") or "").lower() == "cycles" else "eevee"
+    samples = _int(params.get("samples"), 64 if engine == "cycles" else 32, 1, 4096)
+    frames = _int(params.get("frames"), 48, 4, 720)
+    return (_RENDER_KIT + _SHOT_KIT +
+            f'import os as _tt_os\n'
+            f'import math as _tt_math\n'
+            f'_scene = bpy.context.scene\n'
+            f'_folder = {_text(params.get("folder"))}\n'
+            f'_tt_os.makedirs(_folder, exist_ok=True)\n'
+            f'_restore = _AriaRestore()\n'
+            f'_written = []\n'
+            f'try:\n'
+            f'    _cam, _centre, _dist, _offset = _shot_setup(_restore, _scene, '
+            f'{_names(params.get("objects") or params.get("object"))}, {lighting!r}, {backdrop!r}, '
+            f'"three_quarter", {_int(params.get("width"), 720, 64, 4096)}, {_int(params.get("height"), 720, 64, 4096)}, '
+            f'{engine!r}, {samples})\n'
+            f'    _lamps = [o for o in _scene.objects if o.name.startswith("ARIA_Shot_") '
+            f'and (o.type == "LIGHT" or o.name.startswith("ARIA_Shot_Floor"))]\n'
+            f'    _pivot = _restore.made(bpy.data.objects.new("ARIA_Shot_Pivot", None))\n'
+            f'    _scene.collection.objects.link(_pivot)\n'
+            f'    _pivot.location = _centre\n'
+            # The pivot's world matrix is stale until the view layer updates;
+            # parented before that, the camera flew off and every frame was empty.
+            f'    bpy.context.view_layer.update()\n'
+            f'    for _o in [_cam] + _lamps:\n'
+            f'        _o.parent = _pivot\n'
+            f'        _o.matrix_parent_inverse = _pivot.matrix_world.inverted()\n'
+            f'    for _i in range({frames}):\n'
+            f'        _pivot.rotation_euler = (0.0, 0.0, 2.0 * _tt_math.pi * _i / {frames})\n'
+            f'        bpy.context.view_layer.update()\n'
+            f'        _scene.render.filepath = _tt_os.path.join(_folder, "frame_%04d.png" % (_i + 1))\n'
+            f'        bpy.ops.render.render(write_still=True)\n'
+            f'        _written.append(_scene.render.filepath)\n'
+            f'finally:\n'
+            f'    _restore.undo()\n'
+            f'_note("turntable", folder=_folder, frames=len(_written), lighting={lighting!r}, engine={engine!r})')
+
+
 def flatten_hierarchy(params: Dict[str, Any]) -> str:
     """Lift every mesh out of the empties a generator wrapped it in.
 
@@ -7174,6 +7408,8 @@ TEMPLATES = {
     "image_material": image_material,
     "bake_material": bake_material,
     "pose_character": pose_character,
+    "hero_shot": hero_shot,
+    "turntable": turntable,
     "copy_landmarks": copy_landmarks,
     "voxel_remesh": voxel_remesh,
     "stamp_detail": stamp_detail,
