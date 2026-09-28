@@ -67,7 +67,7 @@ READ_ONLY_ACTIONS = frozenset(RENDER_ACTIONS) | {"describe_scene", "measure_mesh
 # a brush actually did -- a stroke that moved nothing is a stroke that
 # missed, and the picture alone does not always show it.
 REPORTING_STEPS = ("measure_mesh", "measure_rig", "describe_scene", "sculpt_stroke",
-                   "fit_to_reference")
+                   "fit_to_reference", "mirror_shape_key", "transfer_weights")
 
 Work = Union[str, Sequence[Dict[str, Any]]]
 
@@ -555,6 +555,20 @@ def summarize(entry: dict) -> str:
             lines.append(f"Stroke ({note.get('brush')}) on {note.get('object')}: "
                          f"{note.get('vertices_moved')} vertices moved, the most by "
                          f"{note.get('largest_move')} m over {note.get('dabs')} dabs.")
+        elif note.get("step") == "mirror_shape_key":
+            alone = note.get("vertices_without_a_twin") or 0
+            lines.append(f"Mirrored {note.get('source')} into {note.get('made')}"
+                         + (f" -- {alone} vertices had no twin on the other side and kept still; "
+                            f"the mesh is not symmetric there." if alone else "."))
+        elif note.get("step") == "transfer_weights":
+            unweighted = note.get("unweighted") or 0
+            lines.append(f"Weights from {note.get('source')} onto {note.get('target')}: "
+                         f"{note.get('groups')} bone groups"
+                         + (f", following {note.get('armature')}" if note.get("armature") else
+                            " (no armature found -- it will not move with anything yet)")
+                         + (f". {unweighted} of {note.get('vertices')} vertices got no weight and "
+                            f"will stay behind when the body moves." if unweighted else
+                            ". Every vertex is weighted."))
         elif note.get("skipped"):
             lines.append(f"{note.get('step')}: {note['skipped']}.")
     lines.append(f"Scene: {entry.get('scene_file')}")
@@ -611,6 +625,8 @@ def describe_text(scene: dict) -> str:
             extra.append("modifiers " + ", ".join(o["modifiers"]))
         if o.get("bones"):
             extra.append(f"{len(o['bones'])} bones")
+        if o.get("shape_keys"):
+            extra.append("shape keys " + ", ".join(o["shape_keys"]))
         if o.get("parent"):
             extra.append(f"parent {o['parent']}")
         location = ", ".join(f"{v:g}" for v in o.get("location") or [])

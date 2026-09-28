@@ -876,7 +876,21 @@ def export_fbx(params: Dict[str, Any]) -> str:
     An FBX from here is a model. Lamps and cameras exist to light and
     frame a bake; they do not travel with it.
     """
+    # The FBX exporter applies modifiers on the way out, and on a mesh
+    # that also has shape keys it drops the keys to do it -- silently.
+    # Measured: a head with three expressions and a live Subdivision
+    # arrived in the FBX with none. Unity would get a face that cannot
+    # move, and nothing would say so. So it is said here, before writing.
+    guard = ("" if params.get("allow_losing_shape_keys") else
+             f'for _o in (bpy.context.selected_objects if _use_selection else bpy.context.scene.objects):\n'
+             f'    if _o.type == "MESH" and _o.data.shape_keys and any('
+             f'm.type != "ARMATURE" and m.show_render for m in _o.modifiers):\n'
+             f'        raise RuntimeError("%r has shape keys and modifiers (%s); FBX export would drop '
+             f'the shape keys. Run ApplyModifiers(%r) first -- it keeps them -- or pass '
+             f'allow_losing_shape_keys=True" % (_o.name, ", ".join(m.name for m in _o.modifiers '
+             f'if m.type != "ARMATURE"), _o.name))\n')
     return (f'{_export_preamble(params)}\n'
+            + guard +
             f'_path = {_text(params.get("path"))}\n'
             f'bpy.ops.export_scene.fbx(filepath=_path, use_selection=_use_selection, '
             f'object_types={{"MESH", "ARMATURE"}}, '
@@ -3204,21 +3218,37 @@ def _aria_falloff(t, kind):
 
 
 class _AriaSculpt:
-    """One mesh's vertices, held as arrays while a stroke works on them."""
+    """One mesh's vertices, held as arrays while a stroke works on them.
 
-    def __init__(self, obj):
+    With `key`, the vertices are that shape key's -- an expression being
+    sculpted -- and the base mesh is left alone.
+    """
+
+    def __init__(self, obj, key=None):
         if obj.type != "MESH":
             raise RuntimeError("%r is a %s -- only meshes can be sculpted" % (obj.name, obj.type))
-        if obj.data.shape_keys:
-            raise RuntimeError("%r has shape keys; sculpting the base under them would "
-                               "tear the keys away from it" % obj.name)
+        keys = obj.data.shape_keys
+        self.key = None
+        if key:
+            if not keys or key not in keys.key_blocks:
+                raise RuntimeError("%r has no shape key called %r -- it has: %s" % (
+                    obj.name, key, ", ".join(k.name for k in keys.key_blocks) if keys else "none"))
+            if keys.key_blocks[key] == keys.reference_key:
+                raise RuntimeError("%r is the basis; sculpting it would drag every other shape "
+                                   "key's rest shape with it -- sculpt the mesh before adding "
+                                   "keys, or sculpt into a key" % key)
+            self.key = keys.key_blocks[key]
+        elif keys:
+            raise RuntimeError("%r has shape keys; sculpting the base under them would tear the "
+                               "keys away from it -- name one with shape_key to sculpt into it"
+                               % obj.name)
         self.obj = obj
         self.mesh = obj.data
         count = len(self.mesh.vertices)
         if count == 0:
             raise RuntimeError("%r has no vertices" % obj.name)
         self.co = _np.empty(count * 3, dtype=_np.float64)
-        self.mesh.vertices.foreach_get("co", self.co)
+        self._source().foreach_get("co", self.co)
         self.co = self.co.reshape(-1, 3)
         self.start = self.co.copy()
         edges = _np.empty(len(self.mesh.edges) * 2, dtype=_np.int64)
@@ -3227,15 +3257,21 @@ class _AriaSculpt:
         self.faces = [tuple(p.vertices) for p in self.mesh.polygons]
         self.refresh_normals()
 
+    def _source(self):
+        return self.key.data if self.key is not None else self.mesh.vertices
+
     def refresh_normals(self):
         self.write()
         self.mesh.update()
+        if self.key is not None:
+            self.normals = _np.array(self.key.normals_vertex_get(), dtype=_np.float64).reshape(-1, 3)
+            return
         normals = _np.empty(len(self.mesh.vertices) * 3, dtype=_np.float64)
         self.mesh.vertex_normals.foreach_get("vector", normals)
         self.normals = normals.reshape(-1, 3)
 
     def write(self):
-        self.mesh.vertices.foreach_set("co", self.co.ravel())
+        self._source().foreach_set("co", self.co.ravel())
 
     def tree(self):
         return _BVHTree.FromPolygons([tuple(v) for v in self.co], self.faces)
@@ -3499,6 +3535,11 @@ def sculpt_stroke(params: Dict[str, Any]) -> str:
     fraction of the radius, mirror "X" to sculpt both sides of a figure
     at once, front_only (default true) to leave the far side of thin
     parts alone. Needs a dense mesh -- sculpt_ready first.
+
+    shape_key: sculpt into that shape key (an expression -- "Smile",
+    "Blink_L") instead of the mesh itself. add_shape_key makes one. The
+    base cannot be sculpted once a mesh has keys, because every key
+    stores its own full shape and would be left behind.
     """
     brush = _choice(params.get("brush"), SCULPT_STROKE_BRUSHES, "draw")
     falloff = _choice(params.get("falloff"), SCULPT_FALLOFFS, "smooth")
@@ -3527,7 +3568,7 @@ def sculpt_stroke(params: Dict[str, Any]) -> str:
 
     return (_RENDER_KIT + _SCULPT_KIT +
             f'_target = _obj({_text(params.get("object"))})\n'
-            f'_sculpt = _AriaSculpt(_target)\n'
+            f'_sculpt = _AriaSculpt(_target, {_text(params.get("shape_key"))} or None)\n'
             f'_radius_world = {_num(params.get("radius"), 0.05)}\n'
             f'if _radius_world <= 0:\n'
             f'    raise RuntimeError("a brush needs a radius above zero")\n'
@@ -3981,6 +4022,342 @@ def fit_to_reference(params: Dict[str, Any]) -> str:
             f'score_before=round(_before, 4), '
             f'largest_move=round(float(_np.abs(_shift_px).max() / _size * _line["ortho"]), 4))')
 
+# ======================================================
+# Shape keys
+#
+# A shape key is a whole second copy of the mesh's shape, stored with
+# it, that can be dialled in from 0 to 1: a smile, a blink, a breath.
+# Unity imports them from FBX as blendshapes, which is how a face
+# talks in a game. They are made here the way an artist makes them:
+# add the key, then sculpt into it (sculpt_stroke with shape_key=).
+# ======================================================
+
+def _shape_key_target(params: Dict[str, Any]) -> str:
+    return (f'_target = _obj({_text(params.get("object"))})\n'
+            f'if _target.type != "MESH":\n'
+            f'    raise RuntimeError("%r is a %s -- only meshes have shape keys" '
+            f'% (_target.name, _target.type))\n')
+
+
+def _shape_key_named(params: Dict[str, Any]) -> str:
+    return (f'_keys = _target.data.shape_keys\n'
+            f'_name = {_text(params.get("name"))}\n'
+            f'if not _keys or _name not in _keys.key_blocks:\n'
+            f'    raise RuntimeError("%r has no shape key called %r -- it has: %s" % ('
+            f'_target.name, _name, ", ".join(k.name for k in _keys.key_blocks) if _keys else "none"))\n'
+            f'_key = _keys.key_blocks[_name]\n')
+
+
+def add_shape_key(params: Dict[str, Any]) -> str:
+    """A new shape key -- an expression or pose of the mesh -- starting at rest.
+
+    The neutral "Basis" is made first if the mesh has none: every other
+    key is measured against it. The new key starts identical to the
+    basis (or to the mix of keys dialled in, with from_mix) and at
+    value 0; sculpt into it with sculpt_stroke(shape_key=name). Asking
+    for a key that already exists is not an error -- it is there.
+    """
+    from_mix = "True" if params.get("from_mix") else "False"
+    return (_shape_key_target(params) +
+            f'_name = {_text(params.get("name"))}\n'
+            f'if not _name.strip():\n'
+            f'    raise RuntimeError("a shape key needs a name")\n'
+            f'if _target.data.shape_keys is None:\n'
+            f'    _target.shape_key_add(name="Basis", from_mix=False)\n'
+            f'_blocks = _target.data.shape_keys.key_blocks\n'
+            f'_made = _name not in _blocks\n'
+            f'if _made:\n'
+            f'    _key = _target.shape_key_add(name=_name, from_mix={from_mix})\n'
+            f'    _key.value = 0.0\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("add_shape_key", object=_target.name, name=_name, made=_made, '
+            f'keys=[k.name for k in _target.data.shape_keys.key_blocks])')
+
+
+def set_shape_key(params: Dict[str, Any]) -> str:
+    """Dial a shape key in: 0 is rest, 1 is the full expression.
+
+    With `frame`, the value is keyframed there too, which is how an
+    expression is animated -- 0 on frame 1, 1 on frame 12 is a smile
+    that grows over half a second. Values outside 0-1 are allowed as
+    far as the key's own slider allows (an exaggerated take).
+    """
+    frame = params.get("frame")
+    keyed = ""
+    if frame is not None and frame != "":
+        f = _int(frame, 1, 0, 1_000_000)
+        keyed = (f'bpy.context.scene.frame_set({f})\n'
+                 f'_key.value = _value\n'
+                 f'_key.keyframe_insert(data_path="value", frame={f})\n')
+    return (_shape_key_target(params) + _shape_key_named(params) +
+            f'if _key == _keys.reference_key:\n'
+            f'    raise RuntimeError("the basis is the rest shape -- it has no value to set")\n'
+            f'_value = max(_key.slider_min, min(_key.slider_max, {_num(params.get("value"), 1.0)}))\n'
+            + keyed +
+            f'_key.value = _value\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("set_shape_key", object=_target.name, name=_key.name, value=_value, '
+            f'frame={repr(frame) if frame not in (None, "") else "None"})')
+
+
+def remove_shape_key(params: Dict[str, Any]) -> str:
+    """Delete one shape key. The basis only goes when it is the last one.
+
+    Removing the basis while other keys remain would promote one of
+    them to be the rest shape -- the face would stop being neutral --
+    so it is refused until the others are gone.
+    """
+    return (_shape_key_target(params) + _shape_key_named(params) +
+            f'if _key == _keys.reference_key and len(_keys.key_blocks) > 1:\n'
+            f'    raise RuntimeError("the basis goes last -- remove the other keys first: %s" '
+            f'% ", ".join(k.name for k in _keys.key_blocks if k != _key))\n'
+            f'_target.shape_key_remove(_key)\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("remove_shape_key", object=_target.name, name=_name)')
+
+
+def mirror_shape_key(params: Dict[str, Any]) -> str:
+    """Make the other side's version of a shape key: Blink_L into Blink_R.
+
+    Each vertex takes the movement of its mirror twin across `axis`
+    (X, the figure's left-right, by default), flipped. Twins are found
+    by position on the basis, so the mesh must be symmetric at rest --
+    vertices with no twin within `tolerance` metres keep still, and how
+    many that was is reported, because a lopsided result from an
+    asymmetric mesh should not look like success.
+    """
+    axis = {"X": 0, "Y": 1, "Z": 2}.get(str(params.get("axis") or "X").strip().upper())
+    if axis is None:
+        raise BadValue(f"{params.get('axis')!r} is not an axis. Use X, Y or Z.")
+    return (_shape_key_target(params) + _shape_key_named(params) +
+            f'import numpy as _np\n'
+            f'from mathutils.kdtree import KDTree as _KDTree\n'
+            f'_basis = _keys.reference_key\n'
+            f'_n = len(_target.data.vertices)\n'
+            f'_rest = _np.empty(_n * 3); _basis.data.foreach_get("co", _rest); _rest = _rest.reshape(-1, 3)\n'
+            f'_shape = _np.empty(_n * 3); _key.data.foreach_get("co", _shape); _shape = _shape.reshape(-1, 3)\n'
+            f'_tree = _KDTree(_n)\n'
+            f'for _i, _p in enumerate(_rest):\n'
+            f'    _tree.insert(_p, _i)\n'
+            f'_tree.balance()\n'
+            f'_offset = _shape - _rest\n'
+            f'_mirrored = _rest.copy()\n'
+            f'_alone = 0\n'
+            f'for _i, _p in enumerate(_rest):\n'
+            f'    _q = _p.copy(); _q[{axis}] = -_q[{axis}]\n'
+            f'    _co, _twin, _d = _tree.find(_q)\n'
+            f'    if _d > {_num(params.get("tolerance"), 0.001)}:\n'
+            f'        _alone += 1\n'
+            f'        continue\n'
+            f'    _move = _offset[_twin].copy(); _move[{axis}] = -_move[{axis}]\n'
+            f'    _mirrored[_i] = _p + _move\n'
+            f'_new_name = {_text(params.get("new_name"))} or _name.replace("_L", "_R") '
+            f'if _name.endswith("_L") else ({_text(params.get("new_name"))} or _name + "_mirror")\n'
+            f'_new = _keys.key_blocks.get(_new_name) or _target.shape_key_add(name=_new_name, from_mix=False)\n'
+            f'_new.data.foreach_set("co", _mirrored.ravel())\n'
+            f'_new.value = 0.0\n'
+            f'_target.data.update()\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("mirror_shape_key", object=_target.name, source=_name, made=_new.name, '
+            f'vertices_without_a_twin=_alone)')
+
+
+# ======================================================
+# Weight transfer
+#
+# Clothing that moves with the body. A garment is its own mesh; left
+# alone, the body bends at the elbow and the sleeve stays straight. The
+# body's bone weights say how much each bone moves each part of it, and
+# copying them across -- each garment vertex takes the weights of the
+# body surface nearest it -- makes the sleeve bend where the arm bends.
+# ======================================================
+
+WEIGHT_TRANSFER_METHODS = {
+    "nearest_face": "POLYINTERP_NEAREST",     # interpolated across the nearest face
+    "nearest": "NEAREST",                     # the single nearest vertex
+    "projected": "POLYINTERP_VNORPROJ",       # along the garment's normals
+    "topology": "TOPOLOGY",                   # same vertex order: a copy of the body
+}
+
+
+def transfer_weights(params: Dict[str, Any]) -> str:
+    """Copy a body's bone weights onto a garment, and rig the garment to its skeleton.
+
+    source: the weighted body. target: the garment. Each garment vertex
+    takes the weights of the body surface nearest to it (method
+    nearest_face; also nearest, projected, topology). Then the garment
+    gets the body's armature -- found from its Armature modifier or its
+    parent, or given as `armature` -- as a modifier and a parent, so it
+    moves when the body does.
+
+    Done with the skeleton at REST, whatever pose it is in: weights
+    matched against a bent arm would give the sleeve the wrong bones.
+    Replaces the garment's existing weights unless replace=false.
+    Reports how many garment vertices ended up with no weight at all --
+    those stay behind when the body moves, and are the thing to fix.
+    """
+    method = WEIGHT_TRANSFER_METHODS.get(
+        str(params.get("method") or "nearest_face").strip().lower())
+    if method is None:
+        raise BadValue(f"{params.get('method')!r} is not a method. Use "
+                       f"{', '.join(sorted(WEIGHT_TRANSFER_METHODS))}.")
+    replace = "False" if params.get("replace") is False else "True"
+    return (f'_src = _obj({_text(params.get("source"))})\n'
+            f'_dst = _obj({_text(params.get("target"))})\n'
+            f'for _o in (_src, _dst):\n'
+            f'    if _o.type != "MESH":\n'
+            f'        raise RuntimeError("%r is a %s -- weights live on meshes" % (_o.name, _o.type))\n'
+            f'if not _src.vertex_groups:\n'
+            f'    raise RuntimeError("%r has no weights to copy -- rig it first (auto_weights)" % _src.name)\n'
+            f'if _dst.data.shape_keys:\n'
+            f'    raise RuntimeError("%r has shape keys, and a modifier cannot be applied under '
+            f'them -- transfer weights before making shape keys" % _dst.name)\n'
+            f'_arm = None\n'
+            f'_named_arm = {_text(params.get("armature"))}\n'
+            f'if _named_arm:\n'
+            f'    _arm = _obj(_named_arm)\n'
+            f'else:\n'
+            f'    for _m in _src.modifiers:\n'
+            f'        if _m.type == "ARMATURE" and _m.object is not None:\n'
+            f'            _arm = _m.object\n'
+            f'            break\n'
+            f'    if _arm is None and _src.parent is not None and _src.parent.type == "ARMATURE":\n'
+            f'        _arm = _src.parent\n'
+            f'_was_pose = None\n'
+            f'if _arm is not None:\n'
+            f'    _was_pose = _arm.data.pose_position\n'
+            f'    _arm.data.pose_position = "REST"\n'
+            f'    bpy.context.view_layer.update()\n'
+            f'try:\n'
+            f'    _active(_dst)\n'
+            f'    if {replace}:\n'
+            f'        _dst.vertex_groups.clear()\n'
+            f'    _mod = _dst.modifiers.new(name="ARIA_Weights", type="DATA_TRANSFER")\n'
+            f'    _mod.object = _src\n'
+            f'    _mod.use_vert_data = True\n'
+            f'    _mod.data_types_verts = {{"VGROUP_WEIGHTS"}}\n'
+            f'    _mod.vert_mapping = {method!r}\n'
+            f'    _mod.layers_vgroup_select_src = "ALL"\n'
+            f'    _mod.layers_vgroup_select_dst = "NAME"\n'
+            f'    bpy.ops.object.datalayout_transfer(modifier=_mod.name)\n'
+            f'    bpy.ops.object.modifier_move_to_index(modifier=_mod.name, index=0)\n'
+            f'    bpy.ops.object.modifier_apply(modifier=_mod.name)\n'
+            f'    if _dst.vertex_groups:\n'
+            f'        bpy.ops.object.mode_set(mode="WEIGHT_PAINT")\n'
+            f'        bpy.ops.object.vertex_group_normalize_all(lock_active=False)\n'
+            f'        bpy.ops.object.mode_set(mode="OBJECT")\n'
+            f'finally:\n'
+            f'    if _arm is not None:\n'
+            f'        _arm.data.pose_position = _was_pose\n'
+            f'if _arm is not None:\n'
+            f'    for _m in [m for m in _dst.modifiers if m.type == "ARMATURE"]:\n'
+            f'        _dst.modifiers.remove(_m)\n'
+            f'    _rig = _dst.modifiers.new(name="Armature", type="ARMATURE")\n'
+            f'    _rig.object = _arm\n'
+            f'    _keep = _dst.matrix_world.copy()\n'
+            f'    _dst.parent = _arm\n'
+            f'    _dst.matrix_world = _keep\n'
+            f'_bones = set(b.name for b in _arm.data.bones) if _arm is not None else set()\n'
+            f'_unweighted = sum(1 for _v in _dst.data.vertices '
+            f'if not any(g.weight > 1e-4 and (not _bones or _dst.vertex_groups[g.group].name in _bones) '
+            f'for g in _v.groups))\n'
+            f'_RESULT["modified"].append(_dst.name)\n'
+            f'_note("transfer_weights", source=_src.name, target=_dst.name, '
+            f'armature=_arm.name if _arm is not None else None, '
+            f'groups=len(_dst.vertex_groups), vertices=len(_dst.data.vertices), '
+            f'unweighted=_unweighted)')
+
+
+def apply_modifiers(params: Dict[str, Any]) -> str:
+    """Make an object's modifiers permanent -- keeping its shape keys.
+
+    Blender will not apply a modifier to a mesh with shape keys, and the
+    FBX exporter, asked to apply them on the way out, quietly drops the
+    keys instead (measured: a head with Smile, Blink_L and Blink_R and a
+    live Subdivision arrived in the FBX with none). So this rebuilds it:
+    the mesh is evaluated once with each key alone at full strength,
+    modifiers and all, and those shapes become the new keys on the new
+    mesh. Values, ranges and keyframed animation carry over.
+
+    Armature modifiers are left in place -- they are the rig, not a
+    shape. Works for modifiers that give every key the same topology
+    (subdivision, mirror, solidify, bevel...); one that does not is
+    refused with the key it broke on.
+    """
+    return (f'import numpy as _np\n'
+            f'_target = _obj({_text(params.get("object"))})\n'
+            f'if _target.type != "MESH":\n'
+            f'    raise RuntimeError("%r is a %s, not a mesh" % (_target.name, _target.type))\n'
+            f'_active(_target)\n'
+            f'_apply = [m for m in _target.modifiers if m.type != "ARMATURE"]\n'
+            f'_rigs = [m for m in _target.modifiers if m.type == "ARMATURE"]\n'
+            f'_names = [m.name for m in _apply]\n'
+            f'if not _apply:\n'
+            f'    _note("apply_modifiers", object=_target.name, applied=[])\n'
+            f'elif not _target.data.shape_keys:\n'
+            f'    for _m in _names:\n'
+            f'        bpy.ops.object.modifier_apply(modifier=_m)\n'
+            f'    _RESULT["modified"].append(_target.name)\n'
+            f'    _note("apply_modifiers", object=_target.name, applied=_names)\n'
+            f'else:\n'
+            f'    _old_key = _target.data.shape_keys\n'
+            f'    _blocks = list(_old_key.key_blocks)\n'
+            f'    _kept = [(k.name, k.value, k.slider_min, k.slider_max, k.mute) for k in _blocks]\n'
+            f'    _anim = _old_key.animation_data.action if _old_key.animation_data else None\n'
+            f'    _slot = getattr(_old_key.animation_data, "action_slot", None) if _anim else None\n'
+            f'    _rig_state = [(m, m.show_viewport) for m in _rigs]\n'
+            f'    for _m, _ in _rig_state:\n'
+            f'        _m.show_viewport = False\n'
+            f'    _was_only, _was_index = _target.show_only_shape_key, _target.active_shape_key_index\n'
+            f'    _target.show_only_shape_key = True\n'
+            f'    _shapes = []\n'
+            f'    _base_mesh = None\n'
+            f'    try:\n'
+            f'        for _i, _k in enumerate(_blocks):\n'
+            f'            _target.active_shape_key_index = _i\n'
+            f'            bpy.context.view_layer.update()\n'
+            f'            _seen = _target.evaluated_get(bpy.context.evaluated_depsgraph_get())\n'
+            f'            if _i == 0:\n'
+            f'                _base_mesh = bpy.data.meshes.new_from_object(_seen)\n'
+            f'            _m = _seen.to_mesh()\n'
+            f'            _co = _np.empty(len(_m.vertices) * 3)\n'
+            f'            _m.vertices.foreach_get("co", _co)\n'
+            f'            _seen.to_mesh_clear()\n'
+            f'            if _shapes and len(_co) != len(_shapes[0]):\n'
+            f'                raise RuntimeError("with the modifiers applied, shape key %r has a '
+            f'different vertex count from the basis -- one of %s changes the topology per key" '
+            f'% (_k.name, ", ".join(_names)))\n'
+            f'            _shapes.append(_co)\n'
+            f'    finally:\n'
+            f'        _target.show_only_shape_key = _was_only\n'
+            f'        _target.active_shape_key_index = _was_index\n'
+            f'        for _m, _state in _rig_state:\n'
+            f'            _m.show_viewport = _state\n'
+            f'    _old_mesh = _target.data\n'
+            f'    _target.data = _base_mesh\n'
+            f'    for _m in _names:\n'
+            f'        _target.modifiers.remove(_target.modifiers[_m])\n'
+            f'    for (_name, _value, _lo, _hi, _mute), _co in zip(_kept, _shapes):\n'
+            f'        _new = _target.shape_key_add(name=_name, from_mix=False)\n'
+            f'        _new.data.foreach_set("co", _co)\n'
+            f'        _new.slider_min, _new.slider_max = _lo, _hi\n'
+            f'        _new.value, _new.mute = _value, _mute\n'
+            f'    if _anim is not None:\n'
+            f'        _ad = _target.data.shape_keys.animation_data_create()\n'
+            f'        _ad.action = _anim\n'
+            f'        if _slot is not None and hasattr(_ad, "action_slot"):\n'
+            f'            try:\n'
+            f'                _ad.action_slot = _slot\n'
+            f'            except Exception:\n'
+            f'                pass\n'
+            f'    if _old_mesh.users == 0:\n'
+            f'        bpy.data.meshes.remove(_old_mesh)\n'
+            f'    _target.data.update()\n'
+            f'    _RESULT["modified"].append(_target.name)\n'
+            f'    _note("apply_modifiers", object=_target.name, applied=_names, '
+            f'shape_keys=[k[0] for k in _kept], vertices=len(_target.data.vertices))')
+
+
 TEMPLATES = {
     "apply_transforms": apply_transforms,
     "remove_stray_meshes": remove_stray_meshes,
@@ -4072,6 +4449,13 @@ TEMPLATES = {
     "sculpt_ready": sculpt_ready,
     "compare_reference": compare_reference,
     "fit_to_reference": fit_to_reference,
+    # shape keys and weights
+    "add_shape_key": add_shape_key,
+    "set_shape_key": set_shape_key,
+    "remove_shape_key": remove_shape_key,
+    "mirror_shape_key": mirror_shape_key,
+    "transfer_weights": transfer_weights,
+    "apply_modifiers": apply_modifiers,
     "enable_dyntopo": enable_dyntopo,
     "apply_multires": apply_multires,
     # export

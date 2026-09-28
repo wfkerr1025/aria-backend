@@ -104,6 +104,16 @@ class Operation:
         # Both snake_case and camelCase reach the same parameter, because
         # a person typing calls should not have to remember which the
         # Python side happened to use.
+        # The wrapper's signature is the older, smaller surface; the
+        # template may read more (AddBone takes parent and connect, which
+        # add_bone's signature never grew). Those are accepted by name.
+        from backend.blender import blender_script_templates as templates
+
+        self.max_positional = len(self.order)
+        if self.python_name in templates.TEMPLATES:
+            self.order = self.order + tuple(
+                p for p in templates.parameters(self.python_name) if p not in self.order)
+
         self.aliases: dict[str, str] = {}
         for parameter in self.order:
             self.aliases[parameter.lower()] = parameter
