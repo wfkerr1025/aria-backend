@@ -81,6 +81,7 @@ __all__ = [
     "map_text",
     "names_another_tool",
     "names_blender",
+    "names_live_blender",
     "recipe_names",
     "wants_something_built",
 ]
@@ -785,8 +786,13 @@ _WANTS_EXPLANATION = re.compile(
 # "from" earns its place on the export sentence: "export it from
 # Blender to Unity" is the ordinary way to say that, and without it
 # the one request the asset pipeline exists for did not reach here.
+#
+# "in my Blender" names it too, and says WHICH Blender: the one open on
+# the person's screen (ARIA Live), not chat's scene in the background.
+# See names_live_blender.
+_MY_BLENDER = r"(?:my\s+(?:open\s+|own\s+)?|the\s+open\s+)"
 _BLENDER_NAMED = re.compile(
-    r"\b(?:in|with|inside|via|from)\s+blender\b"
+    r"\b(?:in|with|inside|via|from)\s+" + _MY_BLENDER + r"?blender\b"
     r"|\bus(?:e|es|ing)\s+blender\b"
     r"|^\s*blender\s*[,:]",
     re.I)
@@ -819,6 +825,21 @@ def names_blender(text: str) -> bool:
     waiting for a sentence that lands between them.
     """
     return bool(_BLENDER_NAMED.search(str(text or "")))
+
+
+# Looser than the gate on purpose: this only says WHICH Blender, never
+# whether to act -- "show me my Blender scene in clay" means the open one.
+_LIVE_NAMED = re.compile(r"\b" + _MY_BLENDER + r"blender\b", re.I)
+
+
+def names_live_blender(text: str) -> bool:
+    """Whether a sentence means the Blender open on the person's screen.
+
+    "Make the nose bigger in my Blender" -- the work happens in front of
+    them, through the ARIA Live add-on, rather than in chat's scene.
+    Whether anything happens at all is still names_blender's call.
+    """
+    return bool(_LIVE_NAMED.search(str(text or "")))
 
 
 def names_another_tool(text: str) -> bool:

@@ -679,13 +679,17 @@ def answer_request(text: str, *,
     other_tool = mapping.names_another_tool(said)
     gated = mapping.names_blender(said) and not other_tool
     mentioned = bool(re.search(r"\bblender\b", said, re.I)) and not other_tool
+    # "in my Blender" -- the Blender open on their screen, through ARIA
+    # Live, instead of chat's scene. Same steps; its own guards.
+    live = mapping.names_live_blender(said) and not other_tool
+    session = blender_session.LiveSession() if live else blender_session.Session()
 
     # Undo, start over and "what is in the scene" are about the scene
     # chat has been building, not requests to build something. Looking
     # and describing change nothing, so "what's in the Blender scene?"
     # is enough for them; answer_command holds undo to the strict gate.
     if mentioned:
-        command = blender_session.answer_command(said, allow_look=not gated, gated=gated)
+        command = blender_session.answer_command(said, session, allow_look=not gated, gated=gated)
         if command is not None:
             return {"ran": command.get("ran", True), "text": command.get("text", "")}
 
@@ -697,7 +701,7 @@ def answer_request(text: str, *,
         # "Show me it in clay in Blender" -- a look, not a build. Only
         # once the mapper has passed: "build a car and show me" is a
         # build, and a build already ends with a picture.
-        command = blender_session.answer_command(said)
+        command = blender_session.answer_command(said, session)
         if command is not None:
             return {"ran": command.get("ran", True), "text": command.get("text", "")}
         if not mapping.wants_something_built(said):
@@ -712,6 +716,9 @@ def answer_request(text: str, *,
             "I can also rig, animate a walk or idle, UV unwrap, set up "
             "sculpting, smooth, mirror and export."
             + _elsewhere(said))}
+
+    if live:
+        return _build_live(plan, session, on_output)
 
     folder = output_dir()
     actions, written = _with_outputs(plan["actions"], folder)
@@ -738,6 +745,46 @@ def answer_request(text: str, *,
         f"{files}\n\n"
         + (f"{picture}\n\n" if picture else "")
         + f"Steps: {plan['summary']}.")}
+
+
+def _build_live(plan: dict, session, on_output) -> dict:
+    """A recipe built in the Blender that is open, beside what is there.
+
+    Recipes start by clearing the scene -- right for a scene of their
+    own, and the one thing never done to somebody's open file. Nothing
+    is saved or exported unless the sentence asked for an export.
+    """
+    from backend.blender import blender_session
+
+    actions = [dict(step) for step in plan["actions"] if step["action"] != "clear_scene"]
+    written = []
+    folder = output_dir()
+    stem = _free_stem(folder, _base_name(actions), [".fbx", ".glb", ".obj"])
+    for step in actions:
+        if str(step["action"]).startswith("export_"):
+            params = dict(step.get("params") or {})
+            if not params.get("path") or str(params["path"]).startswith("<"):
+                params["path"] = str(folder / f"{stem}.{step['action'].split('_', 1)[1]}")
+            step["params"] = params
+            written.append(params["path"])
+
+    result = session.run(actions, on_output=on_output)
+    if not result.get("ran"):
+        return {"ran": False, "text": (
+            f"I did not build anything in your Blender.\n\n{result.get('error')}")}
+    if not result.get("success"):
+        return {"ran": True, "text": result.get("text", "")}
+
+    made = result.get("created") or []
+    picture = blender_session.picture_markdown(result.get("renders") or [])
+    return {"ran": True, "text": (
+        f"Built {_base_name(actions)} in your open Blender: {len(made)} object"
+        f"{'' if len(made) == 1 else 's'} "
+        f"({', '.join(made[:6])}{' and more' if len(made) > 6 else ''}), beside what was "
+        f"already there. Nothing was saved -- that is yours to do."
+        + ("\n\n" + "\n".join(f"- {path}" for path in written) if written else "")
+        + (f"\n\n{picture}" if picture else "")
+        + f"\n\n{session.undo_hint}\n\nSteps: {plan['summary']}.")}
 
 
 # ======================================================

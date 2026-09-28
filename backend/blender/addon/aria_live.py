@@ -10,7 +10,7 @@ to a file in the user's home folder (~/.aria/blender_live.json, or
 ARIA_BLENDER_LIVE_FILE). A request must carry that token. It carries a
 script ARIA built from its action templates; the script is run on
 Blender's main thread (Blender's data is not safe to touch from any
-other), with an undo step pushed first, so Ctrl+Z takes back whatever
+other), with one undo step pushed after it, so Ctrl+Z takes back whatever
 ARIA did, the same as anything done by hand.
 
 WHAT IT DOES NOT DO
@@ -23,7 +23,7 @@ the request waits for the next quiet moment instead.
 bl_info = {
     "name": "ARIA Live",
     "author": "ARIA Lite",
-    "version": (1, 1, 0),
+    "version": (1, 2, 0),
     "blender": (4, 2, 0),
     "location": "3D Viewport > Sidebar (N) > ARIA",
     "description": "Lets ARIA build, sculpt and render in this Blender while it is open",
@@ -132,14 +132,12 @@ def _run_jobs():
     while not _jobs.empty():
         job = _jobs.get()
         out = io.StringIO()
-        # Undo steps only round a job that changes something: pushed round
-        # a look as well, Ctrl+Z after ARIA had merely looked stepped
-        # through copies of the same scene before reaching anything real.
-        if not job["readonly"]:
-            try:
-                bpy.ops.ed.undo_push(message="Before " + job["label"])
-            except Exception:
-                pass                                 # no undo stack (background): run anyway
+        # One undo step per job that changes something, pushed AFTER it:
+        # the top of the stack already is the scene as it was before (an
+        # operator pushes its own step when it finishes). A "Before" step
+        # as well made every job two steps, and the second Ctrl+Z landed
+        # on a copy of the first -- "undo" that visibly did nothing.
+        # Looks push nothing, for the same reason.
         try:
             with contextlib.redirect_stdout(out):
                 exec(compile(job["script"], "<aria-live>", "exec"), {"__name__": "__aria_live__"})

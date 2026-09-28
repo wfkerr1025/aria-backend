@@ -55,7 +55,7 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 
-__all__ = ["Session", "answer_command", "picture_markdown", "plan", "summarize", "main"]
+__all__ = ["Session", "LiveSession", "answer_command", "picture_markdown", "plan", "summarize", "main"]
 
 DEFAULT_SESSION = "chat"
 RENDER_ACTIONS = ("render_preview", "render_image", "compare_reference")
@@ -121,6 +121,11 @@ def _unknown_parameters(actions: Sequence[Dict[str, Any]]) -> List[str]:
 class Session:
     """One scene, worked on step by step, with every version kept."""
 
+    # How a reply tells the person to take a step back.
+    undo_hint = 'Say "undo in Blender" to take it back.'
+    # How a follow-up sentence names this scene.
+    where = "in Blender"
+
     def __init__(self, name: str = DEFAULT_SESSION, root: Optional[Path] = None) -> None:
         cleaned = re.sub(r"[^\w.-]", "_", str(name or DEFAULT_SESSION)).strip("._") or DEFAULT_SESSION
         self.name = cleaned
@@ -130,6 +135,9 @@ class Session:
         self.versions = self.folder / "versions"
         self.renders = self.folder / "renders"
         self.log = self.folder / "log.jsonl"
+
+    def _has_scene(self) -> bool:
+        return self.scene.is_file()
 
     # -- the record ---------------------------------------------------
 
@@ -221,13 +229,7 @@ class Session:
             return self._refused("Nothing ran.\n" + "\n".join(problems))
 
         step = self._next_step()
-        self.renders.mkdir(parents=True, exist_ok=True)
-
-        # Pictures asked for without somewhere to put them go to renders/.
-        for index, entry in enumerate(actions, 1):
-            if entry["action"] in RENDER_ACTIONS and not (entry["params"].get("path") or "").strip():
-                entry["params"]["path"] = str(
-                    self.renders / f"step_{step:04d}_{index:02d}_{entry['action']}.png")
+        self._place_pictures(actions, step)
 
         # Saved BEFORE the preview, so a picture that fails never costs
         # the work it was a picture of.
@@ -238,12 +240,7 @@ class Session:
         full = list(actions)
         if not looks_only:
             full.append({"action": "save_file", "params": {"path": str(self.scene)}})
-        wants_picture = preview and not any(a["action"] in RENDER_ACTIONS for a in actions)
-        if wants_picture:
-            full.append({"action": "render_preview", "params": {
-                "path": str(self.renders / f"step_{step:04d}.png"),
-                "look": preview, "views": list(views or []), "size": size,
-                "skip_empty": True}})
+        full += self._preview_step(actions, step, preview, views, size)
 
         stamp = lambda: ((self.scene.stat().st_mtime_ns, self.scene.stat().st_size)
                          if self.scene.is_file() else None)
@@ -267,6 +264,27 @@ class Session:
         if snapshot is not None and not result.get("success") and stamp() == before:
             snapshot.unlink(missing_ok=True)     # nothing changed; nothing to undo to
 
+        return self._finish(step, actions, result)
+
+    def _place_pictures(self, actions: List[dict], step: int) -> None:
+        """Pictures asked for without somewhere to put them go to renders/."""
+        self.renders.mkdir(parents=True, exist_ok=True)
+        for index, entry in enumerate(actions, 1):
+            if entry["action"] in RENDER_ACTIONS and not (entry["params"].get("path") or "").strip():
+                entry["params"]["path"] = str(
+                    self.renders / f"step_{step:04d}_{index:02d}_{entry['action']}.png")
+
+    def _preview_step(self, actions: Sequence[dict], step: int, preview: Optional[str],
+                      views: Optional[Sequence[str]], size: int) -> List[dict]:
+        """The picture that ends a step -- unless the step already takes one."""
+        if not preview or any(a["action"] in RENDER_ACTIONS for a in actions):
+            return []
+        return [{"action": "render_preview", "params": {
+            "path": str(self.renders / f"step_{step:04d}.png"),
+            "look": preview, "views": list(views or []), "size": size, "skip_empty": True}}]
+
+    def _finish(self, step: int, actions: List[dict], result: dict) -> dict:
+        """Log the step and say what it did."""
         outcome = result.get("result") or {}
         entry = {
             "step": step,
@@ -342,7 +360,7 @@ class Session:
         never left worse than the best it reached. Stops early at
         `good_enough`, or when nothing sizeable is left to fix.
         """
-        if not self.scene.is_file():
+        if not self._has_scene():
             return {"success": False, "text": f"Session {self.name!r} is empty -- nothing to match."}
         views = {str(v).lower(): str(p) for v, p in references.items()}
         bad = [v for v in views if v not in templates.SCULPT_VIEWS]
@@ -413,6 +431,117 @@ class Session:
         return {"success": False, "ran": False, "error": reason, "renders": [],
                 "created": [], "session": self.name,
                 "text": f"I did not run anything. {reason}"}
+
+
+class LiveSession(Session):
+    """The Blender open on the person's screen, through the ARIA Live add-on.
+
+    The same steps, notes and pictures as a Session, so everything chat
+    can do in its own scene -- build, sculpt, rig, clips, match -- works
+    here. What differs is whose scene it is:
+
+    - Nothing is saved, and no versions are kept: Blender's own undo is
+      the history (each step is one Ctrl+Z), and the file is saved when
+      the person saves it.
+    - Clearing, saving and Python are refused (blender_live's guards),
+      and "start over" is refused outright -- it would be the whole
+      open scene.
+    - A step that fails is undone, so a half-built step never stays
+      behind: the same promise the background session keeps by not
+      saving.
+
+    Pictures and the log go to Sessions/live.
+    """
+
+    undo_hint = "Ctrl+Z in Blender takes it back (or say \"undo in my Blender\")."
+    where = "in my Blender"
+
+    def __init__(self, root: Optional[Path] = None) -> None:
+        super().__init__("live", root)
+
+    def _has_scene(self) -> bool:
+        return True                  # whatever is open; _pick_model says when it is empty
+
+    def _preview_step(self, actions, step, preview, views, size) -> List[dict]:
+        # Someone's open scene is a room, not a stage: picture what the
+        # step made (the default cube swallowed a whole table otherwise).
+        steps = super()._preview_step(actions, step, preview, views, size)
+        for entry in steps:
+            entry["params"]["new_only"] = True
+        return steps
+
+    def run(self, work: Work, *, preview: Optional[str] = "material",
+            views: Optional[Sequence[str]] = None, size: int = 512,
+            on_output: Optional[Callable[[str, str], None]] = None,
+            timeout: Optional[int] = None, allow_python: bool = False) -> dict:
+        from backend.blender import blender_live
+
+        try:
+            actions = plan(work)
+        except Exception as refused:
+            return self._refused(str(refused))
+        is_json = isinstance(work, str) and work.strip()[:1] in "[{"
+        problems = _unknown_parameters(actions) if is_json else []
+        if problems:
+            return self._refused("Nothing ran.\n" + "\n".join(problems))
+
+        step = self._next_step()
+        self._place_pictures(actions, step)
+        full = list(actions) + self._preview_step(actions, step, preview, views, size)
+        result = blender_live.run(full, allow_python=allow_python, timeout=timeout or 600)
+        changes = not all(a["action"] in READ_ONLY_ACTIONS for a in full)
+        if result.get("ran") and not result.get("success") and changes:
+            blender_live.undo(1)     # the add-on pushed one step for the job; back past it
+        entry = self._finish(step, actions, result)
+        entry["scene_file"] = "the open Blender"
+        if not entry["success"]:
+            entry["text"] = summarize(entry).replace("the scene was left as it was",
+                                                     "was undone in your Blender")
+        return entry
+
+    def describe(self) -> dict:
+        from backend.blender import blender_live
+
+        result = blender_live.run([{"action": "describe_scene", "params": {}}])
+        scene = (result.get("result") or {}).get("scene")
+        if not result.get("success") or scene is None:
+            return {"success": False, "text": f"Could not read your Blender: {result.get('error')}"}
+        return {"success": True, "scene": scene, "text": describe_text(scene)}
+
+    def look(self, look: str = "material", views: Optional[Sequence[str]] = None,
+             size: int = 640, objects: Optional[Sequence[str]] = None,
+             show_landmarks: bool = False) -> dict:
+        from backend.blender import blender_live
+
+        self.renders.mkdir(parents=True, exist_ok=True)
+        path = self.renders / f"look_{time.strftime('%Y%m%d_%H%M%S')}_{look}.png"
+        params: Dict[str, Any] = {"path": str(path), "look": look, "views": list(views or []),
+                                  "size": size, "show_landmarks": show_landmarks}
+        if objects:
+            params["objects"] = list(objects)
+        result = blender_live.run([{"action": "render_preview", "params": params}])
+        renders = (result.get("result") or {}).get("renders") or []
+        if not result.get("success"):
+            return {"success": False, "text": f"The render failed: {result.get('error')}"}
+        return {"success": True, "renders": renders,
+                "text": "Rendered:\n" + "\n".join(f"- {p}" for p in renders[:1])}
+
+    def undo(self) -> dict:
+        from backend.blender import blender_live
+
+        done = blender_live.undo(1)
+        if not done.get("success"):
+            return {"success": False, "text": f"Nothing was undone: {done.get('error')}"}
+        self._record({"step": self._next_step(), "undo": True, "to": "Ctrl+Z",
+                      "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+        return {"success": True, "text": "Undone in your Blender -- the same as pressing Ctrl+Z "
+                                         "there once (it takes back the last change, whoever made it)."}
+
+    def reset(self) -> dict:
+        return {"success": False, "text": (
+            "I did not clear your Blender. Starting over there would throw away everything "
+            "open in it, so that stays yours to do (File > New). \"Start over in Blender\" "
+            "clears chat's own scene instead.")}
 
 
 # ======================================================
@@ -536,7 +665,7 @@ def _answer_sculpt(said: str, sculpt: dict, session: "Session") -> dict:
     if expression:
         lines.append(f"Added {sculpt['summary']} to {target} as a shape key called "
                      f"{expression}, dialled all the way in. Say \"set {expression.lower()} to "
-                     f"50% in Blender\" to soften it; the neutral face is untouched underneath.")
+                     f"50% {session.where}\" to soften it; the neutral face is untouched underneath.")
     else:
         lines.append(f"Sculpted {target}: {sculpt['summary']}.")
     if subdivided:
@@ -544,12 +673,12 @@ def _answer_sculpt(said: str, sculpt: dict, session: "Session") -> dict:
                      f"(about {subdivided * 4:,}) to give the brushes enough surface to shape.")
     if marked == "head":
         lines.append("I marked the face first (nose, chin, eyes, cheeks, mouth, jaw, brow, "
-                     "ears). Say \"show me the landmarks in Blender\" to check where they are.")
+                     f"ears). Say \"show me the landmarks {session.where}\" to check where they are.")
     elif marked == "body":
         lines.append("I marked the body first (shoulders, chest, waist, hips, arms, legs, and "
-                     "the face). Say \"show me the landmarks in Blender\" to check where they are.")
+                     f"the face). Say \"show me the landmarks {session.where}\" to check where they are.")
     lines.append(picture_markdown(outcome.get("renders") or []))
-    lines.append("Say \"undo in Blender\" to take this back.")
+    lines.append(session.undo_hint)
     outcome["text"] = "\n\n".join(line for line in lines if line)
     return outcome
 
@@ -606,7 +735,7 @@ def _answer_rig(said: str, session: "Session") -> dict:
         if unweighted:
             lines.append(f"{unweighted} vertices got no weight and will not move with it.")
         lines.append(picture_markdown(outcome.get("renders") or []))
-        lines.append("Say \"undo in Blender\" to take it off.")
+        lines.append(session.undo_hint)
         outcome["text"] = "\n\n".join(lines)
     return outcome
 
@@ -663,7 +792,7 @@ def _answer_clip(said: str, clip: str, session: "Session") -> dict:
             lines.append("Clips in the file: " + ", ".join(clips) + ". Exported to FBX they arrive "
                          "in Unity as separate clips.")
         lines.append(picture_markdown(outcome.get("renders") or [], f"{clip} frames"))
-        lines.append("Say \"undo in Blender\" to take it back.")
+        lines.append(session.undo_hint)
         outcome["text"] = "\n\n".join(lines)
     return outcome
 

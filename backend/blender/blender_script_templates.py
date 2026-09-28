@@ -2963,7 +2963,9 @@ def render_preview(params: Dict[str, Any]) -> str:
     (the model's own colours; the default) or final (the scene's own
     engine and lights). views: any of front, back, left, right, top,
     bottom, three_quarter, three_quarter_back. object/objects: frame
-    only these. skip_empty: an empty scene is noted, not an error.
+    only these. new_only: frame only what this run created, when it
+    created anything -- in someone's open scene, the build and not the
+    whole room. skip_empty: an empty scene is noted, not an error.
     show_landmarks: red dots on every landmark, to check where "the
     nose" is before a brush is aimed at it. frames: render these frames
     of the animation (up to 24) for every view, framed on the whole
@@ -2987,11 +2989,13 @@ def render_preview(params: Dict[str, Any]) -> str:
             f'_restore = _AriaRestore()\n'
             f'_written = []\n'
             f'try:\n'
-            f'    _targets = _aria_targets({_names(params.get("objects") or params.get("object"))})\n'
+            f'    _chosen = {_names(params.get("objects") or params.get("object"))}\n'
+            f'    if not _chosen and {"True" if params.get("new_only") else "False"}:\n'
+            f'        _chosen = [_n for _n in _RESULT["created"] if _n in bpy.data.objects]\n'
+            f'    _targets = _aria_targets(_chosen)\n'
             f'    if not _targets and {"True" if params.get("skip_empty") else "False"}:\n'
             f'        raise _AriaNothingToRender()\n'
             f'    _points, _centre, _radius = _aria_bounds(_targets)\n'
-            f'    _chosen = {_names(params.get("objects") or params.get("object"))}\n'
             f'    if _chosen:\n'
             f'        for _o in _scene.objects:\n'
             f'            if _o.type in {{"MESH", "CURVE", "SURFACE", "META", "FONT"}} and _o.name not in _chosen:\n'
