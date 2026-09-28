@@ -38,9 +38,32 @@ def test_a_bad_colour_is_refused_before_blender():
 
 def test_the_cloth_runs_two_cycles_and_keeps_the_second():
     text = script("bake_cloth", armature="Body_Rig")
-    assert "cache.frame_end = start + 2 * span" in text and "if f >= start + span:" in text
+    compile(text, "cloth", "exec")
+    assert "last = start + 2 * span if cyclic else end" in text
+    assert "keep = start + span if cyclic else start" in text
     assert 'modifiers.new("CYCLES")' in text                       # the clip loops while it runs
     assert "bag.fcurves.remove(fc)" in text                       # a second bake starts clean
+
+
+def test_a_jump_settles_first_and_plays_once():
+    # Run twice, a one-shot clip's second pass began with the cape still
+    # flying from the first landing (seen 2026-09-28: a crumple mid-jump).
+    text = script("bake_cloth", armature="Body_Rig")
+    assert 'cyclic = bool(getattr(action, "use_cyclic", True))' in text
+    assert "first = start if cyclic else start - span" in text
+
+
+def test_the_cape_bends_smoothly_and_misses_the_arms():
+    # 5 x 4 bones on one segment each moved as planks in a jump; the arms
+    # swinging back through the cape flung it sideways.
+    assert templates.CAPE_CHAINS * templates.CAPE_SEGMENTS == 42
+    assert templates.CAPE_COLS % (templates.CAPE_CHAINS - 1) == 0
+    assert templates.CAPE_ROWS % templates.CAPE_SEGMENTS == 0
+    built = script("add_cape", armature="Body_Rig", color=[0.1, 0.2, 0.6])
+    assert "for g, wd in downs:" in built                          # blended down the length
+    baked = script("bake_cloth", armature="Body_Rig")
+    assert "_cape_collider(body)" in baked and '"UpperArm", "LowerArm", "Hand"' in baked
+    assert "0.25 * before[key] + 0.5 * raw[f][key] + 0.25 * after[key]" in baked
 
 
 def test_a_new_clip_asks_for_the_cape_only_if_there_is_one():

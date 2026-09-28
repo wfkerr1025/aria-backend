@@ -958,8 +958,11 @@ def turntable(params: Dict[str, Any]) -> str:
 # Cloth: a cape that hangs and moves, baked into bones for Unity
 # ======================================================
 
-CAPE_ROWS, CAPE_COLS = 12, 9            # the simulated grid
-CAPE_CHAINS, CAPE_SEGMENTS = 5, 4       # the bones Unity plays it back on
+# 5 chains of 4 read well in a walk and jagged in a jump: each quarter of
+# the cape moved as one plank. 7 x 6 bones on a grid that divides evenly
+# into them (every 2nd column, every 3rd row), 42 bones in all.
+CAPE_ROWS, CAPE_COLS = 18, 12           # the simulated grid
+CAPE_CHAINS, CAPE_SEGMENTS = 7, 6       # the bones Unity plays it back on
 
 _CLOTH_KIT = r'''
 import math as _cm
@@ -1076,20 +1079,26 @@ def _cape_build(rig, length, colour, name):
             parent = bone
     bpy.ops.object.mode_set(mode="OBJECT")
 
-    # Weights: each vertex between its two nearest chains, on the segment it lies along.
+    # Weights: each vertex between its two nearest chains AND its two nearest
+    # segments down the length (blended between segment middles). On one
+    # segment alone, every joint was a crease the moment the cape bent hard.
     for r in range(rows + 1):
-        g = min(_CAPE_SEGS - 1, max(0, next(i for i in range(_CAPE_SEGS) if r <= seg_rows[i + 1])))
+        p = r / rows * _CAPE_SEGS - 0.5
+        g0 = max(0, min(_CAPE_SEGS - 1, int(_cm.floor(p))))
+        fr = max(0.0, min(1.0, p - g0))
+        downs = ((g0, 1.0 - fr), (min(_CAPE_SEGS - 1, g0 + 1), fr))
         for c in range(cols + 1):
             vi = r * (cols + 1) + c
             k = max(0, min(_CAPE_CHAINS - 2, next((i for i in range(_CAPE_CHAINS - 1) if c <= chain_cols[i + 1]), 0)))
             span = max(1, chain_cols[k + 1] - chain_cols[k])
             f = (c - chain_cols[k]) / span
             for chain, w in ((k, 1.0 - f), (k + 1, f)):
-                if w <= 1e-4:
-                    continue
-                name_ = "Cape_%d_%d" % (chain, g)
-                group = cape.vertex_groups.get(name_) or cape.vertex_groups.new(name=name_)
-                group.add([vi], w, "ADD")
+                for g, wd in downs:
+                    if w * wd <= 1e-4:
+                        continue
+                    name_ = "Cape_%d_%d" % (chain, g)
+                    group = cape.vertex_groups.get(name_) or cape.vertex_groups.new(name=name_)
+                    group.add([vi], w * wd, "ADD")
     pin = cape.vertex_groups.new(name="ARIA_Pin")
     pin.add(list(range(cols + 1)), 1.0, "REPLACE")
     arm = cape.modifiers.new("Armature", "ARMATURE")
@@ -1100,8 +1109,44 @@ def _cape_build(rig, length, colour, name):
     return cape
 
 
+_CAPE_ARM_BONES = ("UpperArm", "LowerArm", "Hand")
+
+
+def _cape_collider(body):
+    """A copy of the body without its arms, for the cloth to collide with.
+
+    In a jump the arms swing back through where the cape hangs; colliding
+    with them flung the whole cape sideways into a crumple. A cape on a
+    games character is kept off the torso and legs, not the arms."""
+    proxy = body.copy()
+    proxy.data = body.data.copy()
+    proxy.name = body.name + "_ARIA_Collider"
+    bpy.context.scene.collection.objects.link(proxy)
+    names = {g.index: g.name for g in proxy.vertex_groups}
+    arm = set()
+    for v in proxy.data.vertices:
+        best = max(v.groups, key=lambda e: e.weight, default=None)
+        if best is not None and any(part in names.get(best.group, "") for part in _CAPE_ARM_BONES):
+            arm.add(v.index)
+    if arm:
+        import bmesh as _cbm
+        bm = _cbm.new()
+        bm.from_mesh(proxy.data)
+        bm.verts.ensure_lookup_table()
+        _cbm.ops.delete(bm, geom=[bm.verts[i] for i in sorted(arm)], context="VERTS")
+        bm.to_mesh(proxy.data)
+        bm.free()
+    proxy.hide_render = True
+    return proxy
+
+
 def _cape_simulate(rig, cape, action, collide):
-    """Run the cloth over two cycles of `action`; key the cape bones from the second."""
+    """Run the cloth over `action` and key the cape bones from it.
+
+    A looping clip runs twice and keeps the second cycle, so its end meets
+    its start. A one-shot clip (a jump) is held on its first pose while the
+    cape settles, then played once: run twice, its second pass began with
+    the cape still flying from the first landing."""
     body = _cape_body(rig)
     scene = bpy.context.scene
     start, end = (int(round(f)) for f in action.frame_range)
@@ -1122,9 +1167,10 @@ def _cape_simulate(rig, cape, action, collide):
     thick = cape.modifiers.get("ARIA_Thickness")
     if thick is not None:
         thick.show_viewport = thick.show_render = False
+    cyclic = bool(getattr(action, "use_cyclic", True))
     loops = []
     for fc in _cape_fcurves(action):
-        if not fc.data_path.startswith('pose.bones["Cape_'):
+        if cyclic and not fc.data_path.startswith('pose.bones["Cape_'):
             loops.append(fc.modifiers.new("CYCLES"))
     # For the simulation the cape follows the chest alone; the cloth does the rest.
     chest = cape.vertex_groups.get("ARIA_Chest") or cape.vertex_groups.new(name="ARIA_Chest")
@@ -1147,25 +1193,34 @@ def _cape_simulate(rig, cape, action, collide):
     settings.air_damping = 1.5
     settings.tension_stiffness = 12.0
     settings.compression_stiffness = 12.0
-    settings.bending_stiffness = 2.0
+    # Heavy cloth: at 2.0 it folded like tissue in a jump and the bones
+    # could only copy the crumple.
+    settings.bending_stiffness = 8.0
     settings.vertex_group_mass = "ARIA_Pin"
     cloth.collision_settings.use_collision = True
     cloth.collision_settings.distance_min = 0.01
-    collision = None
+    collider = None
     if collide and not any(m.type == "COLLISION" for m in body.modifiers):
-        collision = body.modifiers.new("ARIA_Collision", "COLLISION")
-        body.collision.thickness_outer = 0.02
+        collider = _cape_collider(body)
+        collider.modifiers.new("ARIA_Collision", "COLLISION")
+        collider.collision.thickness_outer = 0.02
+    # Frames before a clip's first key hold its first pose, so a one-shot
+    # clip settles by starting the run early.
+    first = start if cyclic else start - span
+    last = start + 2 * span if cyclic else end
+    keep = start + span if cyclic else start
+    shift = span if cyclic else 0
     cache = cloth.point_cache
-    cache.frame_start = start
-    cache.frame_end = start + 2 * span
+    cache.frame_start = first
+    cache.frame_end = last
     positions = {}
     try:
-        for f in range(start, start + 2 * span + 1):
+        for f in range(first, last + 1):
             scene.frame_set(f)
-            if f >= start + span:
+            if f >= keep:
                 ev = cape.evaluated_get(bpy.context.evaluated_depsgraph_get())
                 n = len(cape.data.vertices)
-                positions[f - span] = [cape.matrix_world @ ev.data.vertices[i].co.copy() for i in range(n)]
+                positions[f - shift] = [cape.matrix_world @ ev.data.vertices[i].co.copy() for i in range(n)]
     finally:
         for fc in _cape_fcurves(action):
             for mod in list(fc.modifiers):
@@ -1177,8 +1232,10 @@ def _cape_simulate(rig, cape, action, collide):
         main.show_viewport = main.show_render = True
         if thick is not None:
             thick.show_viewport = thick.show_render = True
-        if collision is not None:
-            body.modifiers.remove(collision)
+        if collider is not None:
+            mesh_ = collider.data
+            bpy.data.objects.remove(collider, do_unlink=True)
+            bpy.data.meshes.remove(mesh_)
     # Key each cape bone to point where its stretch of cloth went.
     cols = _CAPE_COLS
     chain_cols = [round(k * cols / (_CAPE_CHAINS - 1)) for k in range(_CAPE_CHAINS)]
@@ -1186,17 +1243,31 @@ def _cape_simulate(rig, cape, action, collide):
     inv = rig.matrix_world.inverted()
     _active(rig)
     bpy.ops.object.mode_set(mode="POSE")
+    # What each bone should point along: its stretch of cloth, averaged with
+    # the columns either side and the frames either side. One column on one
+    # frame carried every ripple of the simulation straight into the bones.
+    def _along(pts, k, g):
+        c = chain_cols[k]
+        total = _CV((0.0, 0.0, 0.0))
+        for dc, w in ((-1, 0.25), (0, 0.5), (1, 0.25)):
+            cc = max(0, min(cols, c + dc))
+            total += w * (inv @ pts[seg_rows[g + 1] * (cols + 1) + cc] - inv @ pts[seg_rows[g] * (cols + 1) + cc])
+        return total
+    frames = [f for f in range(start, end + 1) if f in positions]
+    raw = {f: {(k, g): _along(positions[f], k, g) for k in range(_CAPE_CHAINS) for g in range(_CAPE_SEGS)}
+           for f in frames}
+    wants = {}
+    for i, f in enumerate(frames):
+        before, after = raw[frames[max(0, i - 1)]], raw[frames[min(len(frames) - 1, i + 1)]]
+        wants[f] = {key: 0.25 * before[key] + 0.5 * raw[f][key] + 0.25 * after[key] for key in raw[f]}
     keyed = 0
-    for f in range(start, end + 1):
+    for f in frames:
         scene.frame_set(f)
-        pts = positions.get(f)
-        if pts is None:
-            continue
-        for k, c in enumerate(chain_cols):
+        for k in range(_CAPE_CHAINS):
             for g in range(_CAPE_SEGS):
                 pb = rig.pose.bones["Cape_%d_%d" % (k, g)]
                 bpy.context.view_layer.update()
-                want = inv @ pts[seg_rows[g + 1] * (cols + 1) + c] - inv @ pts[seg_rows[g] * (cols + 1) + c]
+                want = wants[f][(k, g)]
                 now = pb.tail - pb.head
                 if want.length < 1e-6 or now.length < 1e-6:
                     continue
@@ -1234,7 +1305,16 @@ def add_cape(params: Dict[str, Any]) -> str:
             f'_name = _rig.name.rsplit("_Rig", 1)[0] + "_Cape"\n'
             f'_old = bpy.data.objects.get(_name)\n'
             f'if _old is not None:\n'
+            f'    _old_mats = [m for m in _old.data.materials if m is not None]\n'
+            f'    _old_mesh = _old.data\n'
             f'    bpy.data.objects.remove(_old, do_unlink=True)\n'
+            # Its mesh and material too: left behind, the new cape's material
+            # came out "Dwarf_Cape.002" and that name went on into Unity.
+            f'    if _old_mesh.users == 0:\n'
+            f'        bpy.data.meshes.remove(_old_mesh)\n'
+            f'    for _m in _old_mats:\n'
+            f'        if _m.users == 0:\n'
+            f'            bpy.data.materials.remove(_m)\n'
             f'_cape = _cape_build(_rig, {length}, {rgb!r}, _name)\n'
             f'_RESULT["created"].append(_cape.name)\n'
             f'_note("add_cape", armature=_rig.name, cape=_cape.name, bones=len(_cape_chain_bones(_rig)))')
@@ -1243,10 +1323,12 @@ def add_cape(params: Dict[str, Any]) -> str:
 def bake_cloth(params: Dict[str, Any]) -> str:
     """Simulate the cape through each clip and key its bones to follow.
 
-    Two cycles are simulated and the second is kept, so a looping clip
-    loops with the cloth already settled. `clips`: the actions to bake
-    (default: every clip the rig has, except Pose). The body is a
-    collider while it runs, so the cape does not pass through the legs.
+    A looping clip is simulated twice and the second cycle kept, so it
+    loops with the cloth already settled; a one-shot clip (a jump) settles
+    on its first pose and plays once. `clips`: the actions to bake
+    (default: every clip the rig has, except Pose). The body, arms left
+    out, is a collider while it runs, so the cape does not pass through
+    the legs.
     """
     clips = params.get("clips")
     # if_cape: nothing to do and no complaint when there is no cape -- how a
