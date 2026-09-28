@@ -268,6 +268,11 @@ EVERY_ACTION = [
 
     # Sculpting by hand. Sculpted for real in test_blender_sculpt.py.
     ("sculpt_ready", {"object": "Head", "detail": 150, "smooth": True}),
+    # Against a reference. Run for real in test_blender_reference.py.
+    ("compare_reference", {"object": "Head", "reference": "C:/refs/front.png",
+                           "view": "front", "path": "C:/out/c.png", "size": 512, "limit": 6}),
+    ("fit_to_reference", {"object": "Head", "reference": "C:/refs/front.png",
+                          "view": "right", "amount": 1.0, "softness": 0.012}),
     ("sculpt_stroke", {"object": "Head", "brush": "draw", "points": [[0, -0.5, 1]],
                        "radius": 0.08, "strength": 0.5, "falloff": "smooth",
                        "mirror": "X", "spacing": 0.25, "front_only": True}),

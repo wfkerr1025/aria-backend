@@ -3268,11 +3268,17 @@ class _AriaSculpt:
         if length < 1e-12:
             return 0
         area = area / length
-        if front_only:
+        if front_only and brush != "grab":
             # The other side of a thin part -- the back of a lip, the
             # far wall of a nostril -- faces away from the brush. A
             # sculptor's brush never reaches it; neither does this one.
-            weight = weight * (normals @ area > 0.0)
+            # Faded in, not cut: a hard cut left vertices just past
+            # side-on standing while their neighbours moved, and pinched
+            # pits into the surface (measured, on a head matched to a
+            # reference). Grab never uses it -- it carries a region
+            # whole, as Blender's grab does.
+            facing = normals @ area
+            weight = weight * _np.clip((facing + 0.1) / 0.3, 0.0, 1.0)
 
         points = self.co[inside]
         depth = radius * 0.1 * strength      # one dab's full push
@@ -3310,8 +3316,15 @@ class _AriaSculpt:
             move = (toward * (weight * 0.3 * abs(strength))[:, None]
                     - area[None, :] * (weight * depth)[:, None])
         elif brush == "smooth":
-            average = self.neighbour_average()[inside]
-            move = (average - points) * (weight * min(abs(strength), 1.0))[:, None]
+            # Several averaging passes a dab: one pass on a dense mesh
+            # moves a vertex a fraction of a millimetre (measured, 0.7 mm
+            # on a 120k-face head), which relaxes nothing anybody can see.
+            passes = 1 + int(round(min(abs(strength), 1.0) * 5))
+            for _ in range(passes):
+                average = self.neighbour_average()[inside]
+                self.co[inside] = self.co[inside] + (average - self.co[inside]) * weight[:, None]
+            move = self.co[inside] - points
+            self.co[inside] = points
         elif brush == "grab":
             move = _np.asarray(offset)[None, :] * weight[:, None]
         else:
@@ -3340,12 +3353,20 @@ def _aria_resample(points, spacing):
     return dabs
 
 
-def _aria_view_point(obj, framing, view, u, v):
+def _aria_view_point(obj, framing, view, u, v, depth="surface"):
     """A point in an orthographic preview picture, as a place on the surface.
 
     The camera is rebuilt exactly as render_preview built it -- same
     framing, same fit -- so (u, v) read off that picture, 0-1 across
     and 0-1 down, lands where the picture showed it.
+
+    depth "surface" is where the view first meets the model. "middle"
+    is halfway to where it leaves again -- for work on the OUTLINE. A
+    point just inside the edge of a head, seen from the front, first
+    meets the cheek well forward of the side of the skull; a grab
+    there dents the face and barely moves the outline (measured: 8%
+    too wide became 6%, with two craters). Halfway through is the side
+    itself, which is what the outline is made of.
     """
     direction = mathutils.Vector(__ARIA_VIEWS__[view]).normalized()
     points, centre, radius = _aria_bounds(framing)
@@ -3364,8 +3385,37 @@ def _aria_view_point(obj, framing, view, u, v):
     local_direction = (inverse.to_3x3() @ -direction).normalized()
     hit, location, normal, index = obj.ray_cast(local_origin, local_direction)
     if not hit:
-        raise RuntimeError("the %s view at (%.3f, %.3f) is empty space -- there is no %r "
-                           "there to sculpt" % (view, u, v, obj.name))
+        # Just off the edge -- where a grab has just moved the outline
+        # from under a point read off the picture before it -- means
+        # the nearest part of the model. Well out into empty space
+        # means a mistake, and says so.
+        count = len(obj.data.vertices)
+        coords = _np.empty(count * 3, dtype=_np.float64)
+        obj.data.vertices.foreach_get("co", coords)
+        coords = coords.reshape(-1, 3)
+        o = _np.array(local_origin)
+        d = _np.array(local_direction)
+        along = (coords - o) @ d
+        off = _np.linalg.norm((coords - o) - along[:, None] * d[None, :], axis=1)
+        nearest = int(_np.argmin(off))
+        scale = sum(abs(s) for s in obj.matrix_world.to_scale()) / 3.0
+        if off[nearest] * scale > radius * 0.12:
+            raise RuntimeError("the %s view at (%.3f, %.3f) is empty space -- there is no %r "
+                               "there to sculpt" % (view, u, v, obj.name))
+        location = mathutils.Vector(coords[nearest])
+        depth = "surface"
+    if depth == "middle":
+        # Walk on through the model to where the ray leaves it.
+        exit_point, step = location, radius * 1e-4
+        for _ in range(64):
+            again, further, _n, _i = obj.ray_cast(exit_point + local_direction * step,
+                                                  local_direction)
+            if not again:
+                break
+            exit_point = further
+            if _n.dot(local_direction) > 0:      # a face looking away: the far side
+                break
+        location = (location + exit_point) / 2.0
     return obj.matrix_world @ location
 '''.replace("__ARIA_VIEWS__", repr(PREVIEW_VIEWS))
 
@@ -3439,7 +3489,9 @@ def sculpt_stroke(params: Dict[str, Any]) -> str:
     surface -- or [u, v] on an orthographic preview picture (0-1 across,
     0-1 down) with `view` naming which: front, back, left, right, top,
     bottom. `frame` must match what that preview framed: "scene" (its
-    default) or "object".
+    default) or "object". depth "middle" places a view point halfway
+    through the model instead of on its near surface -- for moving the
+    outline, where the near surface is the wrong place to grab.
 
     radius in metres, strength 0-1 (negative inverts), falloff smooth /
     sphere / linear / sharp / constant -- keep grab on smooth: sphere's
@@ -3460,7 +3512,15 @@ def sculpt_stroke(params: Dict[str, Any]) -> str:
     frame = str(params.get("frame") or "scene").strip().lower()
     if frame not in ("scene", "object"):
         raise BadValue(f"{params.get('frame')!r} is not a framing. Use scene or object.")
+    depth = str(params.get("depth") or "surface").strip().lower()
+    if depth not in ("surface", "middle"):
+        raise BadValue(f"{params.get('depth')!r} is not a depth. Use surface or middle.")
     front_only = "False" if params.get("front_only") is False else "True"
+    # A point snaps onto the nearest surface unless told not to. Not for
+    # a point placed inside the model on purpose -- the middle of an
+    # outline: from in there the nearest surface can be the face rather
+    # than the edge, and a grab meant for the outline dents the face.
+    snap = "False" if params.get("snap") is False else "True"
     strength = _num(params.get("strength"), 0.5)
     if params.get("invert"):
         strength = f"-({strength})"
@@ -3478,13 +3538,13 @@ def sculpt_stroke(params: Dict[str, Any]) -> str:
             f'_raw = {points}\n'
             f'if _view is not None:\n'
             f'    _framing = [_target] if {frame!r} == "object" else _aria_targets([])\n'
-            f'    _world = [_aria_view_point(_target, _framing, _view, p[0], p[1]) for p in _raw]\n'
+            f'    _world = [_aria_view_point(_target, _framing, _view, p[0], p[1], {depth!r}) for p in _raw]\n'
             f'else:\n'
             f'    _world = [mathutils.Vector(p) for p in _raw]\n'
             f'_tree = _sculpt.tree()\n'
             f'_path = []\n'
             f'for _p in _world:\n'
-            f'    _near = _tree.find_nearest(_inverse @ _p)\n'
+            f'    _near = _tree.find_nearest(_inverse @ _p) if {snap} else (None,)\n'
             f'    _path.append(_near[0] if _near[0] is not None else _inverse @ _p)\n'
             f'_dabs = _aria_resample([tuple(p) for p in _path], _radius * {_num(params.get("spacing"), 0.25)})\n'
             f'_offset = _inverse.to_3x3() @ mathutils.Vector({_vector(params.get("offset"))})\n'
@@ -3513,6 +3573,413 @@ def sculpt_stroke(params: Dict[str, Any]) -> str:
             f'largest_move=round(float(_shift.max()) * _scale, 5), '
             f'modifiers=[m.type for m in _target.modifiers])')
 
+
+# ======================================================
+# Checking against a reference
+#
+# A render says what the model looks like. It does not say whether that
+# is what was wanted -- that needs the thing that was wanted, beside it.
+# This lines a reference picture up with a render of the same view and
+# says, in pixels and in strokes, where they differ.
+#
+# OUTLINES, DELIBERATELY
+# The comparison is of silhouettes: where there is model and where
+# there is not. Shading and colour differ between a painting and a
+# clay render for reasons that have nothing to do with shape, and a
+# score that mixed them would reward matching the lighting. The
+# outline from the front and the side is what a sculptor blocks in
+# first, and it is what can be measured honestly.
+#
+# LINED UP BY HEIGHT
+# A reference never shares the render's framing, so both outlines are
+# scaled to the same height and centred. Proportions then compare --
+# too wide, jaw too long -- and absolute size does not, which is right:
+# a drawing has no size.
+# ======================================================
+
+_COMPARE_KIT = '''
+def _aria_load_pixels(path):
+    """An image as rows top-down, (height, width, 4) floats."""
+    picture = bpy.data.images.load(path, check_existing=False)
+    try:
+        w, h = picture.size
+        if not w or not h:
+            raise RuntimeError("%r is not an image Blender can read" % path)
+        pixels = _np.empty(w * h * 4, dtype=_np.float32)
+        picture.pixels.foreach_get(pixels)
+    finally:
+        bpy.data.images.remove(picture)
+    return pixels.reshape(h, w, 4)[::-1].copy()
+
+
+def _aria_save_pixels(pixels, path):
+    h, w = pixels.shape[:2]
+    image = bpy.data.images.new("ARIA_Compare", w, h, alpha=False)
+    try:
+        image.pixels.foreach_set(pixels[::-1].astype(_np.float32).ravel())
+        image.filepath_raw = path
+        image.file_format = "PNG"
+        image.save()
+    finally:
+        bpy.data.images.remove(image)
+
+
+def _aria_silhouette(pixels):
+    """Where the subject is: alpha if the picture has it, else not-background.
+
+    Background is read from the border, which is where a turnaround
+    sheet or a character on a plain backdrop keeps it.
+    """
+    alpha = pixels[..., 3]
+    if alpha.min() < 0.5 < alpha.max():
+        return alpha > 0.5
+    rgb = pixels[..., :3]
+    border = _np.concatenate([rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]])
+    background = _np.median(border, axis=0)
+    return _np.sqrt(((rgb - background) ** 2).sum(axis=-1)) > 0.12
+
+
+def _aria_box(mask):
+    rows, cols = _np.any(mask, axis=1), _np.any(mask, axis=0)
+    if not rows.any():
+        return None
+    y0, y1 = _np.nonzero(rows)[0][[0, -1]]
+    x0, x1 = _np.nonzero(cols)[0][[0, -1]]
+    return int(x0), int(x1), int(y0), int(y1)
+
+
+def _aria_blobs(mask, cell):
+    """Connected patches of a mask, found on a coarse grid.
+
+    Coarse on purpose: a one-pixel sliver along an edge is anti-
+    aliasing, not a difference anybody would sculpt.
+    """
+    g = mask.shape[0] // cell
+    coarse = mask[:g * cell, :g * cell].reshape(g, cell, g, cell).mean(axis=(1, 3)) > 0.3
+    seen = _np.zeros_like(coarse)
+    blobs = []
+    for start in zip(*_np.nonzero(coarse)):
+        if seen[start]:
+            continue
+        stack, cells = [start], []
+        seen[start] = True
+        while stack:
+            y, x = stack.pop()
+            cells.append((y, x))
+            for ny, nx in ((y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)):
+                if 0 <= ny < g and 0 <= nx < g and coarse[ny, nx] and not seen[ny, nx]:
+                    seen[ny, nx] = True
+                    stack.append((ny, nx))
+        ys = _np.array([c[0] for c in cells], dtype=_np.float64)
+        xs = _np.array([c[1] for c in cells], dtype=_np.float64)
+        blobs.append({"cells": len(cells), "y": (ys.mean() + 0.5) * cell,
+                      "x": (xs.mean() + 0.5) * cell})
+    return sorted(blobs, key=lambda b: -b["cells"]), coarse
+def _aria_line_up(view, size, reference_path, render_file):
+    """Render the model from a view and line the reference up with it.
+
+    The render is clay on a transparent background, framed exactly as
+    render_preview frames it. The reference is scaled to the model's
+    height, top edges and centres together. Everything a comparison or
+    a fit needs is returned: both outlines on the same pixel grid, and
+    the camera that maps that grid back into the scene.
+    """
+    scene = bpy.context.scene
+    if not _os.path.isfile(reference_path):
+        raise RuntimeError("there is no reference picture at %s" % reference_path)
+    restore = _AriaRestore()
+    try:
+        targets = _aria_targets([])
+        points, centre, radius = _aria_bounds(targets)
+        restore.set(scene.render, "engine", _aria_engine("WORKBENCH"))
+        _aria_clay(restore, scene)
+        for key, value in (("resolution_x", size), ("resolution_y", size),
+                           ("resolution_percentage", 100), ("film_transparent", True),
+                           ("filepath", render_file)):
+            restore.set(scene.render, key, value)
+        restore.set(scene.render.image_settings, "file_format", "PNG")
+        restore.set(scene.render.image_settings, "color_mode", "RGBA")
+        camera = restore.made(bpy.data.objects.new(
+            "ARIA_Preview_Camera", bpy.data.cameras.new("ARIA_Preview_Camera")))
+        scene.collection.objects.link(camera)
+        restore.set(scene, "camera", camera)
+        _aria_aim(camera, __ARIA_VIEWS__[view], points, centre, radius, False)
+        ortho = camera.data.ortho_scale
+        basis = camera.rotation_quaternion.to_matrix()
+        right, up = basis.col[0].copy(), basis.col[1].copy()
+        bpy.ops.render.render(write_still=True)
+    finally:
+        restore.undo()
+
+    model_px = _aria_load_pixels(render_file)
+    model = _aria_silhouette(model_px)
+    reference_px = _aria_load_pixels(reference_path)
+    reference = _aria_silhouette(reference_px)
+    mbox, rbox = _aria_box(model), _aria_box(reference)
+    if mbox is None:
+        raise RuntimeError("the model is not in the %s view" % view)
+    if rbox is None:
+        raise RuntimeError("could not find a subject in %s -- give it a plain or "
+                           "transparent background" % reference_path)
+
+    scale = (mbox[3] - mbox[2] + 1) / float(rbox[3] - rbox[2] + 1)
+    mcx, rcx = (mbox[0] + mbox[1]) / 2.0, (rbox[0] + rbox[1]) / 2.0
+    yy, xx = _np.mgrid[0:size, 0:size]
+    fy = (yy - mbox[2]) / scale + rbox[2]
+    fx = (xx - mcx) / scale + rcx
+    inside = (fy >= 0) & (fy < reference.shape[0]) & (fx >= 0) & (fx < reference.shape[1])
+    ry = _np.clip(fy.round().astype(int), 0, reference.shape[0] - 1)
+    rx = _np.clip(fx.round().astype(int), 0, reference.shape[1] - 1)
+    return {
+        "model": model, "model_px": model_px,
+        "reference_px": reference_px,
+        "aligned": reference[ry, rx] & inside, "aligned_px": reference_px[ry, rx],
+        "inside": inside, "mbox": mbox, "rbox": rbox, "scale": scale, "mcx": mcx,
+        "ortho": ortho, "right": right, "up": up, "centre": centre, "targets": targets,
+    }
+
+
+def _aria_vertices_on_picture(obj, line, size):
+    """An object's vertices in the scene, and where each sits on the picture."""
+    seen = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    mesh = seen.to_mesh()
+    co = _np.empty(len(mesh.vertices) * 3, dtype=_np.float64)
+    mesh.vertices.foreach_get("co", co)
+    matrix = _np.array(seen.matrix_world)
+    seen.to_mesh_clear()
+    world = co.reshape(-1, 3) @ matrix[:3, :3].T + matrix[:3, 3]
+    rel = world - _np.array(line["centre"])
+    across = (rel @ _np.array(line["right"]) / line["ortho"] + 0.5) * size
+    down = (0.5 - rel @ _np.array(line["up"]) / line["ortho"]) * size
+    return world, _np.stack([across, down], axis=1)
+
+
+def _aria_extents(mask):
+    """Each row's leftmost and rightmost filled pixel edge, or nan."""
+    filled = mask.any(axis=1)
+    width = mask.shape[1]
+    left = _np.where(filled, mask.argmax(axis=1), _np.nan).astype(_np.float64)
+    right = _np.where(filled, width - mask[:, ::-1].argmax(axis=1), _np.nan).astype(_np.float64)
+    return filled, left, right
+
+
+def _aria_smooth_rows(values, valid, sigma):
+    """A profile smoothed down the rows, over the rows that have one."""
+    reach = max(1, int(sigma * 3))
+    kernel = _np.exp(-0.5 * (_np.arange(-reach, reach + 1) / float(sigma)) ** 2)
+    total = _np.convolve(_np.where(valid, values, 0.0), kernel, mode="same")
+    weight = _np.convolve(valid.astype(_np.float64), kernel, mode="same")
+    return total / _np.maximum(weight, 1e-12)
+'''.replace("__ARIA_VIEWS__", repr(PREVIEW_VIEWS))
+
+
+def compare_reference(params: Dict[str, Any]) -> str:
+    """Line a reference picture up with the model and say where they differ.
+
+    Renders the model from `view` (front, back, left, right, top,
+    bottom -- orthographic, framed as render_preview frames it), scales
+    both outlines to the same height, and writes a three-panel picture
+    to `path`: the reference, the model, and an overlay where GREEN is
+    reference with no model (add here) and RED is model with no
+    reference (take away here).
+
+    Reports a match score (overlap of the outlines, 1.0 = identical),
+    how the proportions differ, and where the sizeable differences are.
+    To close them, fit_to_reference reshapes the whole outline; for a
+    difference that is a feature rather than a proportion -- an ear, a
+    horn -- each one also comes with a gentle grab on `object`.
+
+    reference: the picture's path. A transparent background is read
+    directly; otherwise the background colour is taken from its border,
+    so a plain backdrop works and a busy one does not.
+    """
+    view = _choice(params.get("view"), SCULPT_VIEWS, "front")
+    size = _int(params.get("size"), 512, 128, 2048)
+    target = params.get("object")
+    return (_RENDER_KIT + _SCULPT_KIT + _COMPARE_KIT +
+            f'_out = _aria_folder({_text(params.get("path"))})\n'
+            f'_stem = _os.path.splitext(_out)[0]\n'
+            f'_reference_path = _os.path.abspath({_text(params.get("reference"))})\n'
+            f'_view = {view}\n'
+            f'_size = {size}\n'
+            f'_line = _aria_line_up(_view, _size, _reference_path, _stem + "_model.png")\n'
+            f'_model, _aligned = _line["model"], _line["aligned"]\n'
+            f'_mbox, _rbox, _s = _line["mbox"], _line["rbox"], _line["scale"]\n'
+            f'\n'
+            f'_score = float((_aligned & _model).sum()) / max(float((_aligned | _model).sum()), 1.0)\n'
+            f'_add, _cut = _aligned & ~_model, _model & ~_aligned\n'
+            f'_model_width = _mbox[1] - _mbox[0] + 1\n'
+            f'_reference_width = (_rbox[1] - _rbox[0] + 1) * _s\n'
+            f'_width = (_model_width - _reference_width) / max(_reference_width, 1.0)\n'
+            f'\n'
+            f'# The picture: reference | model | overlay.\n'
+            f'_grey = _np.array([0.22, 0.23, 0.25, 1.0], dtype=_np.float32)\n'
+            f'_ra = _line["aligned_px"][..., 3:4] if _line["reference_px"][..., 3].min() < 0.5 else 1.0\n'
+            f'_panel_ref = _np.where(_line["inside"][..., None], '
+            f'_line["aligned_px"] * _ra + _grey * (1 - _ra), _grey)\n'
+            f'_panel_ref[..., 3] = 1.0\n'
+            f'_a = _line["model_px"][..., 3:4]\n'
+            f'_panel_model = _line["model_px"] * _a + _grey * (1 - _a)\n'
+            f'_panel_model[..., 3] = 1.0\n'
+            f'_panel_over = _panel_model.copy()\n'
+            f'_panel_over[_add] = (0.15, 0.75, 0.25, 1.0)\n'
+            f'_panel_over[_cut] = (0.85, 0.2, 0.2, 1.0)\n'
+            f'_gap = _np.zeros((_size, 4, 4), dtype=_np.float32)\n'
+            f'_gap[..., 3] = 1.0\n'
+            f'_aria_save_pixels(_np.concatenate([_panel_ref, _gap, _panel_model, _gap, _panel_over], '
+            f'axis=1), _out)\n'
+            f'\n'
+            f'# Each sizeable difference, where it is and a gentle stroke toward it.\n'
+            f'_cell = max(2, _size // 128)\n'
+            f'_metres = _line["ortho"] / float(_size)\n'
+            f'_g = _size // _cell\n'
+            f'_mcoarse = _model[:_g * _cell, :_g * _cell].reshape(_g, _cell, _g, _cell).mean(axis=(1, 3)) > 0.5\n'
+            f'_my, _mx = _np.nonzero(_mcoarse)\n'
+            f'_vertex_px = None\n'
+            f'if {_text(target)}:\n'
+            f'    _vertex_world, _vertex_px = _aria_vertices_on_picture(_obj({_text(target)}), _line, _size)\n'
+            f'_differences = []\n'
+            f'for _kind, _mask in (("add", _add), ("take away", _cut)):\n'
+            f'    _blobs, _ = _aria_blobs(_mask, _cell)\n'
+            f'    for _blob in _blobs:\n'
+            f'        _area = _blob["cells"] * _cell * _cell / float(_model.sum())\n'
+            f'        if _area < 0.004:\n'
+            f'            continue\n'
+            f'        _cy, _cx = _blob["y"], _blob["x"]\n'
+            f'        _entry = {{"kind": _kind, "area": round(_area, 4), '
+            f'"at": [round(_cx / _size, 3), round(_cy / _size, 3)]}}\n'
+            f'        if _vertex_px is not None and len(_my):\n'
+            f'            if _kind == "add":\n'
+            f'                _pick = _np.argmin((_my * _cell - _cy) ** 2 + (_mx * _cell - _cx) ** 2)\n'
+            f'                _ey, _ex = (_my[_pick] + 0.5) * _cell, (_mx[_pick] + 0.5) * _cell\n'
+            f'            else:\n'
+            f'                _fy, _fx = _np.nonzero(~_mcoarse)\n'
+            f'                _pick = _np.argmin((_fy * _cell - _cy) ** 2 + (_fx * _cell - _cx) ** 2)\n'
+            f'                _ey, _ex = (_fy[_pick] + 0.5) * _cell, (_fx[_pick] + 0.5) * _cell\n'
+            f'            # From just inside the edge, toward the difference.\n'
+            f'            _toward = _np.array([(_mbox[2] + _mbox[3]) / 2.0 - _ey, _line["mcx"] - _ex])\n'
+            f'            _toward = _toward / max(_np.linalg.norm(_toward), 1e-9)\n'
+            f'            _gy, _gx = _ey + _toward[0] * _cell * 2, _ex + _toward[1] * _cell * 2\n'
+            f'            _dy, _dx = (_cy - _ey) * 2.0, (_cx - _ex) * 2.0\n'
+            f'            _shift = (_line["right"] * (_dx * _metres)) - (_line["up"] * (_dy * _metres))\n'
+            f'            _reach = max(_math.sqrt(_blob["cells"] * _cell * _cell / _math.pi) * _metres * 2.5, '
+            f'_metres * _cell * 6)\n'
+            f'            # Pushing the middle of a dome inward makes a dent, and a\n'
+            f'            # dent does not narrow an outline much -- measured: bowls\n'
+            f'            # in a face, round after round, while the score still rose.\n'
+            f'            # So the stroke is gentle, and proportions are left to\n'
+            f'            # fit_to_reference, which cannot dent anything.\n'
+            f'            if _shift.length > _reach * 0.25:\n'
+            f'                _shift = _shift * (_reach * 0.25 / _shift.length)\n'
+            f'            # The middle of every vertex the picture shows at that spot:\n'
+            f'            # a ray just off an edge misses, and one grazing a flattened\n'
+            f'            # side lands anywhere on the flat -- the face included.\n'
+            f'            _near = ((_vertex_px[:, 0] - _gx) ** 2 + (_vertex_px[:, 1] - _gy) ** 2) < (_cell * 3.0) ** 2\n'
+            f'            if _near.any():\n'
+            f'                _mid = _vertex_world[_near].mean(axis=0)\n'
+            f'                _point = [[round(float(_mid[0]), 4), round(float(_mid[1]), 4), round(float(_mid[2]), 4)]]\n'
+            f'                _entry["strokes"] = [{{"action": "sculpt_stroke", "params": {{'
+            f'"object": {_text(target)}, "brush": "grab", "snap": False, "points": _point, '
+            f'"radius": round(_reach, 4), '
+            f'"offset": [round(_shift.x, 4), round(_shift.y, 4), round(_shift.z, 4)]}}}}]\n'
+            f'        _differences.append(_entry)\n'
+            f'_differences = sorted(_differences, key=lambda d: -d["area"])[:{_int(params.get("limit"), 6, 1, 20)}]\n'
+            f'_proportions = []\n'
+            f'if abs(_width) > 0.03:\n'
+            f'    _proportions.append("the model is %d%% too %s for its height" % '
+            f'(round(abs(_width) * 100), "wide" if _width > 0 else "narrow"))\n'
+            f'_comparison = {{"view": _view, "score": round(_score, 4), "picture": _out, '
+            f'"reference": _reference_path, "proportions": _proportions, '
+            f'"differences": _differences}}\n'
+            f'_RESULT.setdefault("comparisons", []).append(_comparison)\n'
+            f'_RESULT.setdefault("renders", []).append(_out)\n'
+            f'_note("compare_reference", view=_view, score=round(_score, 4), '
+            f'differences=len(_differences))')
+
+
+def fit_to_reference(params: Dict[str, Any]) -> str:
+    """Reshape a model's outline to a reference picture's, slice by slice.
+
+    For each height in the `view`, the model's left and right edges are
+    moved to the reference's, and every vertex in that slice -- front,
+    back and middle alike -- is stretched or squeezed in proportion.
+    What a lattice fitted to a drawing does, and why it is the tool for
+    proportions: it reshapes whole cross-sections smoothly and cannot
+    dent a surface. The front view sets widths, the side view depths;
+    the two never fight, because each moves vertices along a different
+    axis.
+
+    WHAT IT CANNOT KNOW: two outlines do not say what is in front of
+    what. Ears on a front reference widen the whole slice at ear height,
+    so a head fitted to one grows a flange all round, not two ears --
+    measured, from the three-quarter view. This is the blockout: the
+    proportions. Features that stand off the form are strokes after it.
+
+    The outline is taken as everything visible in the view, so the
+    object should be alone in the scene or clearly the whole outline.
+    amount 0-1 goes part of the way; softness smooths the profile down
+    the height (fraction of the picture) so a jagged drawing does not
+    make a jagged model.
+    """
+    view = _choice(params.get("view"), SCULPT_VIEWS, "front")
+    size = _int(params.get("size"), 512, 128, 2048)
+    return (_RENDER_KIT + _SCULPT_KIT + _COMPARE_KIT +
+            f'_target = _obj({_text(params.get("object"))})\n'
+            f'if _target.type != "MESH":\n'
+            f'    raise RuntimeError("%r is not a mesh" % _target.name)\n'
+            f'if _target.data.shape_keys:\n'
+            f'    raise RuntimeError("%r has shape keys; fitting the base under them would tear them" '
+            f'% _target.name)\n'
+            f'_size = {size}\n'
+            f'_view = {view}\n'
+            f'_work = _aria_folder({_text(params.get("path"))} or '
+            f'_os.path.join(bpy.app.tempdir, "aria_fit.png"))\n'
+            f'_line = _aria_line_up(_view, _size, _os.path.abspath({_text(params.get("reference"))}), '
+            f'_os.path.splitext(_work)[0] + "_model.png")\n'
+            f'_before = float((_line["aligned"] & _line["model"]).sum()) / '
+            f'max(float((_line["aligned"] | _line["model"]).sum()), 1.0)\n'
+            f'_has_m, _ml, _mr = _aria_extents(_line["model"])\n'
+            f'_has_r, _rl, _rr = _aria_extents(_line["aligned"])\n'
+            f'_valid = _has_m & _has_r\n'
+            f'if _valid.sum() < 4:\n'
+            f'    raise RuntimeError("the model and the reference share too few rows to fit")\n'
+            f'_sigma = max(1.0, _size * {_num(params.get("softness"), 0.012)})\n'
+            f'_rows = _np.arange(_size, dtype=_np.float64) + 0.5\n'
+            f'_profile = [_aria_smooth_rows(_p, _valid, _sigma) for _p in (_ml, _mr, _rl, _rr)]\n'
+            f'_known = _rows[_valid]\n'
+            f'\n'
+            f'# Every vertex of the object, where it sits on the picture.\n'
+            f'_mesh = _target.data\n'
+            f'_co = _np.empty(len(_mesh.vertices) * 3, dtype=_np.float64)\n'
+            f'_mesh.vertices.foreach_get("co", _co)\n'
+            f'_co = _co.reshape(-1, 3)\n'
+            f'_matrix = _np.array(_target.matrix_world)\n'
+            f'_world = _co @ _matrix[:3, :3].T + _matrix[:3, 3]\n'
+            f'_rel = _world - _np.array(_line["centre"])\n'
+            f'_right = _np.array(_line["right"])\n'
+            f'_across = (_rel @ _right / _line["ortho"] + 0.5) * _size\n'
+            f'_down = (0.5 - _rel @ _np.array(_line["up"]) / _line["ortho"]) * _size\n'
+            f'_at = [_np.interp(_down, _known, _p[_valid]) for _p in _profile]\n'
+            f'_mL, _mR, _rL, _rR = _at\n'
+            f'_span = _mR - _mL\n'
+            f'_t = (_across - _mL) / _np.maximum(_span, 1e-9)\n'
+            f'_new = _rL + _t * (_rR - _rL)\n'
+            f'# Rows above and below what both pictures cover are left alone,\n'
+            f'# faded in over a few rows rather than cut.\n'
+            f'_edge = _sigma * 2.0\n'
+            f'_weight = _np.clip((_down - _known.min()) / _edge + 1.0, 0.0, 1.0) * '
+            f'_np.clip((_known.max() - _down) / _edge + 1.0, 0.0, 1.0)\n'
+            f'_weight = _weight * (_span > 2.0) * {_num(params.get("amount"), 1.0)}\n'
+            f'_shift_px = (_new - _across) * _weight\n'
+            f'_world = _world + _np.outer(_shift_px / _size * _line["ortho"], _right)\n'
+            f'_inverse = _np.linalg.inv(_matrix)\n'
+            f'_local = _world @ _inverse[:3, :3].T + _inverse[:3, 3]\n'
+            f'_mesh.vertices.foreach_set("co", _local.ravel())\n'
+            f'_mesh.update()\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("fit_to_reference", object=_target.name, view=_view, '
+            f'score_before=round(_before, 4), '
+            f'largest_move=round(float(_np.abs(_shift_px).max() / _size * _line["ortho"]), 4))')
 
 TEMPLATES = {
     "apply_transforms": apply_transforms,
@@ -3603,6 +4070,8 @@ TEMPLATES = {
     "sculpt_brush": sculpt_brush,
     "sculpt_stroke": sculpt_stroke,
     "sculpt_ready": sculpt_ready,
+    "compare_reference": compare_reference,
+    "fit_to_reference": fit_to_reference,
     "enable_dyntopo": enable_dyntopo,
     "apply_multires": apply_multires,
     # export
