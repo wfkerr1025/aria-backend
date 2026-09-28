@@ -155,6 +155,20 @@ def pick_rig(scene: dict, wanted: Optional[str] = None) -> tuple:
     return rig["name"], re.sub(r"_Rig$|_LOD\d+$", "", base)
 
 
+def _meshes_under(scene: dict, root: str) -> List[str]:
+    """The root and every mesh below it, LOD0 first so LODs share its bake."""
+    objects = (scene or {}).get("objects") or []
+    parent = {o["name"]: o.get("parent") for o in objects}
+    def under(name):
+        while name:
+            if name == root:
+                return True
+            name = parent.get(name)
+        return False
+    found = [o["name"] for o in objects if o.get("type") == "MESH" and under(o["name"])]
+    return sorted(found, key=lambda n: (not n.endswith("_LOD0"), n))
+
+
 def pick_prop(scene: dict, wanted: Optional[str] = None) -> tuple:
     """A game-ready model with no skeleton: its <Name>_Game group -- or (None, reason)."""
     objects = (scene or {}).get("objects") or []
@@ -163,6 +177,11 @@ def pick_prop(scene: dict, wanted: Optional[str] = None) -> tuple:
     if wanted:
         stem = re.sub(r"_Game$|_LOD\d+$|_Sculpt$", "", wanted)
         games = [o for o in games if o["name"].lower() == f"{stem}_game".lower()] or games
+        # A model named outright is sent as it is: "send the WoodBall to Unity".
+        single = next((o for o in objects if o["name"].lower() == wanted.lower()
+                       and o.get("type") == "MESH" and not o.get("parent")), None)
+        if single is not None and not any(g["name"].lower() == f"{stem}_game".lower() for g in games):
+            return single["name"], single["name"]
     if not games:
         return None, ("nothing in the scene is game-ready or rigged -- say \"make it game ready\" "
                       "or \"rig him\" first")
@@ -172,10 +191,10 @@ def pick_prop(scene: dict, wanted: Optional[str] = None) -> tuple:
     return games[0]["name"], games[0]["name"][:-len("_Game")]
 
 
-def has_something_to_send(scene: dict) -> bool:
-    """A skeleton, or a game-ready model -- what "send it to Unity" means here."""
+def has_something_to_send(scene: dict, wanted: Optional[str] = None) -> bool:
+    """A skeleton, a game-ready model, or a model named outright."""
     objects = (scene or {}).get("objects") or []
-    return any(o.get("type") == "ARMATURE" for o in objects) or pick_prop(scene)[0] is not None
+    return any(o.get("type") == "ARMATURE" for o in objects) or pick_prop(scene, wanted)[0] is not None
 
 
 # ======================================================
@@ -277,8 +296,15 @@ def send(session, *, project: Optional[Path] = None, rig: Optional[str] = None,
                "preview_clips": list(preview_clips)}
     sidecar_path = folder / f"{name}.aria.json"
     sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
-    exported = session.run([{"action": "export_fbx", "params": {
-        "objects": [root], "path": str(fbx)}}], preview=None)
+    # Unity cannot read node patterns or pictures laid on in object space:
+    # those are baked to images on the UVs first, in the same Blender run.
+    meshes = _meshes_under(found, root)
+    work: List[Dict[str, Any]] = []
+    if meshes:
+        work.append({"action": "bake_material", "params": {
+            "objects": meshes, "only_if_needed": True, "folder": str(folder / "baked")}})
+    work.append({"action": "export_fbx", "params": {"objects": [root], "path": str(fbx)}})
+    exported = session.run(work, preview=None)
     if not exported.get("success"):
         return {"success": False, "text": "The export failed, so nothing reached Unity: "
                                           + str(exported.get("error"))}

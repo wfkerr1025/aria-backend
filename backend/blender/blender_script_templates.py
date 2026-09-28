@@ -1955,6 +1955,376 @@ def bake_texture(params: Dict[str, Any]) -> str:
             f'_note("bake_texture", object=_target.name, image=_img.name, kind={kind})')
 
 
+# ======================================================
+# Materials that look like something: procedural, projected, baked
+# ======================================================
+
+MATERIAL_KINDS = ("wood", "metal", "stone", "cloth", "leather", "gold")
+PROJECTIONS = ("box", "front", "uv")
+
+_MATERIAL_KIT = r'''
+def _mk_tree(name):
+    mat = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+    tree = mat.node_tree
+    for node in list(tree.nodes):
+        if node.type not in ("BSDF_PRINCIPLED", "OUTPUT_MATERIAL"):
+            tree.nodes.remove(node)
+    bsdf = next(n for n in tree.nodes if n.type == "BSDF_PRINCIPLED")
+    for link in list(tree.links):
+        if link.to_node == bsdf:
+            tree.links.remove(link)
+    return mat, tree, bsdf
+
+
+def _mk_node(tree, kind, x, y, **values):
+    node = tree.nodes.new(kind)
+    node.location = (x, y)
+    for key, value in values.items():
+        if key in node.inputs:
+            node.inputs[key].default_value = value
+        else:
+            setattr(node, key, value)
+    return node
+
+
+def _mk_ramp(tree, x, y, stops):
+    ramp = _mk_node(tree, "ShaderNodeValToRGB", x, y)
+    elements = ramp.color_ramp.elements
+    while len(elements) < len(stops):
+        elements.new(0.5)
+    for element, (position, colour) in zip(elements, stops):
+        element.position = position
+        element.color = (colour[0], colour[1], colour[2], 1.0)
+    return ramp
+
+
+def _mk_shade(colour, factor):
+    return tuple(max(0.0, min(1.0, c * factor)) for c in colour)
+
+
+def _mk_coords(tree, scale):
+    coord = _mk_node(tree, "ShaderNodeTexCoord", -1400, 0)
+    mapping = _mk_node(tree, "ShaderNodeMapping", -1200, 0)
+    mapping.inputs["Scale"].default_value = scale
+    tree.links.new(coord.outputs["Object"], mapping.inputs["Vector"])
+    return mapping.outputs["Vector"]
+
+
+def _mk_bump(tree, height, strength, bsdf):
+    bump = _mk_node(tree, "ShaderNodeBump", -300, -400, Strength=strength, Distance=0.02)
+    tree.links.new(height, bump.inputs["Height"])
+    tree.links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+
+
+def _mk_procedural(name, kind, colour, scale):
+    mat, tree, bsdf = _mk_tree(name)
+    L = tree.links.new
+    s = float(scale)
+    if kind == "wood":
+        base = colour or (0.36, 0.2, 0.09)
+        vec = _mk_coords(tree, (s, s, s * 6.0))
+        rings = _mk_node(tree, "ShaderNodeTexWave", -1000, 100, wave_type="RINGS", Scale=2.0,
+                         Distortion=6.0, Detail=3.0)
+        grain = _mk_node(tree, "ShaderNodeTexNoise", -1000, -150, Scale=60.0, Detail=4.0)
+        L(vec, rings.inputs["Vector"]); L(vec, grain.inputs["Vector"])
+        mix = _mk_node(tree, "ShaderNodeMath", -800, 0, operation="MULTIPLY")
+        L(rings.outputs["Fac"], mix.inputs[0]); L(grain.outputs["Fac"], mix.inputs[1])
+        ramp = _mk_ramp(tree, -600, 100, [(0.0, _mk_shade(base, 0.55)), (0.45, base), (1.0, _mk_shade(base, 1.45))])
+        L(mix.outputs["Value"], ramp.inputs["Fac"])
+        L(ramp.outputs["Color"], bsdf.inputs["Base Color"])
+        bsdf.inputs["Roughness"].default_value = 0.6
+        _mk_bump(tree, mix.outputs["Value"], 0.15, bsdf)
+    elif kind in ("metal", "gold"):
+        base = colour or ((1.0, 0.77, 0.34) if kind == "gold" else (0.62, 0.63, 0.66))
+        vec = _mk_coords(tree, (s, s, s * (1.0 if kind == "gold" else 25.0)))
+        noise = _mk_node(tree, "ShaderNodeTexNoise", -1000, -100, Scale=12.0 if kind == "metal" else 4.0,
+                         Detail=6.0)
+        L(vec, noise.inputs["Vector"])
+        # Gold is polished: a narrow roughness range, or it came out blotchy.
+        spread = ((0.18, 0.42) if kind == "metal" else (0.2, 0.28))
+        rough = _mk_ramp(tree, -700, -100, [(0.3, (spread[0],) * 3), (0.7, (spread[1],) * 3)])
+        L(noise.outputs["Fac"], rough.inputs["Fac"])
+        L(rough.outputs["Color"], bsdf.inputs["Roughness"])
+        bsdf.inputs["Base Color"].default_value = (base[0], base[1], base[2], 1.0)
+        bsdf.inputs["Metallic"].default_value = 1.0
+        _mk_bump(tree, noise.outputs["Fac"], 0.05, bsdf)
+    elif kind == "stone":
+        base = colour or (0.42, 0.4, 0.37)
+        vec = _mk_coords(tree, (s, s, s))
+        cells = _mk_node(tree, "ShaderNodeTexVoronoi", -1000, 100, Scale=6.0)
+        noise = _mk_node(tree, "ShaderNodeTexNoise", -1000, -150, Scale=25.0, Detail=8.0)
+        L(vec, cells.inputs["Vector"]); L(vec, noise.inputs["Vector"])
+        both = _mk_node(tree, "ShaderNodeMath", -800, 0, operation="ADD")
+        L(cells.outputs["Distance"], both.inputs[0]); L(noise.outputs["Fac"], both.inputs[1])
+        ramp = _mk_ramp(tree, -600, 100, [(0.2, _mk_shade(base, 0.6)), (0.6, base), (1.0, _mk_shade(base, 1.3))])
+        L(both.outputs["Value"], ramp.inputs["Fac"])
+        L(ramp.outputs["Color"], bsdf.inputs["Base Color"])
+        bsdf.inputs["Roughness"].default_value = 0.85
+        _mk_bump(tree, both.outputs["Value"], 0.4, bsdf)
+    elif kind == "cloth":
+        base = colour or (0.45, 0.12, 0.1)
+        vec = _mk_coords(tree, (s * 40.0, s * 40.0, s * 40.0))
+        warp = _mk_node(tree, "ShaderNodeTexWave", -1000, 100, bands_direction="X", Scale=1.0, Distortion=0.3)
+        weft = _mk_node(tree, "ShaderNodeTexWave", -1000, -150, bands_direction="Z", Scale=1.0, Distortion=0.3)
+        L(vec, warp.inputs["Vector"]); L(vec, weft.inputs["Vector"])
+        weave = _mk_node(tree, "ShaderNodeMath", -800, 0, operation="MULTIPLY")
+        L(warp.outputs["Fac"], weave.inputs[0]); L(weft.outputs["Fac"], weave.inputs[1])
+        ramp = _mk_ramp(tree, -600, 100, [(0.0, _mk_shade(base, 0.7)), (1.0, _mk_shade(base, 1.15))])
+        L(weave.outputs["Value"], ramp.inputs["Fac"])
+        L(ramp.outputs["Color"], bsdf.inputs["Base Color"])
+        bsdf.inputs["Roughness"].default_value = 0.92
+        if "Sheen Weight" in bsdf.inputs:
+            bsdf.inputs["Sheen Weight"].default_value = 0.4
+        _mk_bump(tree, weave.outputs["Value"], 0.2, bsdf)
+    elif kind == "leather":
+        base = colour or (0.3, 0.16, 0.08)
+        vec = _mk_coords(tree, (s, s, s))
+        pores = _mk_node(tree, "ShaderNodeTexVoronoi", -1000, 100, Scale=120.0)
+        creases = _mk_node(tree, "ShaderNodeTexNoise", -1000, -150, Scale=8.0, Detail=10.0)
+        L(vec, pores.inputs["Vector"]); L(vec, creases.inputs["Vector"])
+        both = _mk_node(tree, "ShaderNodeMath", -800, 0, operation="MULTIPLY")
+        L(pores.outputs["Distance"], both.inputs[0]); L(creases.outputs["Fac"], both.inputs[1])
+        ramp = _mk_ramp(tree, -600, 100, [(0.0, _mk_shade(base, 0.65)), (0.5, base), (1.0, _mk_shade(base, 1.25))])
+        L(creases.outputs["Fac"], ramp.inputs["Fac"])
+        L(ramp.outputs["Color"], bsdf.inputs["Base Color"])
+        bsdf.inputs["Roughness"].default_value = 0.55
+        _mk_bump(tree, both.outputs["Value"], 0.25, bsdf)
+    mat["aria_material"] = kind
+    return mat
+
+
+def _mk_assign(obj, mat):
+    if obj.type != "MESH":
+        raise RuntimeError("%r is a %s -- materials go on meshes" % (obj.name, obj.type))
+    obj.data.materials.clear()
+    obj.data.materials.append(mat)
+
+
+def _mk_image(name, image_path, projection, scale, blend):
+    mat, tree, bsdf = _mk_tree(name)
+    image = bpy.data.images.load(image_path, check_existing=True)
+    texture = _mk_node(tree, "ShaderNodeTexImage", -600, 100)
+    texture.image = image
+    texture.label = "Color"
+    if projection == "uv":
+        coord = _mk_node(tree, "ShaderNodeTexCoord", -1100, 0)
+        mapping = _mk_node(tree, "ShaderNodeMapping", -900, 0)
+        mapping.inputs["Scale"].default_value = (scale, scale, scale)
+        tree.links.new(coord.outputs["UV"], mapping.inputs["Vector"])
+    elif projection == "box":
+        texture.projection = "BOX"
+        texture.projection_blend = blend
+        coord = _mk_node(tree, "ShaderNodeTexCoord", -1100, 0)
+        mapping = _mk_node(tree, "ShaderNodeMapping", -900, 0)
+        mapping.inputs["Scale"].default_value = (scale, scale, scale)
+        tree.links.new(coord.outputs["Object"], mapping.inputs["Vector"])
+    else:
+        # From the front (-Y): X across, Z up, fitted to the object's box --
+        # a painted face lands on the face, whatever the UVs are.
+        coord = _mk_node(tree, "ShaderNodeTexCoord", -1100, 0)
+        mapping = _mk_node(tree, "ShaderNodeMapping", -900, 0)
+        mapping.inputs["Rotation"].default_value = (-1.5707963, 0.0, 0.0)   # up the picture = up the model
+        tree.links.new(coord.outputs["Generated"], mapping.inputs["Vector"])
+    tree.links.new(mapping.outputs["Vector"], texture.inputs["Vector"])
+    tree.links.new(texture.outputs["Color"], bsdf.inputs["Base Color"])
+    bsdf.inputs["Roughness"].default_value = 0.7
+    mat["aria_material"] = "image:" + projection
+    return mat
+
+
+_MK_PROCEDURAL = {"TEX_NOISE", "TEX_WAVE", "TEX_VORONOI", "TEX_MUSGRAVE", "TEX_MAGIC", "TEX_BRICK",
+                  "TEX_CHECKER", "TEX_GRADIENT", "TEX_WHITE_NOISE", "TEX_GABOR"}
+
+
+def _mk_needs_bake(mat):
+    """Whether Unity could not draw this: node patterns, or a picture laid on in
+    object space rather than by the UVs."""
+    if mat is None or not mat.node_tree:
+        return False
+    for node in mat.node_tree.nodes:
+        if node.type in _MK_PROCEDURAL:
+            return True
+        if node.type == "TEX_IMAGE" and (node.projection != "FLAT" or any(
+                link.from_socket.name in ("Object", "Generated") for link in node.inputs["Vector"].links)):
+            return True
+        if node.type == "MAPPING" and any(link.from_socket.name in ("Object", "Generated")
+                                          for link in node.inputs["Vector"].links):
+            return True
+    return False
+
+
+def _mk_bake_all(objects, size, folder, only_if_needed):
+    """Bake each distinct material once; everything that wore it wears the result."""
+    done, notes = {}, []
+    for obj in objects:
+        if obj.type != "MESH" or not obj.data.materials:
+            continue
+        source = obj.data.materials[0]
+        if source is None:
+            continue
+        if source.name in done:
+            obj.data.materials[0] = done[source.name]
+            continue
+        if only_if_needed and not _mk_needs_bake(source):
+            continue
+        note = _mk_bake(obj, size, folder)
+        done[source.name] = bpy.data.materials[note["material"]]
+        notes.append(note)
+    return notes
+
+
+def _mk_bake(obj, size, folder):
+    """The material as it looks, into images on the UVs, and a material using them."""
+    import os
+    if obj.type != "MESH" or not obj.data.materials or obj.data.materials[0] is None:
+        raise RuntimeError("%r has no material to bake" % obj.name)
+    source = obj.data.materials[0]
+    _active(obj)
+    if not obj.data.uv_layers:
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        bpy.ops.uv.smart_project(angle_limit=1.15, island_margin=0.01)
+        bpy.ops.object.mode_set(mode="OBJECT")
+    os.makedirs(folder, exist_ok=True)
+    scene = bpy.context.scene
+    was = scene.render.engine
+    scene.render.engine = "CYCLES"
+    scene.render.bake.use_selected_to_active = False
+    scene.render.bake.margin = 8
+    made = {}
+    tree = source.node_tree
+    try:
+        for role, kind, data in (("Color", "DIFFUSE", False), ("Normal", "NORMAL", True),
+                                 ("Roughness", "ROUGHNESS", True)):
+            image = bpy.data.images.new("%s_%s" % (obj.name, role.lower()), size, size, alpha=False)
+            image.colorspace_settings.name = "Non-Color" if data else "sRGB"
+            target = tree.nodes.new("ShaderNodeTexImage")
+            target.image = image
+            for node in tree.nodes:
+                node.select = False
+            target.select = True
+            tree.nodes.active = target
+            scene.cycles.samples = 1
+            if kind == "DIFFUSE":
+                scene.render.bake.use_pass_direct = False
+                scene.render.bake.use_pass_indirect = False
+                scene.render.bake.use_pass_color = True
+                bpy.ops.object.bake(type="DIFFUSE", pass_filter={"COLOR"})
+            elif kind == "NORMAL":
+                bpy.ops.object.bake(type="NORMAL", normal_space="TANGENT")
+            else:
+                bpy.ops.object.bake(type=kind)
+            tree.nodes.remove(target)
+            path = os.path.join(folder, "%s_%s.png" % (obj.name, role.lower()))
+            image.filepath_raw = path
+            image.file_format = "PNG"
+            image.save()
+            made[role] = image
+    finally:
+        scene.render.engine = was
+    baked, btree, bsdf = _mk_tree(source.name + "_Baked")
+    colour = _mk_node(btree, "ShaderNodeTexImage", -700, 300)
+    colour.image, colour.label, colour.name = made["Color"], "Color", "Color"
+    btree.links.new(colour.outputs["Color"], bsdf.inputs["Base Color"])
+    rough = _mk_node(btree, "ShaderNodeTexImage", -700, 0)
+    rough.image, rough.label, rough.name = made["Roughness"], "Roughness", "Roughness"
+    btree.links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
+    normal = _mk_node(btree, "ShaderNodeTexImage", -700, -300)
+    normal.image, normal.label, normal.name = made["Normal"], "Normal", "Normal"
+    bump = _mk_node(btree, "ShaderNodeNormalMap", -350, -300)
+    btree.links.new(normal.outputs["Color"], bump.inputs["Color"])
+    btree.links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    bsdf.inputs["Metallic"].default_value = next(
+        (n.inputs["Metallic"].default_value for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), 0.0)
+    baked["aria_material"] = "baked"
+    source.use_fake_user = True          # the node material stays, to go back to
+    obj.data.materials[0] = baked
+    return {"object": obj.name, "from": source.name, "material": baked.name,
+            "maps": {r: bpy.path.abspath(i.filepath_raw) for r, i in made.items()}}
+'''
+
+
+def procedural_material(params: Dict[str, Any]) -> str:
+    """A material that looks like what it is: wood, metal, stone, cloth, leather, gold.
+
+    Built from Blender's own texture nodes -- rings and grain for wood,
+    cells for stone, a woven warp and weft for cloth, pores and creases
+    for leather, brushed streaks for metal -- with a bump from the same
+    pattern, so light catches the grain. Laid on in object space, so no
+    UVs are needed to look right in Blender. `color` tints it (the pattern
+    keeps its light and dark); `scale` makes the pattern finer or coarser.
+
+    Unity cannot read node trees: bake_material turns this into images,
+    and sending to Unity does that on its own.
+    """
+    kind = _choice(params.get("kind"), MATERIAL_KINDS, "wood").strip("'\"")
+    colour = params.get("color")
+    tint = "None"
+    if colour is not None:
+        values = [float(c) for c in list(colour)[:3]]
+        if len(values) != 3:
+            raise BadValue("color is three numbers, like [0.4, 0.2, 0.1]")
+        tint = repr(tuple(values))
+    target = params.get("object")
+    name = params.get("name") or (f"{target}_{kind.capitalize()}" if target else kind.capitalize())
+    assign = (f'_mk_assign(_obj({_text(target)}), _mat)\n'
+              f'_RESULT["modified"].append({_text(target)})\n') if target else ""
+    return (_MATERIAL_KIT +
+            f'_mat = _mk_procedural({_text(name)}, {kind!r}, {tint}, {_num(params.get("scale"), 1.0)})\n'
+            + assign +
+            f'_note("procedural_material", material=_mat.name, kind={kind!r}, object={_text(target)})')
+
+
+def image_material(params: Dict[str, Any]) -> str:
+    """A picture on a model: box-projected, from the front, or by its UVs.
+
+    box: from all six sides, blended at the corners -- seamless on any
+    shape, the way cloth came out right in the 2026-09-20 experiment.
+    front: straight on from the front, fitted to the model's box -- a
+    painted face lands on the face whatever the UVs. uv: the model's own
+    UVs, for a texture made for them. For Unity, bake_material next.
+    """
+    projection = _choice(params.get("projection"), PROJECTIONS, "box").strip("'\"")
+    target = params.get("object")
+    name = params.get("name") or (f"{target}_Picture" if target else "Picture")
+    assign = (f'_mk_assign(_obj({_text(target)}), _mat)\n'
+              f'_RESULT["modified"].append({_text(target)})\n') if target else ""
+    return (_MATERIAL_KIT +
+            f'import os as _mk_os\n'
+            f'_img_path = {_text(params.get("image"))}\n'
+            f'if not _mk_os.path.isfile(_img_path):\n'
+            f'    raise RuntimeError("there is no picture at %r" % _img_path)\n'
+            f'_mat = _mk_image({_text(name)}, _img_path, {projection!r}, {_num(params.get("scale"), 1.0)}, '
+            f'{_num(params.get("blend"), 0.2)})\n'
+            + assign +
+            f'_note("image_material", material=_mat.name, projection={projection!r}, object={_text(target)})')
+
+
+def bake_material(params: Dict[str, Any]) -> str:
+    """Bake a model's material into images on its UVs -- what Unity can use.
+
+    Colour, a tangent normal map (the bump) and roughness, as PNGs in
+    `folder`, and a material made of them in its place. The node
+    material is kept (a fake user) to go back to. UVs are made if the
+    model has none.
+
+    objects: several -- each distinct material is baked once and every
+    object that wore it wears the result (LODs share one set of maps).
+    only_if_needed: skip materials Unity can already draw (images on the
+    UVs); bake node patterns and pictures laid on in object space.
+    """
+    names = params.get("objects") or ([params["object"]] if params.get("object") else [])
+    if not names:
+        raise BadValue("bake_material needs an object (or objects)")
+    return (_MATERIAL_KIT +
+            f'_baked = _mk_bake_all([_obj(n) for n in {_names(names)}], '
+            f'{_int(params.get("size"), 1024, 64, 8192)}, '
+            f'{_text(params.get("folder") or "")} or bpy.path.abspath("//textures"), '
+            f'{"True" if params.get("only_if_needed") else "False"})\n'
+            f'_RESULT["modified"].extend(b["object"] for b in _baked)\n'
+            f'_note("bake_material", baked=_baked)')
+
+
 def set_shader_node(params: Dict[str, Any]) -> str:
     """Set one named input on a material's Principled BSDF.
 
@@ -6610,6 +6980,9 @@ TEMPLATES = {
     "rename_object": rename_object,
     "flatten_hierarchy": flatten_hierarchy,
     "t_pose": t_pose,
+    "procedural_material": procedural_material,
+    "image_material": image_material,
+    "bake_material": bake_material,
     "copy_landmarks": copy_landmarks,
     "voxel_remesh": voxel_remesh,
     "stamp_detail": stamp_detail,

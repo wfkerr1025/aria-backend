@@ -162,7 +162,7 @@ class Exporting(Scene):
 
     def run(self, actions, **_):
         self.ran.append(actions)
-        Path(actions[0]["params"]["path"]).write_bytes(b"fbx")
+        Path(next(a for a in actions if a["action"] == "export_fbx")["params"]["path"]).write_bytes(b"fbx")
         return {"success": True, "notes": [{"step": "export_fbx", "maps": self.maps}]}
 
 

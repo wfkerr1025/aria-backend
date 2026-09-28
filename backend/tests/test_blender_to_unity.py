@@ -102,7 +102,7 @@ class FakeSession:
 
     def run(self, actions, preview=None):
         self.ran.append(actions)
-        path = Path(actions[0]["params"]["path"])
+        path = Path(next(a for a in actions if a["action"] == "export_fbx")["params"]["path"])
         self.order.append(("fbx", path.parent / f"{path.stem}.aria.json" in list(path.parent.iterdir())))
         path.write_bytes(b"fbx")
         return {"success": True}
@@ -127,7 +127,10 @@ def test_the_sidecar_lands_before_the_model_and_unity_builds_it(projects, monkey
     folder = root / "Assets" / "ARIA" / "Characters" / "Miner_Guy"
     sidecar = json.loads((folder / "Miner_Guy.aria.json").read_text())
     assert sidecar["loop"] == ["Walk", "Idle"]
-    [[export]] = session.ran
+    [[bake, export]] = session.ran
+    # Whatever Unity could not draw is baked first, in the same run.
+    assert bake == {"action": "bake_material", "params": {
+        "objects": ["Body"], "only_if_needed": True, "folder": str(folder / "baked")}}
     assert export == {"action": "export_fbx", "params": {"objects": ["Body_Rig"],
                                                         "path": str(folder / "Miner_Guy.fbx")}}
     assert (root / to_unity.IMPORTER_IN_PROJECT).is_file()

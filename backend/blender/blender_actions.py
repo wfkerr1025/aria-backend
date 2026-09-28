@@ -692,6 +692,12 @@ def answer_request(text: str, *,
     if playable and not mapping._ASKING_ABOUT.match(said) and not mapping._WANTS_EXPLANATION.search(said):
         return _answer_playable(said, session)
 
+    # "Give it a Ludo texture of mossy stone in Blender": names Ludo on
+    # purpose, so the other-tool guard below would refuse it. One credit.
+    if (blender_session.LUDO_TEXTURE.search(said) and mapping.names_blender(said)
+            and not mapping._ASKING_ABOUT.match(said) and not mapping._WANTS_EXPLANATION.search(said)):
+        return {"ran": True, **blender_session.answer_ludo_texture(said, session)}
+
     # "Send him to Unity" names no Blender, and needs none: "him" is the
     # character chat has been building. A question about it still is not
     # an instruction.

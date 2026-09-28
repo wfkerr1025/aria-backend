@@ -895,6 +895,110 @@ def _answer_game_ready(said: str, session: "Session") -> dict:
     return outcome
 
 
+# Something already there ("it", "him", "the table", "Wick") made of something, with
+# the material word closing the phrase: "make a wooden table" is a build, and "give
+# him a golden crown" is not a request to gild him.
+_MATERIAL_WORD = re.compile(
+    r"\b(?:make|turn|paint|give|change)\s+(?:it|him|her|them|this|that|the\s+[\w-]+|[A-Z][\w-]*)\b"
+    r"[\w\s'-]{0,25}?\b(wood(?:en)?|metal(?:lic)?|steel|iron|stone|stony|rock|cloth|fabric|leather|"
+    r"gold(?:en)?)\b(?:\s+(?:material|finish|look|texture))?"
+    r"(?=\s*(?:$|[.,!?]|\b(?:in|on|with|and|please)\b))", re.I)
+_KIND_OF = {"wood": "wood", "wooden": "wood", "metal": "metal", "metallic": "metal", "steel": "metal",
+            "iron": "metal", "stone": "stone", "stony": "stone", "rock": "stone", "cloth": "cloth",
+            "fabric": "cloth", "leather": "leather", "gold": "gold", "golden": "gold"}
+TEXTURE_WITH = re.compile(r"\b(?:texture|cover|wrap|paint)\b[\w\s'-]{0,25}?\b(?:with|in|using)\b", re.I)
+LUDO_TEXTURE = re.compile(r"\bludo\b[\w\s'-]{0,20}\btexture\b|\btexture\b[\w\s'-]{0,30}\bludo\b", re.I)
+_TEXTURE_OF = re.compile(r"\btexture\s+(?:of|like|that looks like)\s+(.+?)(?:\s+(?:in|on)\s+(?:my\s+|the\s+open\s+)?blender\b|$)",
+                         re.I)
+
+
+def _material_targets(said: str, session: "Session", verb: str):
+    """The mesh to dress -- and, for a game-ready model, its other LODs too."""
+    target, entry, problem = _pick_model(said, session, verb, verb + " the {}")
+    if problem:
+        return None, problem
+    return [target] + list(entry.get("lod_siblings") or []), None
+
+
+def _answer_material(said: str, kind: str, session: "Session") -> dict:
+    """"Make it wooden in Blender" -- a procedural material, pictured."""
+    from backend.blender.blender_nl_mapping import _find_color
+
+    targets, problem = _material_targets(said, session, "dress")
+    if problem:
+        return problem
+    params: Dict[str, Any] = {"object": targets[0], "kind": kind}
+    colour = _find_color(said)
+    if colour:
+        params["color"] = list(colour)[:3]
+    name = f"{targets[0].rsplit('_LOD', 1)[0]}_{kind.capitalize()}"
+    params["name"] = name
+    actions = [{"action": "procedural_material", "params": params}]
+    actions += [{"action": "assign_material", "params": {"object": t, "material": name}} for t in targets[1:]]
+    outcome = session.run(actions, preview="material", views=["front", "three_quarter"])
+    if outcome.get("success"):
+        outcome["text"] = "\n\n".join([
+            f"Gave {targets[0]} a {kind} material ({name})" + (" in that colour" if colour else "") + ".",
+            picture_markdown(outcome.get("renders") or []),
+            "It is made of Blender's texture nodes; sending it to Unity bakes it into images on "
+            "its UVs first.", session.undo_hint])
+    return outcome
+
+
+def _answer_texture(said: str, picture: str, session: "Session") -> dict:
+    """"Texture it with D:\\Art\\cloth.png" -- box-projected unless told otherwise."""
+    targets, problem = _material_targets(said, session, "texture")
+    if problem:
+        return problem
+    projection = ("front" if re.search(r"\bfrom the front\b|\bon (?:the|his|her|its) (?:face|front)\b", said, re.I)
+                  else "uv" if re.search(r"\b(?:uvs?|its own layout)\b", said, re.I) else "box")
+    name = f"{targets[0].rsplit('_LOD', 1)[0]}_Picture"
+    actions = [{"action": "image_material", "params": {"object": targets[0], "image": picture,
+                                                       "projection": projection, "name": name}}]
+    actions += [{"action": "assign_material", "params": {"object": t, "material": name}} for t in targets[1:]]
+    outcome = session.run(actions, preview="material", views=["front", "three_quarter"])
+    if outcome.get("success"):
+        how = {"box": "from all six sides, blended at the corners",
+               "front": "straight on from the front", "uv": "by its own UVs"}[projection]
+        outcome["text"] = "\n\n".join([
+            f"Put {Path(picture).name} on {targets[0]}, {how}.",
+            picture_markdown(outcome.get("renders") or []), session.undo_hint])
+    return outcome
+
+
+def answer_ludo_texture(said: str, session: "Session") -> dict:
+    """"Give it a Ludo texture of mossy cobblestone in Blender" -- one credit."""
+    from backend.ludo import ludo_actions, ludo_client
+
+    found = _TEXTURE_OF.search(said)
+    subject = found.group(1).strip(" .!") if found else ""
+    if not subject:
+        return {"success": False, "text": "I did not ask Ludo for anything -- say what the texture "
+                                          "should be: \"a Ludo texture of mossy stone\"."}
+    made = ludo_actions.generate_image(f"seamless tileable texture of {subject}, flat, even lighting, "
+                                       f"top-down, no perspective", image_type="texture")
+    if not made.get("success") or not made.get("url"):
+        return {"success": False, "text": f"Ludo did not make the texture: {made.get('error')}"}
+    slug = re.sub(r"[^\w]+", "_", subject).strip("_")[:40] or "texture"
+    raw = session.folder / "ludo" / f"{slug}.download"
+    fetched = ludo_client.download(made["url"], str(raw))
+    if not fetched.get("success"):
+        return {"success": False, "text": f"Ludo made it, but the download failed: {fetched.get('error')}"}
+    picture = session.folder / "ludo" / f"{slug}.png"
+    try:
+        from PIL import Image
+
+        Image.open(raw).convert("RGB").save(picture, "PNG")     # Ludo sends WebP whatever it says
+    except Exception as error:
+        return {"success": False, "text": f"Could not read Ludo's picture: {error}"}
+    outcome = _answer_texture(said, str(picture), session)
+    cost = made.get("cost") or {}
+    if outcome.get("success"):
+        outcome["text"] = (f"Ludo made a {subject} texture ({cost.get('calls', '?')} paid call"
+                           f"{'' if cost.get('calls') == 1 else 's'}; {picture}).\n\n" + outcome["text"])
+    return outcome
+
+
 def answer_send(said: str, session: "Session") -> Optional[dict]:
     """"Send him to Unity" -- the rig and its meshes, set up as a Humanoid there.
 
@@ -905,11 +1009,11 @@ def answer_send(said: str, session: "Session") -> Optional[dict]:
 
     scene = session.describe()
     objects = (scene.get("scene") or {}).get("objects") or []
-    if not blender_to_unity.has_something_to_send(scene.get("scene") or {}):
-        return None
-    project = blender_to_unity.project_named(said)
     names = {o["name"].lower(): o["name"] for o in objects}
     rig = next((names[w.lower()] for w in re.findall(r"[\w.-]+", said) if w.lower() in names), None)
+    if not blender_to_unity.has_something_to_send(scene.get("scene") or {}, rig):
+        return None
+    project = blender_to_unity.project_named(said)
     called = _CALLED.search(said)
     outcome = blender_to_unity.send(session, project=project, rig=rig,
                                     name=called.group(1) if called else None)
@@ -947,6 +1051,11 @@ def answer_command(text: str, session: Optional["Session"] = None, *,
         return {"ran": True, **session.reset()}
     if changes_allowed and _GAME_READY.search(said):
         return {"ran": True, **_answer_game_ready(said, session)}
+    if changes_allowed and TEXTURE_WITH.search(said) and _PICTURE.search(said):
+        return {"ran": True, **_answer_texture(said, _PICTURE.search(said).group(0), session)}
+    material = _MATERIAL_WORD.search(said) if changes_allowed else None
+    if material:
+        return {"ran": True, **_answer_material(said, _KIND_OF[material.group(1).lower()], session)}
     if changes_allowed and SEND_TO_UNITY.search(said):
         sent = answer_send(said, session)
         if sent is not None:
