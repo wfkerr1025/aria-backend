@@ -30,7 +30,7 @@ class FakeBlender:
     """Speaks the add-on's framing; replies as a finished script would."""
 
     def __init__(self, token="t0ken"):
-        self.token, self.seen = token, []
+        self.token, self.seen, self.paused = token, [], False
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen(4)
@@ -53,7 +53,10 @@ class FakeBlender:
                 if request.get("token") != self.token:
                     reply = {"ok": False, "error": "refused: wrong or missing token"}
                 elif request.get("ping"):
-                    reply = {"ok": True, "version": "5.0.1", "file": "C:/work/scene.blend"}
+                    reply = {"ok": True, "version": "5.0.1", "file": "C:/work/scene.blend",
+                             "paused": self.paused, "jobs": 3}
+                elif self.paused:
+                    reply = {"ok": False, "error": "paused in Blender -- press Resume on the ARIA tab"}
                 else:
                     result = json.dumps({"created": ["Box"], "modified": [], "exported": [], "steps": []})
                     reply = {"ok": True, "output": f"{templates.RESULT_OPEN}\n{result}\n{templates.RESULT_CLOSE}\n"}
@@ -76,7 +79,25 @@ def fake(tmp_path, monkeypatch):
 
 def test_status_reports_the_open_blender(fake):
     assert live.status() == {"live": True, "blender": "5.0.1", "file": "C:/work/scene.blend",
+                             "paused": False, "jobs": 3,
                              "text": "Blender 5.0.1 is open and listening, editing C:/work/scene.blend."}
+
+
+def test_a_paused_blender_says_so_and_refuses_work(fake):
+    fake.paused = True
+    assert live.status()["paused"] is True
+    assert "PAUSED" in live.status()["text"]
+    outcome = live.run("AddCube('Box')")
+    assert not outcome["success"] and "Resume" in outcome["error"]
+
+
+def test_the_addon_has_an_aria_tab_and_only_blender_can_resume():
+    source = ADDON.read_text(encoding="utf-8")
+    assert 'bl_category = "ARIA"' in source and 'bl_region_type = "UI"' in source
+    # A paused add-on answers every job with a refusal -- nothing sent
+    # over the socket reaches the code that could un-pause it.
+    handle = source[source.index("def _handle"):source.index("def _run_jobs")]
+    assert handle.index('if _state["paused"]') < handle.index("_jobs.put(job)")
 
 
 def test_no_open_blender_says_how_to_get_one(tmp_path, monkeypatch):

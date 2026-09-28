@@ -87,8 +87,11 @@ def status() -> dict:
     reply = _exchange({"ping": True}, timeout=5)
     if not reply.get("ok"):
         return {"live": False, "text": reply.get("error")}
+    paused = bool(reply.get("paused"))
     return {"live": True, "blender": reply.get("version"), "file": reply.get("file"),
-            "text": f"Blender {reply.get('version')} is open and listening"
+            "paused": paused, "jobs": reply.get("jobs"),
+            "text": f"Blender {reply.get('version')} is open and "
+                    + ("PAUSED -- press Resume on its ARIA tab" if paused else "listening")
                     + (f", editing {reply['file']}" if reply.get("file") else " (unsaved file)") + "."}
 
 
