@@ -286,7 +286,7 @@ EVERY_ACTION = [
     ("find_landmarks", {"object": "Head", "kind": "head", "only_missing": True}),
     ("set_landmark", {"object": "Head", "name": "nose", "point": [0, -0.5, 1], "radius": 0.06}),
     # Rigging. Run for real in test_blender_rig.py.
-    ("auto_rig", {"object": "Body", "name": "Body_Rig"}),
+    ("auto_rig", {"object": "Body", "name": "Body_Rig", "weights": "auto"}),
     # Animation clips. Run for real in test_blender_clips.py.
     ("add_clip", {"armature": "Body_Rig", "clip": "walk", "name": "Walk", "speed": 1.0,
                   "strength": 1.0}),

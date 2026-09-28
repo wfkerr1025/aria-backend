@@ -792,6 +792,8 @@ def summarize(entry: dict) -> str:
             unweighted = note.get("unweighted") or 0
             lines.append(f"Rigged {note.get('object')} with {note.get('armature')}: "
                          f"{len(note.get('bones') or [])} bones, named for Unity's Humanoid"
+                         + ("" if note.get("weights") in (None, "automatic")
+                            else f", weighted by {note.get('weights')}")
                          + ("" if note.get("arms") else " (no arms -- they were not marked)")
                          + (f". {unweighted} of {note.get('vertices')} vertices got no weight and "
                             f"will not move with it." if unweighted else ". Every vertex is weighted."))

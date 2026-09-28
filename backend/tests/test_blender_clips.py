@@ -154,8 +154,9 @@ def test_waving_raises_the_right_hand_to_head_height():
     wave = _rigged([{"action": "add_clip", "params": {"armature": "Body_Rig", "clip": "wave"}}], 13)
     rest = _rigged([], 1)
     assert _bounds(wave)[1][2] >= _bounds(rest)[1][2] - 0.01
-    # The left arm has not moved.
-    assert _bounds(wave)[1][0] == pytest.approx(_bounds(rest)[1][0], abs=0.01)
+    # The left arm hangs relaxed at the side -- closer in than its A-pose
+    # rest, as in every clip (a T-posed rig's would otherwise stick out).
+    assert _bounds(wave)[1][0] < _bounds(rest)[1][0] - 0.05
 
 
 def test_every_clip_arrives_in_the_fbx_as_its_own_animation(tmp_path):

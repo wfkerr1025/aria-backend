@@ -625,7 +625,8 @@ def add_bone(params: Dict[str, Any]) -> str:
 def parent_mesh_to_armature(params: Dict[str, Any]) -> str:
     return (f'_mesh = _obj({_text(params.get("mesh"))})\n'
             f'_arm = _obj({_text(params.get("armature"))})\n'
-            f'bpy.ops.object.mode_set(mode="OBJECT")\n'
+            f'if bpy.context.view_layer.objects.active is not None:\n'
+            f'    bpy.ops.object.mode_set(mode="OBJECT")\n'
             f'for _o in bpy.context.selected_objects:\n'
             f'    _o.select_set(False)\n'
             f'_mesh.select_set(True)\n'
@@ -639,7 +640,8 @@ def auto_weights(params: Dict[str, Any]) -> str:
     """ARMATURE_AUTO is the "with automatic weights" of the UI menu."""
     return (f'_mesh = _obj({_text(params.get("mesh"))})\n'
             f'_arm = _obj({_text(params.get("armature"))})\n'
-            f'bpy.ops.object.mode_set(mode="OBJECT")\n'
+            f'if bpy.context.view_layer.objects.active is not None:\n'
+            f'    bpy.ops.object.mode_set(mode="OBJECT")\n'
             f'for _o in bpy.context.selected_objects:\n'
             f'    _o.select_set(False)\n'
             f'_mesh.select_set(True)\n'
@@ -1218,8 +1220,12 @@ def apply_transforms(params: Dict[str, Any]) -> str:
     applying to one and not the other would separate a mesh from the
     skeleton that deforms it.
     """
+    # mode_set only with something active: it fails its poll when nothing
+    # is -- the state right after the active object was deleted, which is
+    # how a character's old rig gets stripped (found on a real model).
     return (
-        'bpy.ops.object.mode_set(mode="OBJECT")\n'
+        'if bpy.context.view_layer.objects.active is not None:\n'
+        '    bpy.ops.object.mode_set(mode="OBJECT")\n'
         'bpy.ops.object.select_all(action="DESELECT")\n'
         '_applied = []\n'
         'for _o in bpy.data.objects:\n'
@@ -3233,6 +3239,11 @@ def describe_scene(params: Dict[str, Any]) -> str:
             '        _o.evaluated_get(_graph).to_mesh_clear()\n'
             '    elif _o.type == "ARMATURE":\n'
             '        _entry["bones"] = [b.name for b in _o.data.bones][:200]\n'
+            '        # Where each bone runs, at rest, in the scene: a rig can have every\n'
+            '        # bone it should and still have them in the wrong places.\n'
+            '        _entry["joints"] = {b.name: [[round(v, 4) for v in _o.matrix_world @ b.head_local],\n'
+            '                                     [round(v, 4) for v in _o.matrix_world @ b.tail_local]]\n'
+            '                            for b in list(_o.data.bones)[:200]}\n'
             '        _entry["action"] = _o.animation_data.action.name if _o.animation_data and _o.animation_data.action else None\n'
             '    elif _o.type == "CAMERA":\n'
             '        _entry.update(lens=_o.data.lens, camera_type=_o.data.type)\n'
@@ -4606,6 +4617,10 @@ BODY_LANDMARK_SIZES = {
 _LANDMARK_FINDER = r'''
 def _aria_probe(world, idx, x, z, pick, reach_x, reach_z):
     """The front-, back-, top- or side-most vertex of `idx` near (x, z)."""
+    if len(idx) == 0:
+        # An empty slice -- a mesh in separate layers can leave one --
+        # means looking at the whole mesh, not failing.
+        idx = _np.arange(len(world))
     sub = world[idx]
     for grow in (1, 2, 4, 8):
         sel = (_np.abs(sub[:, 0] - x) < reach_x * grow) & (_np.abs(sub[:, 2] - z) < reach_z * grow)
@@ -4734,7 +4749,21 @@ def _aria_find_body(world, nr):
     rows, step = _aria_slices(world, lo, hi, max(12, n // 1000))
     notes = []
 
-    crotch = _aria_sustained(rows, lo[2], lambda r: _aria_central(r, world, cx) is not None)
+    # The crotch, found from above: from mid-body, where the torso is
+    # certainly one piece, down to where the legs come apart. Read from
+    # the floor up it trusted the first run of "one piece", and on a real
+    # character -- boots touching at the heels -- that was the feet: a
+    # crotch at 0.15 m on a 1.8 m knight.
+    crotch = None
+    below_mid = [r for r in rows if r["z"] <= lo[2] + H * 0.6][::-1]
+    for k in range(len(below_mid) - 4):
+        window = below_mid[k:k + 4]
+        if all(_aria_central(r, world, cx) is None for r in window):
+            crotch = window[0]["z"] + step
+            break
+    if crotch is None:
+        # Legs never apart -- a robe, a dress: the old reading, from the floor.
+        crotch = _aria_sustained(rows, lo[2], lambda r: _aria_central(r, world, cx) is not None)
     if crotch is None:
         raise RuntimeError("could not find where the legs meet -- is this a standing figure?")
     # How far from the centre line the torso reaches. Unlimited for an
@@ -4781,7 +4810,10 @@ def _aria_find_body(world, nr):
         armpit += step
 
     def leg(r):
-        g = r["groups"][-1] if r["groups"] else None
+        # The leg is the bulkiest cluster on its side, not the outermost:
+        # a sword hanging beside a real knight's thigh was outermost.
+        side = [g for g in r["groups"] if world[g, 0].mean() > cx]
+        g = max(side, key=len) if side else None
         return None if g is None else float(world[g, 0].max() - world[g, 0].min())
 
     widths, legs = _aria_median([width(r) for r in rows]), _aria_median([leg(r) for r in rows])
@@ -4849,7 +4881,7 @@ def _aria_find_body(world, nr):
     def leg_of(z, sign):
         row = min(rows, key=lambda r: abs(r["z"] - z))
         side = [g for g in row["groups"] if (world[g, 0].mean() - cx) * sign > 0]
-        return max(side, key=lambda g: abs(world[g, 0].mean() - cx)) if side else everything
+        return max(side, key=len) if side else everything
 
     for side, sign in (("l", 1), ("r", -1)):
         thigh_z = crotch - (crotch - knee) * 0.35
@@ -5067,20 +5099,25 @@ HUMANOID_BONES = (
 )
 
 _RIG_KIT = r'''
-def _aria_section_centre(world, point, axis, reach):
+def _aria_section_centre(world, point, axis, reach, side=None):
     """The middle of the body's cross-section through `point`, across `axis`.
 
     Vertices within a thin slab square to the limb, and within `reach`
-    of the landmark sideways -- so the other leg, or the torso beside an
-    arm, is not averaged in.
+    of the landmark sideways. `side` = (centre x, +1 or -1) keeps only
+    that side of the body: reach alone did not keep the other leg out on
+    a figure whose legs stand close -- a Mixamo character's knees were
+    averaged together and both legs' bones ran down the middle.
     """
     point, axis = _np.array(point, dtype=float), _np.array(axis, dtype=float)
     axis = axis / max(_np.linalg.norm(axis), 1e-12)
     rel = world - point
     along = rel @ axis
     across = _np.linalg.norm(rel - _np.outer(along, axis), axis=1)
+    own = _np.ones(len(world), dtype=bool)
+    if side is not None:
+        own = (world[:, 0] - side[0]) * side[1] > 0
     for grow in (1.0, 1.6, 2.5):
-        near = (_np.abs(along) < reach * 0.25 * grow) & (across < reach * 2.0 * grow)
+        near = own & (_np.abs(along) < reach * 0.25 * grow) & (across < reach * 2.0 * grow)
         if near.sum() >= 6:
             return world[near].mean(axis=0)
     return point
@@ -5123,8 +5160,10 @@ def _aria_build_rig(obj, name):
 
     for side, word, sign in (("l", "Left", 1.0), ("r", "Right", -1.0)):
         # Legs: straight down.
-        knee = _aria_section_centre(world, L("knee_" + side)["point"], up, L("knee_" + side)["radius"] * 2)
-        ankle = _aria_section_centre(world, L("ankle_" + side)["point"], up, L("ankle_" + side)["radius"] * 2.5)
+        knee = _aria_section_centre(world, L("knee_" + side)["point"], up, L("knee_" + side)["radius"] * 2,
+                                    side=(cx, sign))
+        ankle = _aria_section_centre(world, L("ankle_" + side)["point"], up, L("ankle_" + side)["radius"] * 2.5,
+                                     side=(cx, sign))
         top = _np.array([knee[0], knee[1], hips[2] - H * 0.01])
         toe = _np.array(L("foot_" + side)["point"])
         toe = _np.array([toe[0], toe[1] * 0.6 + ankle[1] * 0.4, lo[2] + H * 0.015])
@@ -5177,6 +5216,148 @@ def _aria_build_rig(obj, name):
     bpy.ops.armature.calculate_roll(type="GLOBAL_POS_Z")
     bpy.ops.object.mode_set(mode="OBJECT")
     return rig, made
+
+
+def _aria_unweighted(obj, bones):
+    names = set(bones)
+    lookup = {g.index: g.name for g in obj.vertex_groups}
+    return sum(1 for v in obj.data.vertices
+               if not any(g.weight > 1e-4 and lookup.get(g.group) in names for g in v.groups))
+
+
+def _aria_parent(mesh, rig, kind):
+    if bpy.context.view_layer.objects.active is not None:
+        bpy.ops.object.mode_set(mode="OBJECT")
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+    mesh.select_set(True)
+    rig.select_set(True)
+    bpy.context.view_layer.objects.active = rig
+    bpy.ops.object.parent_set(type=kind)
+
+
+def _aria_bind(target, rig, bones, mode="auto"):
+    """Weights: automatic; else automatic on a clean stand-in, copied over;
+    else by distance. Returns (how, vertices left unweighted).
+
+    Automatic ("bone heat") weights need one closed surface. A real game
+    character is layers -- armour over cloth over skin, a sword against a
+    leg -- and on one (a 1.8 m knight) they gave NO vertex a weight at
+    all. The stand-in is the same figure voxel-remeshed into a single
+    closed skin: weights solve on that, and each real vertex takes the
+    weights of the stand-in surface nearest it.
+    """
+    if mode == "envelope":
+        _aria_parent(target, rig, "ARMATURE_ENVELOPE")
+        method = "distance to the bones (asked for)"
+    elif mode == "standin":
+        _aria_parent(target, rig, "ARMATURE_NAME")
+        method = _aria_standin(target, rig, bones)
+    else:
+        _aria_parent(target, rig, "ARMATURE_AUTO")
+        left = _aria_unweighted(target, bones)
+        method = ("automatic" if left <= len(target.data.vertices) * 0.02
+                  else _aria_standin(target, rig, bones))
+    filled = _aria_fill_unweighted(target, bones)
+    if filled and method == "automatic":
+        method = "automatic, with %d stray vertices given their neighbours' weights" % filled
+    _aria_normalize(target, bones)
+    return method, _aria_unweighted(target, bones)
+
+
+def _aria_normalize(obj, bones):
+    """Each vertex's weights on THIS rig's bones summing to one -- and no others.
+
+    Blender's normalize-all counts every group, and a model that came
+    with another rig still carries its groups (a Mixamo character keeps
+    all its mixamorig:* ones): normalized together, a vertex half on an
+    old bone kept only half its weight on the new one, and moved half as
+    far. Other groups are left exactly as they were.
+    """
+    names = set(bones)
+    groups = {g.index: g for g in obj.vertex_groups if g.name in names}
+    for v in obj.data.vertices:
+        mine = [(groups[g.group], g.weight) for g in v.groups if g.group in groups]
+        total = sum(w for _g, w in mine)
+        if total > 1e-6 and abs(total - 1.0) > 1e-4:
+            for group, weight in mine:
+                group.add([v.index], weight / total, "REPLACE")
+
+
+def _aria_standin(target, rig, bones):
+    for g in [g for g in target.vertex_groups if g.name in bones]:
+        target.vertex_groups.remove(g)
+    height = max(target.dimensions) or 1.0
+    proxy = target.copy()
+    proxy.data = target.data.copy()
+    proxy.name = "ARIA_Weight_Standin"
+    bpy.context.scene.collection.objects.link(proxy)
+    proxy.parent = None
+    proxy.matrix_world = target.matrix_world.copy()
+    for m in list(proxy.modifiers):
+        proxy.modifiers.remove(m)
+    proxy.vertex_groups.clear()
+    if proxy.data.shape_keys:
+        proxy.shape_key_clear()
+    try:
+        _active(proxy)
+        proxy.data.remesh_voxel_size = height / 140.0
+        proxy.data.remesh_voxel_adaptivity = 0.0
+        bpy.ops.object.voxel_remesh()
+        _aria_parent(proxy, rig, "ARMATURE_AUTO")
+        if _aria_unweighted(proxy, bones) <= len(proxy.data.vertices) * 0.05:
+            _active(target)
+            mod = target.modifiers.new(name="ARIA_Weights", type="DATA_TRANSFER")
+            mod.object = proxy
+            mod.use_vert_data = True
+            mod.data_types_verts = {"VGROUP_WEIGHTS"}
+            mod.vert_mapping = "POLYINTERP_NEAREST"
+            mod.layers_vgroup_select_src = "ALL"
+            mod.layers_vgroup_select_dst = "NAME"
+            bpy.ops.object.datalayout_transfer(modifier=mod.name)
+            bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+            method = "a clean stand-in (the mesh is in overlapping layers automatic weights cannot solve)"
+        else:
+            method = None
+    finally:
+        mesh = proxy.data
+        bpy.data.objects.remove(proxy, do_unlink=True)
+        if mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
+    if method is None:
+        _aria_parent(target, rig, "ARMATURE_ENVELOPE")
+        method = "distance to the bones (automatic weights failed even on a stand-in)"
+    elif not [m for m in target.modifiers if m.type == "ARMATURE"]:
+        _aria_parent(target, rig, "ARMATURE_NAME")
+    return method
+
+
+def _aria_fill_unweighted(obj, bones):
+    """Give every unweighted vertex the weights of the nearest weighted one.
+
+    A few hundred left over is a small number and a visible fault: on a
+    Mixamo character 268 fingertip vertices (1%) stayed where the hand
+    had been, a speck floating beside the body as the arm moved.
+    """
+    from mathutils.kdtree import KDTree
+    names = set(bones)
+    groups = {g.index: g.name for g in obj.vertex_groups}
+    weighted, lonely = [], []
+    for v in obj.data.vertices:
+        ws = [(groups[g.group], g.weight) for g in v.groups if g.weight > 1e-4 and groups.get(g.group) in names]
+        (weighted if ws else lonely).append((v.index, ws))
+    if not lonely or not weighted:
+        return 0
+    tree = KDTree(len(weighted))
+    for k, (index, _ws) in enumerate(weighted):
+        tree.insert(obj.data.vertices[index].co, k)
+    tree.balance()
+    for index, _none in lonely:
+        _co, k, _d = tree.find(obj.data.vertices[index].co)
+        for name, weight in weighted[k][1]:
+            obj.vertex_groups[name].add([index], weight, "REPLACE")
+    return len(lonely)
 '''.replace("__HUMANOID_BONES__", repr(HUMANOID_BONES))
 
 
@@ -5194,7 +5375,16 @@ def auto_rig(params: Dict[str, Any]) -> str:
     The mesh is bound with automatic weights; how many vertices ended up
     with none -- the ones that would stay behind when it moves -- is
     reported. name: the armature (default "<object>_Rig").
+
+    weights: "auto" (default) -- automatic, falling back to a clean
+    voxel stand-in when a layered mesh defeats them, then to distance;
+    or force "standin" or "envelope". Stray vertices left unweighted take
+    their nearest neighbours' weights, and weights are normalized over
+    this rig's bones only, so groups from an older rig are left alone.
     """
+    weights = str(params.get("weights") or "auto").strip().lower()
+    if weights not in ("auto", "standin", "envelope"):
+        raise BadValue(f"{params.get('weights')!r} is not a weighting. Use auto, standin or envelope.")
     return (_RENDER_KIT + _SCULPT_KIT + _RIG_KIT +
             f'_target = _obj({_text(params.get("object"))})\n'
             f'if _target.type != "MESH":\n'
@@ -5210,19 +5400,10 @@ def auto_rig(params: Dict[str, Any]) -> str:
             f'_rig, _bones = _aria_build_rig(_target, _rig_name)\n'
             f'for _g in [g for g in _target.vertex_groups if g.name in _bones]:\n'
             f'    _target.vertex_groups.remove(_g)\n'
-            f'bpy.ops.object.mode_set(mode="OBJECT")\n'
-            f'for _o in bpy.context.selected_objects:\n'
-            f'    _o.select_set(False)\n'
-            f'_target.select_set(True)\n'
-            f'_rig.select_set(True)\n'
-            f'bpy.context.view_layer.objects.active = _rig\n'
-            f'bpy.ops.object.parent_set(type="ARMATURE_AUTO")\n'
-            f'_names = set(_bones)\n'
-            f'_unweighted = sum(1 for _v in _target.data.vertices if not any('
-            f'g.weight > 1e-4 and _target.vertex_groups[g.group].name in _names for g in _v.groups))\n'
+            f'_method, _unweighted = _aria_bind(_target, _rig, _bones, {weights!r})\n'
             f'_RESULT["created"].append(_rig.name)\n'
             f'_note("auto_rig", object=_target.name, armature=_rig.name, bones=_bones, '
-            f'arms=any(b.endswith("UpperArm") for b in _bones), '
+            f'arms=any(b.endswith("UpperArm") for b in _bones), weights=_method, '
             f'vertices=len(_target.data.vertices), unweighted=_unweighted)')
 
 
@@ -5266,7 +5447,7 @@ CLIP_RECIPES = {
         (0, "RightUpperArm", "out", 0), (24, "RightUpperArm", "out", 2), (48, "RightUpperArm", "out", 0),
     ], [(0, 0.0), (24, -0.004), (48, 0.0)]),
     "wave": (48, False, [
-        (0, "RightUpperArm", "out", 0), (12, "RightUpperArm", "out", 130), (40, "RightUpperArm", "out", 130),
+        (0, "RightUpperArm", "out", 0), (12, "RightUpperArm", "out", 150), (40, "RightUpperArm", "out", 150),
         (48, "RightUpperArm", "out", 0),
         (0, "RightLowerArm", "out", 0), (12, "RightLowerArm", "out", 20), (19, "RightLowerArm", "in", 25),
         (26, "RightLowerArm", "out", 25), (33, "RightLowerArm", "in", 25), (40, "RightLowerArm", "out", 20),
@@ -5314,6 +5495,23 @@ def _aria_world_turn(move, degrees, right_side):
     raise RuntimeError("no move called %r" % move)
 
 
+_ARIA_ARM_HANG = 20.0     # degrees from straight down: arms relaxed at the sides
+
+
+def _aria_arm_base(rig, bone):
+    """The turn that brings an upper arm from its rest angle to hanging relaxed.
+
+    Clips are written for arms at the sides. A T-posed rig rests with them
+    straight out, and a wave's 130-degree raise from there carried the
+    arm over the head (measured, on a Mixamo character); a walk left them
+    sticking out. Measured per rig, so an A-pose and a T-pose walk alike.
+    """
+    b = rig.data.bones.get(bone)
+    d = (b.tail_local - b.head_local).normalized()
+    hang = _cmath.degrees(_cmath.atan2(abs(d.x), max(-d.z, -1.0)))
+    return _aria_world_turn("in", hang - _ARIA_ARM_HANG, bone.startswith("Right"))
+
+
 def _aria_key_turn(rig, bone, move, degrees, frame):
     """Key one bone, at one frame, turned by a world-axis move from rest.
 
@@ -5325,7 +5523,10 @@ def _aria_key_turn(rig, bone, move, degrees, frame):
     if pb is None:
         return False
     rest = pb.bone.matrix_local.to_3x3()
-    local = rest.inverted() @ _aria_world_turn(move, degrees, bone.startswith("Right")) @ rest
+    turn = _aria_world_turn(move, degrees, bone.startswith("Right"))
+    if bone.endswith("UpperArm"):
+        turn = turn @ _aria_arm_base(rig, bone)
+    local = rest.inverted() @ turn @ rest
     bpy.context.scene.frame_set(frame)
     pb.rotation_mode = "QUATERNION"
     pb.rotation_quaternion = local.to_quaternion()
@@ -5379,6 +5580,13 @@ def add_clip(params: Dict[str, Any]) -> str:
             f'for _f, _bone, _move, _deg in {keys!r}:\n'
             f'    if not _aria_key_turn(_rig, _bone, _move, _deg * _strength, int(round(_f / _speed)) + 1):\n'
             f'        _missing.add(_bone)\n'
+            f'# Arms the clip does not move still hang relaxed, not at rest --\n'
+            f'# which on a T-posed rig is straight out.\n'
+            f'_keyed = set(b for _f, b, _m, _d in {keys!r})\n'
+            f'for _arm in ("LeftUpperArm", "RightUpperArm"):\n'
+            f'    if _arm not in _keyed:\n'
+            f'        for _frame in (1, _frames + 1):\n'
+            f'            _aria_key_turn(_rig, _arm, "out", 0.0, _frame)\n'
             f'_hips = _rig.pose.bones.get("Hips")\n'
             f'_height = max(_rig.dimensions.z, 1e-6)\n'
             f'if _hips is not None:\n'
@@ -5394,20 +5602,31 @@ def add_clip(params: Dict[str, Any]) -> str:
             f'        _frame = int(round(_f / _speed)) + 1\n'
             f'        bpy.context.scene.frame_set(_frame)\n'
             f'        bpy.context.view_layer.update()\n'
-            f'        # Feet level, as they lie at rest: a foot that simply followed\n'
-            f'        # its bent shin pointed its toes at the floor through a crouch.\n'
+            f'        # The PLANTED feet -- the lowest, carrying the weight -- are set\n'
+            f'        # level, as they lie at rest: a foot that simply followed its\n'
+            f'        # bent shin pointed its toes at the floor through a crouch. A\n'
+            f'        # lifted foot follows its shin: levelling every foot left a\n'
+            f'        # walk\'s back foot flat on the ground, parted from its ankle\n'
+            f'        # (measured, on a Mixamo character), where a real one rolls\n'
+            f'        # onto its toes.\n'
+            f'        _drop = {{b: _rig.pose.bones[b].head.z - _rig.data.bones[b].head_local.z for b in _feet}}\n'
+            f'        _low = min(_drop.values()) if _drop else 0.0\n'
+            f'        _planted = [b for b in _feet if _drop[b] - _low < _height * 0.03]\n'
             f'        for _b in _feet:\n'
             f'            _fp = _rig.pose.bones[_b]\n'
-            f'            _level = _fp.bone.matrix_local.copy()\n'
-            f'            _level.translation = _fp.head.copy()\n'
-            f'            _fp.matrix = _level\n'
+            f'            if _b in _planted:\n'
+            f'                _level = _fp.bone.matrix_local.copy()\n'
+            f'                _level.translation = _fp.head.copy()\n'
+            f'                _fp.matrix = _level\n'
+            f'            else:\n'
+            f'                _fp.rotation_quaternion = (1, 0, 0, 0)\n'
             f'            _fp.keyframe_insert(data_path="rotation_quaternion", frame=_frame)\n'
             f'        bpy.context.view_layer.update()\n'
             f'        _lift = 0.0\n'
-            f'        if _feet:\n'
+            f'        if _planted:\n'
             f'            _lift = min(min(_rig.pose.bones[b].head.z - _rig.data.bones[b].head_local.z,\n'
             f'                            _rig.pose.bones[b].tail.z - _rig.data.bones[b].tail_local.z)\n'
-            f'                        for b in _feet)\n'
+            f'                        for b in _planted)\n'
             f'        _offsets.append((_frame, -_lift + _rise * _height * _strength))\n'
             f'    for _frame, _dz in _offsets:\n'
             f'        _hips.location = _rest.inverted() @ mathutils.Vector((0, 0, _dz))\n'
