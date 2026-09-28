@@ -145,7 +145,9 @@ def test_chat_marks_the_face_the_first_time(monkeypatch, one_head):
 def test_an_expression_goes_into_its_own_shape_key(one_head):
     bs.answer_command("give him a smile in Blender")
     actions = one_head[0]
-    assert actions[0] == {"action": "add_shape_key", "params": {"object": "Head", "name": "Smile"}}
+    # The fixture head has only a nose marked, so the face is marked first.
+    assert actions[0]["action"] == "find_landmarks"
+    assert actions[1] == {"action": "add_shape_key", "params": {"object": "Head", "name": "Smile"}}
     assert all(a["params"].get("shape_key") == "Smile" for a in actions if a["action"] == "sculpt_stroke")
     assert actions[-1]["action"] == "set_shape_key"
 
@@ -271,3 +273,137 @@ def test_showing_landmarks_leaves_nothing_behind(tmp_path):
     assert [o["name"] for o in scene["objects"]] == ["Head"]
     assert not any(m.startswith("ARIA_Preview") for m in scene["materials"])
     assert (tmp_path / "m.png").is_file()
+
+
+# ======================================================
+# Bodies
+# ======================================================
+
+@pytest.mark.parametrize("said, landmark, brush, direction", [
+    ("make his shoulders broader", "shoulder_l", "grab", "outward"),
+    ("give him bigger arms", "upper_arm_l", "inflate", None),
+    ("make the arms longer", "hand_l", "grab", "along"),
+    ("make the legs longer", "ankle_l", "grab", "along"),
+    ("make the waist thinner", "waist_l", "grab", "in"),
+    ("make the belly bigger", "belly", "inflate", None),
+    ("flatten the stomach", "belly", "flatten", None),
+    ("make the chest broader", "pec_l", "grab", "outward"),
+    ("make his butt bigger", "buttock_l", "inflate", None),
+    ("make the back flatter", "back", "flatten", None),
+    ("make the neck thicker", "neck", "inflate", None),
+    ("make the calves bigger", "calf_l", "inflate", None),
+    ("pull the chin back", "chin", "grab", "back"),
+])
+def test_body_changes_are_aimed_at_body_landmarks(said, landmark, brush, direction):
+    stroke = language.plan(said)["strokes"][0]
+    assert (stroke["landmark"], stroke["brush"], stroke.get("direction")) == (landmark, brush, direction)
+
+
+def test_the_back_of_the_head_is_not_the_back():
+    assert language.plan("make the back of the head flatter")["strokes"][0]["landmark"] == "back_of_head"
+
+
+def test_body_replies_say_the_parts_properly():
+    assert language.plan("make the calves bigger")["summary"] == "calves bigger"
+    assert language.plan("make the waist thinner")["summary"] == "waist smaller"
+
+
+@pytest.fixture
+def one_body(monkeypatch):
+    runs = []
+    entry = {"name": "Body", "type": "MESH", "dimensions": [0.8, 0.3, 1.8], "faces": 12502}
+    monkeypatch.setattr(bs.Session, "describe", lambda self: {"success": True, "scene": {
+        "objects": [entry]}})
+
+    def run(self, actions, **kwargs):
+        runs.append(actions)
+        return {"success": True, "ran": True, "renders": ["C:/r.png"], "text": ""}
+
+    monkeypatch.setattr(bs.Session, "run", run)
+    return runs, entry
+
+
+def test_a_standing_figure_is_marked_as_a_body_and_subdivided_first(one_body):
+    runs, _ = one_body
+    answer = bs.answer_command("make the nose bigger in Blender")
+    names = [a["action"] for a in runs[0]]
+    assert names[:3] == ["apply_subdivision", "smooth_shade", "find_landmarks"]
+    assert runs[0][2]["params"]["kind"] == "body"
+    assert "subdivided it once" in answer["text"] and "marked the body" in answer["text"]
+
+
+def test_a_dense_model_is_not_subdivided(one_body):
+    runs, entry = one_body
+    entry["faces"] = 120000
+    bs.answer_command("make the nose bigger in Blender")
+    assert runs[0][0]["action"] == "find_landmarks"
+
+
+def test_a_marked_model_is_not_subdivided_again(one_body):
+    runs, entry = one_body
+    entry["landmarks"] = ["nose"]
+    bs.answer_command("make the nose bigger in Blender")
+    assert [a["action"] for a in runs[0]] == ["sculpt_stroke"] * 3
+
+
+def test_a_head_asked_about_its_arms_gets_body_marks(one_body):
+    runs, entry = one_body
+    entry.update(dimensions=[1.0, 1.0, 1.0], faces=120000, landmarks=["nose", "chin"])
+    bs.answer_command("give him bigger arms in Blender")
+    assert runs[0][0] == {"action": "find_landmarks", "params": {"object": "Body", "kind": "body"}}
+
+
+# ======================================================
+# Body landmarks on the real base mesh
+# ======================================================
+
+_BUNDLE = (__import__("pathlib").Path(__file__).resolve().parents[2]
+           / "aria_models" / "blender" / "meshes" / "human_base_meshes_bundle.blend")
+
+
+def _base_body(extra=()):
+    _blender_or_skip()
+    if not _BUNDLE.is_file():
+        pytest.skip("the human base mesh bundle is not on this machine")
+    result = blender_actions.run_actions([
+        {"action": "clear_scene"},
+        {"action": "append_from_blend", "params": {"blend": str(_BUNDLE), "object": "GEO-body_male_stylized",
+                                                   "name": "Body", "location": [0, 0, 0]}},
+        {"action": "scale_to_height", "params": {"height": 1.8}},
+        {"action": "apply_transforms", "params": {}},
+        {"action": "origin_to_floor", "params": {}},
+        {"action": "find_landmarks", "params": {"object": "Body", "kind": "body"}},
+    ] + list(extra) + [{"action": "describe_scene"}], timeout=600)
+    assert result["success"], result["output"][-2500:]
+    return result
+
+
+def test_body_heights_match_the_measured_base_mesh():
+    """The same heights aria_models/measure_base_landmarks.py measured offline."""
+    result = _base_body()
+    note = next(s for s in result["result"]["steps"] if s.get("step") == "find_landmarks")
+    import json
+    from pathlib import Path
+    table = json.loads((Path(__file__).resolve().parents[2] / "aria_models"
+                        / "landmarks_human_base_meshes.json").read_text())
+    measured = table["bases"]["GEO-body_male_stylized"]["z"]
+    for name in ("crotch", "knee", "waist", "chest", "armpit", "neck"):
+        assert note["heights"][name] == pytest.approx(measured[name], abs=0.03), name
+
+
+def test_a_body_gets_body_face_and_limb_landmarks():
+    result = _base_body()
+    body = next(o for o in result["result"]["scene"]["objects"] if o["name"] == "Body")
+    expected = {"neck", "chest", "belly", "back", "shoulder_l", "shoulder_r", "elbow_l", "hand_r",
+                "knee_l", "calf_r", "foot_l", "waist_l", "hip_r", "nose", "chin", "ear_l"}
+    assert expected <= set(body["landmarks"])
+
+
+def test_longer_arms_reach_further_down():
+    before = _base_body()
+    after = _base_body([{"action": "sculpt_stroke", "params": {
+        "object": "Body", "landmark": "hand_l", "brush": "grab", "direction": "along",
+        "distance": 1.0, "size": 2.4, "mirror": "X"}}])
+    ok = lambda r: next(s for s in r["result"]["steps"] if s.get("step") == "sculpt_stroke")
+    assert ok(after)["vertices_moved"] > 100
+    assert ok(after)["largest_move"] > 0.02

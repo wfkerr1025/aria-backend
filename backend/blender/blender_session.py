@@ -67,7 +67,7 @@ READ_ONLY_ACTIONS = frozenset(RENDER_ACTIONS) | {"describe_scene", "measure_mesh
 # a brush actually did -- a stroke that moved nothing is a stroke that
 # missed, and the picture alone does not always show it.
 REPORTING_STEPS = ("measure_mesh", "measure_rig", "describe_scene", "sculpt_stroke",
-                   "fit_to_reference", "mirror_shape_key", "transfer_weights")
+                   "fit_to_reference", "mirror_shape_key", "transfer_weights", "find_landmarks")
 
 Work = Union[str, Sequence[Dict[str, Any]]]
 
@@ -477,9 +477,32 @@ def _answer_sculpt(said: str, sculpt: dict, session: "Session") -> dict:
     if problem:
         return problem
     actions: List[dict] = []
-    marked = not entry.get("landmarks")
-    if marked:
-        actions.append({"action": "find_landmarks", "params": {"object": target}})
+    have = set(entry.get("landmarks") or [])
+    needed = {s["landmark"] for s in sculpt["strokes"]}
+    expression = sculpt.get("expression")
+    marked = None
+    subdivided = 0
+    if needed - have:
+        # A body when it stands tall or a body part is asked for; a head
+        # otherwise. Body marks include the face, so a head marked first
+        # and then asked about its arms gets the body marks added.
+        dims = entry.get("dimensions") or [1.0, 1.0, 1.0]
+        tall = dims[2] > 1.8 * max(dims[0], dims[1], 1e-9)
+        wants_body = any(n.rsplit("_", 1)[0] in templates.BODY_LANDMARK_SIZES
+                         or n in templates.BODY_LANDMARK_SIZES for n in needed)
+        marked = "body" if tall or wants_body else "head"
+        # Too few vertices and a brush makes shelves, not curves: the
+        # 12,500-face base body came out with boxy shoulders (measured, in
+        # the clay preview). So a sparse model is subdivided once before
+        # it is first marked -- quads and UVs kept -- and not after, so
+        # landmarks already placed stay on their vertices.
+        faces = entry.get("faces") or 0
+        if not have and 0 < faces < 40000 and not (entry.get("shape_keys") or expression):
+            actions.append({"action": "apply_subdivision",
+                            "params": {"object": target, "levels": 1, "apply": True}})
+            actions.append({"action": "smooth_shade", "params": {"object": target}})
+            subdivided = faces
+        actions.append({"action": "find_landmarks", "params": {"object": target, "kind": marked}})
     expression = sculpt.get("expression")
     keys = entry.get("shape_keys") or []
     if expression:
@@ -508,9 +531,15 @@ def _answer_sculpt(said: str, sculpt: dict, session: "Session") -> dict:
                      f"50% in Blender\" to soften it; the neutral face is untouched underneath.")
     else:
         lines.append(f"Sculpted {target}: {sculpt['summary']}.")
-    if marked:
+    if subdivided:
+        lines.append(f"It had only {subdivided:,} faces, so I subdivided it once first "
+                     f"(about {subdivided * 4:,}) to give the brushes enough surface to shape.")
+    if marked == "head":
         lines.append("I marked the face first (nose, chin, eyes, cheeks, mouth, jaw, brow, "
                      "ears). Say \"show me the landmarks in Blender\" to check where they are.")
+    elif marked == "body":
+        lines.append("I marked the body first (shoulders, chest, waist, hips, arms, legs, and "
+                     "the face). Say \"show me the landmarks in Blender\" to check where they are.")
     lines.append(picture_markdown(outcome.get("renders") or []))
     lines.append("Say \"undo in Blender\" to take this back.")
     outcome["text"] = "\n\n".join(line for line in lines if line)
@@ -654,6 +683,11 @@ def summarize(entry: dict) -> str:
             lines.append(f"Stroke ({note.get('brush')}) on {note.get('object')}: "
                          f"{note.get('vertices_moved')} vertices moved, the most by "
                          f"{note.get('largest_move')} m over {note.get('dabs')} dabs.")
+        elif note.get("step") == "find_landmarks":
+            placed = note.get("placed") or []
+            lines.append(f"Marked {len(placed)} landmarks on {note.get('object')}"
+                         + (f" (kept {len(note.get('kept') or [])} already set)" if note.get("kept") else "")
+                         + "." + "".join(f" Note: {n}." for n in note.get("notes") or []))
         elif note.get("step") == "mirror_shape_key":
             alone = note.get("vertices_without_a_twin") or 0
             lines.append(f"Mirrored {note.get('source')} into {note.get('made')}"

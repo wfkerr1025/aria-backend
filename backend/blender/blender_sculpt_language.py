@@ -43,14 +43,61 @@ TARGETS: Dict[str, Tuple[str, ...]] = {
               "crown", "skull"),
     "back_of_head": ("back of the head", "back of his head", "back of her head",
                      "back of its head"),
+    # The body (find_landmarks kind="body").
+    "neck": ("neck",),
+    "shoulder": ("shoulder", "shoulders"),
+    "chest": ("chest", "torso"),
+    "pec": ("pec", "pecs", "pectoral", "pectorals", "breast", "breasts"),
+    "belly": ("belly", "stomach", "gut", "tummy", "abs", "abdomen"),
+    "waist": ("waist", "waistline"),
+    "hip": ("hip", "hips"),
+    # Only with an owner: "pull the chin back" is a direction, not a spine.
+    "back": ("the back", "his back", "her back", "its back", "their back",
+             "upper back", "lower back"),
+    "buttock": ("butt", "buttock", "buttocks", "bum", "glutes", "backside", "rear end"),
+    "arm": ("arm", "arms"),
+    "upper_arm": ("upper arm", "upper arms", "bicep", "biceps"),
+    "elbow": ("elbow", "elbows"),
+    "forearm": ("forearm", "forearms"),
+    "wrist": ("wrist", "wrists"),
+    "hand": ("hand", "hands"),
+    "leg": ("leg", "legs"),
+    "thigh": ("thigh", "thighs"),
+    "knee": ("knee", "knees"),
+    "calf": ("calf", "calves"),
+    "shin": ("shin", "shins"),
+    "ankle": ("ankle", "ankles"),
+    "foot": ("foot", "feet"),
 }
-PAIRED = frozenset({"jaw", "cheek", "eye", "ear"})
+PAIRED = frozenset({"jaw", "cheek", "eye", "ear", "shoulder", "pec", "waist", "hip", "buttock",
+                    "arm", "upper_arm", "elbow", "forearm", "wrist", "hand", "leg", "thigh",
+                    "knee", "calf", "shin", "ankle", "foot"})
+
+# How a pair is said in a reply: "the calves", not "the calfs".
+PLURALS = {"calf": "calves", "foot": "feet", "waist": "waist", "belly": "belly",
+           "mouth_corner": "mouth corners", "upper_arm": "upper arms"}
+
+# A word for a whole limb means its landmark: "bigger arms" is the upper arm.
+ALIASES = {"arm": "upper_arm", "leg": "thigh"}
+
+# "Longer" on a limb is a stretch toward its end, along the limb's own
+# line -- not a bump off its side, which is what "longer" means for a
+# nose or a chin.
+LIMB_ENDS = {"arm": "hand", "upper_arm": "hand", "forearm": "hand", "hand": "hand",
+             "leg": "ankle", "thigh": "ankle", "shin": "ankle", "calf": "ankle"}
+
+# A width change on a feature in the middle of the body is made on the
+# pair either side of it: a chest is broadened at the pecs, a belly
+# narrowed at the waist.
+WIDTH_VIA = {"chest": "pec", "belly": "waist"}
 
 # How much wider than its own landmark a brush on this feature should
 # reach. A chin is not a knob on the face: pulling only the landmark's
 # own patch forward grew a ball under the mouth (measured, in the clay
 # preview); the whole lower jaw has to come with it.
-SIZE_BIAS = {"chin": 1.7, "jaw": 1.3, "back_of_head": 1.3, "crown": 1.2}
+SIZE_BIAS = {"chin": 1.7, "jaw": 1.3, "back_of_head": 1.3, "crown": 1.2,
+             "belly": 1.4, "back": 1.3, "chest": 1.2, "buttock": 1.2, "thigh": 1.2,
+             "shoulder": 1.2}
 
 # Amount words: how much of a recipe's normal strength.
 _LITTLE = re.compile(r"\b(?:slightly|a (?:little|bit|touch|tad)|a little bit|subtly|just a bit)\b", re.I)
@@ -65,11 +112,13 @@ def _stroke(landmark: str, brush: str, **params: Any) -> Dict[str, Any]:
 # landmark and an amount (1.0 = the ordinary amount).
 CHANGES: List[Tuple[str, "re.Pattern[str]", Any]] = [
     ("bigger", re.compile(r"\b(?:bigger|larger|enlarge[sd]?|grow|fuller|bulkier|plumper|"
+                          r"thicker|beefier|more muscular|stronger|bulk(?:ed)? up|"
                           r"puff(?:ier)?|more prominent)\b", re.I),
      lambda lm, a: [_stroke(lm, "inflate", strength=0.7 * a, size=1.1),
                     _stroke(lm, "draw", strength=0.5 * a),
                     _stroke(lm, "smooth", strength=0.4, size=1.3)]),
-    ("smaller", re.compile(r"\b(?:smaller|shrink|reduce[sd]?|less prominent|tone down)\b", re.I),
+    ("smaller", re.compile(r"\b(?:smaller|shrink|reduce[sd]?|less prominent|tone down|"
+                           r"thinner|slimmer|skinnier|leaner)\b", re.I),
      lambda lm, a: [_stroke(lm, "grab", direction="in", distance=0.3 * a, size=1.2),
                     _stroke(lm, "smooth", strength=0.4, size=1.3)]),
     ("longer", re.compile(r"\b(?:longer|stick(?:s|ing)?(?: \w+){0,3} out|pull(?:s|ed)?(?: \w+){0,3} out|"
@@ -84,7 +133,10 @@ CHANGES: List[Tuple[str, "re.Pattern[str]", Any]] = [
      lambda lm, a: [_stroke(lm, "smooth", strength=min(0.8 * a, 1.0), size=1.2)]),
     ("wider", re.compile(r"\b(?:wider|widen|broader|broaden)\b", re.I),
      lambda lm, a: [_stroke(lm, "grab", direction="outward", distance=0.4 * a, size=1.3)]),
-    ("narrower", re.compile(r"\b(?:narrower|narrow|thinner|slimmer)\b", re.I),
+    ("further back", re.compile(r"\b(?:(?:pull|push|move|tuck)(?:s|ed)?(?: \w+){0,3} back|"
+                                r"recede|receding)\b", re.I),
+     lambda lm, a: [_stroke(lm, "grab", direction="back", distance=0.4 * a, size=1.2)]),
+    ("narrower", re.compile(r"\b(?:narrower|narrow)\b", re.I),
      lambda lm, a: [_stroke(lm, "grab", direction="inward", distance=0.35 * a, size=1.3)]),
     ("higher", re.compile(r"\b(?:raise[sd]?|lift(?:ed)?|higher|move[sd]? up|push(?:ed)? up)\b", re.I),
      lambda lm, a: [_stroke(lm, "grab", direction="up", distance=0.4 * a, size=1.2)]),
@@ -144,7 +196,9 @@ def _targets(text: str) -> List[str]:
                      key=lambda pair: -len(pair[0]))
     for word, target in phrases:
         for match in re.finditer(r"\b" + re.escape(word) + r"\b", lowered):
-            if any(a <= match.start() < b for a, b in taken):
+            # Overlapping at all, not just starting inside: "the back" sits
+            # across the front edge of "back of the head".
+            if any(match.start() < b and match.end() > a for a, b in taken):
                 continue
             taken.append((match.start(), match.end()))
             found.append((match.start(), target))
@@ -207,9 +261,26 @@ def plan(text: str) -> Optional[Dict[str, Any]]:
         amount = _amount(clause)
         for target in targets:
             both = target.endswith("*")
-            landmark = target.rstrip("*")
-            bias = SIZE_BIAS.get(landmark.rsplit("_", 1)[0] if both or landmark.endswith(("_l", "_r"))
-                                 else landmark, 1.0)
+            name = target.rstrip("*")
+            side = name[-1] if name.endswith(("_l", "_r")) else None
+            base = name[:-2] if side else name
+            if label in ("wider", "narrower") and base in WIDTH_VIA:
+                base = WIDTH_VIA[base]
+                if side is None:
+                    side, both = "l", True
+            if label == "longer" and base in LIMB_ENDS:
+                end = f"{LIMB_ENDS[base]}_{side or 'l'}"
+                limb = [_stroke(end, "grab", direction="along", distance=round(0.8 * amount, 3),
+                                size=2.4)]
+                if both:
+                    limb[0]["mirror"] = "X"
+                strokes.extend(limb)
+                done.append(f"{base.replace('_', ' ')}{'s' if both else ''} longer"
+                            + (" (a little)" if amount < 1 else " (a lot)" if amount > 1 else ""))
+                continue
+            base = ALIASES.get(base, base)
+            landmark = f"{base}_{side}" if side else base
+            bias = SIZE_BIAS.get(base, 1.0)
             for stroke in recipe(landmark, amount):
                 stroke["size"] = round(stroke.get("size", 1.0) * bias, 3)
                 for key in ("strength", "distance"):
@@ -218,8 +289,12 @@ def plan(text: str) -> Optional[Dict[str, Any]]:
                 if both:
                     stroke["mirror"] = "X"
                 strokes.append(stroke)
-            shown = landmark.replace("_l", "s" if both else " (left)").replace("_r", " (right)")
-            done.append(f"{shown.replace('_', ' ')} {label}"
+            shown = base.replace("_", " ")
+            if both:
+                shown = PLURALS.get(base, shown + "s")
+            elif side:
+                shown += " (left)" if side == "l" else " (right)"
+            done.append(f"{shown} {label}"
                         + (" (a little)" if amount < 1 else " (a lot)" if amount > 1 else ""))
     if not strokes:
         return None

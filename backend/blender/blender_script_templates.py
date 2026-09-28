@@ -3531,13 +3531,24 @@ def _aria_landmark(obj, name):
         normal = obj.data.vertices[vertex].normal.copy()
     normal = matrix.to_3x3().inverted().transposed() @ normal
     scale = sum(abs(s) for s in matrix.to_scale()) / 3.0
-    return {"point": matrix @ at, "normal": normal.normalized(), "radius": mark["radius"] * scale}
+    found = {"point": matrix @ at, "normal": normal.normalized(), "radius": mark["radius"] * scale}
+    if mark.get("axis"):
+        found["axis"] = (matrix.to_3x3() @ mathutils.Vector(mark["axis"])).normalized()
+    return found
 
 
-def _aria_direction(names, outward, anchor, obj):
-    """Named directions added up into one: out, up, the model's left..."""
+def _aria_direction(names, outward, anchor, obj, axis=None):
+    """Named directions added up into one: out, up, the model's left...
+
+    "along" runs down a limb toward its end -- the hand, the foot --
+    and needs a landmark that knows its limb's line (find_landmarks
+    body marks do).
+    """
     side = 1.0 if anchor.x >= obj.matrix_world.translation.x else -1.0
+    if "along" in names and axis is None:
+        raise RuntimeError("'along' needs a landmark on a limb -- this one has no limb line")
     table = {
+        "along": axis if axis is not None else mathutils.Vector((0, 0, 0)),
         "out": outward, "in": -outward,
         "up": mathutils.Vector((0, 0, 1)), "down": mathutils.Vector((0, 0, -1)),
         "forward": mathutils.Vector((0, -1, 0)), "back": mathutils.Vector((0, 1, 0)),
@@ -3590,7 +3601,7 @@ def sculpt_ready(params: Dict[str, Any]) -> str:
 
 
 STROKE_DIRECTIONS = frozenset({
-    "out", "in", "up", "down", "forward", "back", "left", "right", "outward", "inward",
+    "out", "in", "up", "down", "forward", "back", "left", "right", "outward", "inward", "along",
 })
 
 
@@ -3662,7 +3673,8 @@ def sculpt_stroke(params: Dict[str, Any]) -> str:
     lands on it and takes its size (times `size`) unless a radius is
     given. direction: which way a grab carries it, as one or more of
     out, in, up, down, forward, back, left, right (the model's own),
-    outward, inward (away from / toward its centre line); `distance` is
+    outward, inward (away from / toward its centre line), along (down a
+    limb toward its hand or foot -- body landmarks); `distance` is
     how far, as a fraction of the radius.
     """
     brush = _choice(params.get("brush"), SCULPT_STROKE_BRUSHES, "draw")
@@ -3727,7 +3739,8 @@ def sculpt_stroke(params: Dict[str, Any]) -> str:
             f'    _anchor = _lm["point"] if _lm is not None else _world[0]\n'
             f'    _outward = (_lm["normal"] if _lm is not None else '
             f'(_anchor - _target.matrix_world.translation).normalized())\n'
-            f'    _offset_world = _aria_direction(_directions, _outward, _anchor, _target) * '
+            f'    _offset_world = _aria_direction(_directions, _outward, _anchor, _target, '
+            f'_lm.get("axis") if _lm is not None else None) * '
             f'(_radius_world * {_num(params.get("distance"), 0.5)})\n'
             f'_offset = _inverse.to_3x3() @ _offset_world\n'
             f'_moved = 0\n'
@@ -4531,101 +4544,359 @@ HEAD_LANDMARKS = (
     ("crown", 0.00, 1.00, "top", 0.30),
     ("back_of_head", 0.00, 0.55, "back", 0.30),
 )
-LANDMARK_KINDS = frozenset({"head"})
+LANDMARK_KINDS = frozenset({"head", "body"})
+
+# A body's landmarks: (name, radius as a fraction of the figure's
+# height). Where each one sits is measured, not assumed -- see
+# _LANDMARK_FINDER's body half.
+BODY_LANDMARK_SIZES = {
+    "neck": 0.035, "chest": 0.08, "pec": 0.05, "belly": 0.07, "waist": 0.05, "hip": 0.06,
+    "back": 0.09, "buttock": 0.06, "shoulder": 0.05, "upper_arm": 0.035, "elbow": 0.03,
+    "forearm": 0.03, "wrist": 0.02, "hand": 0.03, "thigh": 0.05, "knee": 0.035,
+    "calf": 0.04, "shin": 0.035, "ankle": 0.025, "foot": 0.035,
+}
+
+# Everything find_landmarks runs inside Blender. Functions, so the body
+# finder can run the head finder on just the head.
+_LANDMARK_FINDER = r'''
+def _aria_probe(world, idx, x, z, pick, reach_x, reach_z):
+    """The front-, back-, top- or side-most vertex of `idx` near (x, z)."""
+    sub = world[idx]
+    for grow in (1, 2, 4, 8):
+        sel = (_np.abs(sub[:, 0] - x) < reach_x * grow) & (_np.abs(sub[:, 2] - z) < reach_z * grow)
+        if pick == "top":
+            sel = _np.abs(sub[:, 0] - x) < reach_x * grow
+        if pick in ("left", "right"):
+            sel = _np.abs(sub[:, 2] - z) < reach_z * grow
+        if sel.any():
+            break
+    else:
+        sel = _np.ones(len(sub), dtype=bool)
+    cand = _np.nonzero(sel)[0]
+    col = sub[cand]
+    choose = {"front": lambda c: _np.argmin(c[:, 1]), "back": lambda c: _np.argmax(c[:, 1]),
+              "left": lambda c: _np.argmax(c[:, 0]), "right": lambda c: _np.argmin(c[:, 0]),
+              "top": lambda c: _np.argmax(c[:, 2])}[pick]
+    return int(idx[cand[choose(col)]])
+
+
+def _aria_find_head(world, idx):
+    """A head's features among the vertices `idx`, as {name: (vertex, radius)}."""
+    head = world[idx]
+    lo, hi = head.min(axis=0), head.max(axis=0)
+    W, D, H = hi - lo
+    cx, cy = (lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0
+    band = ((_np.abs(head[:, 0] - cx) < W * 0.12) & (head[:, 2] > lo[2] + H * 0.30)
+            & (head[:, 2] < lo[2] + H * 0.60))
+    nose_z, nose = lo[2] + H * 0.40, None
+    if band.any():
+        i = _np.nonzero(band)[0][_np.argmin(head[band][:, 1])]
+        around = ((_np.abs(head[:, 0] - cx) < W * 0.12) & (_np.abs(head[:, 2] - head[i, 2]) < H * 0.15)
+                  & (_np.abs(head[:, 2] - head[i, 2]) > H * 0.08))
+        front = head[around][:, 1].min() if around.any() else head[i, 1]
+        if front - head[i, 1] > H * 0.02:
+            nose, nose_z = int(idx[i]), head[i, 2]
+    if nose is None:
+        nose = _aria_probe(world, idx, cx, nose_z, "front", W * 0.06, H * 0.06)
+
+    def height(up):
+        if up <= 0.40:
+            return lo[2] + (nose_z - lo[2]) * (up / 0.40)
+        return nose_z + (hi[2] - nose_z) * ((up - 0.40) / 0.60)
+
+    found = {"nose": (nose, W * 0.12)}
+    for name, across, up, pick, size in __HEAD_LANDMARKS__:
+        found[name] = (_aria_probe(world, idx, cx + across * W, height(up), pick, W * 0.06, H * 0.06),
+                       W * size)
+    return found
+
+
+def _aria_slices(world, lo, hi, least):
+    """The figure cut every half-centimetre (for a 1.8 m body), each cut
+    split into clusters across x -- two legs, arm-torso-arm, one torso.
+    The method of aria_models/measure_base_landmarks.py, as it runs here."""
+    H = hi[2] - lo[2]
+    step, half, gap = H / 360.0, H / 180.0, H / 60.0
+    zs = world[:, 2]
+    rows = []
+    for i in range(361):
+        z = lo[2] + i * step
+        sel = _np.nonzero(_np.abs(zs - z) <= half)[0]
+        if not len(sel):
+            continue
+        order = _np.argsort(world[sel, 0])
+        xs, ids = world[sel, 0][order], sel[order]
+        cuts = list(_np.nonzero(_np.diff(xs) > gap)[0] + 1)
+        groups = [list(g) for g in _np.split(ids, cuts)]
+        while len(groups) > 1:
+            worst = min(range(len(groups)), key=lambda k: len(groups[k]))
+            if len(groups[worst]) >= least:
+                break
+            if worst == 0:
+                into = 1
+            elif worst == len(groups) - 1:
+                into = worst - 1
+            else:
+                left = world[groups[worst][0], 0] - world[groups[worst - 1][-1], 0]
+                right = world[groups[worst + 1][0], 0] - world[groups[worst][-1], 0]
+                into = worst - 1 if left <= right else worst + 1
+            a, b = min(worst, into), max(worst, into)
+            groups[a:b + 1] = [groups[a] + groups[b]]
+        rows.append({"z": z, "groups": [_np.array(g) for g in groups]})
+    return rows, step
+
+
+def _aria_central(row, world, cx):
+    for g in row["groups"]:
+        xs = world[g, 0]
+        if xs.min() <= cx <= xs.max():
+            return g
+    return None
+
+
+def _aria_median(values, window=5):
+    out = []
+    for k in range(len(values)):
+        near = [v for v in values[max(0, k - window // 2):k + window // 2 + 1] if v is not None]
+        out.append(sorted(near)[len(near) // 2] if near else None)
+    return out
+
+
+def _aria_sustained(rows, above, holds, run=6, last=False):
+    band = [r for r in rows if r["z"] >= above]
+    spans = range(len(band) - run, -1, -1) if last else range(len(band))
+    for k in spans:
+        window = band[k:k + run]
+        if len(window) == run and all(holds(r) for r in window):
+            return window[-1]["z"] if last else window[0]["z"]
+    return None
+
+
+def _aria_find_body(world, nr):
+    """A standing figure's landmarks, facing -Y, arms hanging clear of the body.
+
+    Heights are read from the slices as measure_base_landmarks reads
+    them: the crotch is where two legs become one and stay one, the
+    armpit the top of the arm-torso-arm run, the waist the narrowest
+    torso between hip and chest, the neck the first dip above the
+    shoulders. Arms are then lines from shoulder to fingertip, found from
+    their own vertices, and each arm landmark sits along that line.
+    """
+    n = len(world)
+    lo, hi = world.min(axis=0), world.max(axis=0)
+    H = hi[2] - lo[2]
+    cx = (lo[0] + hi[0]) / 2.0
+    rows, step = _aria_slices(world, lo, hi, max(12, n // 1000))
+    notes = []
+
+    crotch = _aria_sustained(rows, lo[2], lambda r: _aria_central(r, world, cx) is not None)
+    if crotch is None:
+        raise RuntimeError("could not find where the legs meet -- is this a standing figure?")
+    armed = lambda r: len(r["groups"]) >= 3
+    armpit = _aria_sustained(rows, crotch, armed, last=True)
+    fingertip = _aria_sustained(rows, crotch, armed)
+    if armpit is None or fingertip is None or armpit - fingertip < H * 0.12:
+        notes.append("the arms are not hanging clear of the body (T-pose, or at the sides), "
+                     "so they were not marked")
+        armpit, fingertip = crotch + (hi[2] - crotch) * 0.55, None
+    else:
+        armpit += step
+
+    def width(r):
+        g = _aria_central(r, world, cx)
+        return None if g is None else float(world[g, 0].max() - world[g, 0].min())
+
+    def leg(r):
+        g = r["groups"][-1] if r["groups"] else None
+        return None if g is None else float(world[g, 0].max() - world[g, 0].min())
+
+    widths, legs = _aria_median([width(r) for r in rows]), _aria_median([leg(r) for r in rows])
+
+    def pick(values, low, high, best):
+        band = [(r, v) for r, v in zip(rows, values) if v is not None and low <= r["z"] <= high]
+        return best(band, key=lambda p: p[1])[0]["z"] if band else (low + high) / 2.0
+
+    span_leg = crotch - lo[2]
+    knee = pick(legs, lo[2] + span_leg * 0.55, lo[2] + span_leg * 0.80, min)
+    calf = pick(legs, lo[2] + span_leg * 0.30, lo[2] + span_leg * 0.60, max)
+    ankle = pick(legs, lo[2] + H * 0.02, lo[2] + span_leg * 0.35, min)
+    hip = pick(widths, crotch, crotch + (armpit - crotch) * 0.30, max)
+    waist = pick(widths, hip, armpit - (armpit - crotch) * 0.10, min)
+    chest = pick(widths, waist, armpit - (armpit - crotch) * 0.05, max)
+    neck, best = None, None
+    for r, v in zip(rows, widths):
+        if v is None or not (armpit + H * 0.02 <= r["z"] <= hi[2] - H * 0.03):
+            continue
+        if best is None or v < best[1]:
+            best = (r["z"], v)
+        elif v > best[1] * 1.2:
+            neck = best[0]
+            break
+    neck = neck if neck is not None else (best[0] if best else armpit + (hi[2] - armpit) * 0.45)
+
+    everything = _np.arange(n)
+    torso = lambda z: next((g for r in rows if abs(r["z"] - z) < step * 0.6
+                            for g in [_aria_central(r, world, cx)] if g is not None), everything)
+    reach = H * 0.015
+    found = {}
+
+    def put(name, vertex, size_name):
+        found[name] = (int(vertex), H * BODY_SIZES[size_name])
+
+    # Torso: front, back and sides of the measured slices.
+    put("neck", _aria_probe(world, torso(neck), cx, neck, "front", reach, reach), "neck")
+    put("chest", _aria_probe(world, torso(chest), cx, chest, "front", reach, reach), "chest")
+    put("back", _aria_probe(world, torso(chest), cx, chest, "back", reach, reach), "back")
+    # Just below the waist -- the navel. Halfway to the hip line put it
+    # at the groin on a figure whose hips are measured at crotch height.
+    belly_z = waist - (waist - hip) * 0.25
+    put("belly", _aria_probe(world, torso(belly_z), cx, belly_z, "front", reach, reach), "belly")
+    for side, sign, extreme in (("l", 1, "left"), ("r", -1, "right")):
+        t_chest = torso(chest)
+        half_chest = float(world[t_chest, 0].max() - world[t_chest, 0].min()) / 2.0
+        put(f"pec_{side}", _aria_probe(world, t_chest, cx + sign * half_chest * 0.5,
+                                       chest, "front", reach * 2, reach), "pec")
+        put(f"waist_{side}", _aria_probe(world, torso(waist), cx, waist, extreme, reach, reach), "waist")
+        put(f"hip_{side}", _aria_probe(world, torso(hip), cx, hip, extreme, reach, reach), "hip")
+        t_hip = torso(hip)
+        half_hip = float(world[t_hip, 0].max() - world[t_hip, 0].min()) / 2.0
+        put(f"buttock_{side}", _aria_probe(world, t_hip, cx + sign * half_hip * 0.45,
+                                           (hip + crotch) / 2.0, "back", reach * 2, reach * 2),
+            "buttock")
+
+    # Legs: the cluster on each side below the crotch.
+    def leg_of(z, sign):
+        row = min(rows, key=lambda r: abs(r["z"] - z))
+        side = [g for g in row["groups"] if (world[g, 0].mean() - cx) * sign > 0]
+        return max(side, key=lambda g: abs(world[g, 0].mean() - cx)) if side else everything
+
+    for side, sign in (("l", 1), ("r", -1)):
+        thigh_z = crotch - (crotch - knee) * 0.35
+        for name, z, pick_from, size in (("thigh", thigh_z, "front", "thigh"),
+                                         ("knee", knee, "front", "knee"),
+                                         ("calf", calf, "back", "calf"),
+                                         ("shin", (knee + ankle) / 2.0, "front", "shin"),
+                                         ("ankle", ankle, "front", "ankle")):
+            g = leg_of(z, sign)
+            put(f"{name}_{side}", _aria_probe(world, g, float(world[g, 0].mean()), z, pick_from,
+                                              reach * 3, reach), size)
+        feet = _np.nonzero((world[:, 2] < lo[2] + H * 0.04) & ((world[:, 0] - cx) * sign > 0))[0]
+        if len(feet):
+            put(f"foot_{side}", feet[_np.argmin(world[feet, 1])], "foot")
+
+    # Arms: each a line from the shoulder to the fingertip, measured on
+    # its own vertices, with its landmarks along that line.
+    axes = {}
+    if fingertip is not None:
+        for side, sign in (("l", 1), ("r", -1)):
+            members = []
+            for r in rows:
+                if fingertip <= r["z"] <= armpit and len(r["groups"]) >= 3:
+                    outer = max(r["groups"], key=lambda g: (world[g, 0].mean() - cx) * sign)
+                    members.extend(outer.tolist())
+            members = _np.unique(_np.array(members, dtype=_np.int64))
+            if len(members) < 20:
+                continue
+            pts = world[members]
+            centre = pts.mean(axis=0)
+            _u, _s, vt = _np.linalg.svd(pts - centre, full_matrices=False)
+            axis = vt[0] if vt[0][2] < 0 else -vt[0]           # toward the hand: downward
+            t = (pts - centre) @ axis
+            t0, t1 = t.min(), t.max()
+            frac = (t - t0) / max(t1 - t0, 1e-9)
+            for name, at, pick_from in (("upper_arm", 0.22, "front"), ("elbow", 0.48, "back"),
+                                        ("forearm", 0.64, "front"), ("wrist", 0.80, None),
+                                        ("hand", 0.92, None)):
+                near = _np.nonzero(_np.abs(frac - at) < 0.05)[0]
+                if not len(near):
+                    continue
+                if pick_from == "front":
+                    k = near[_np.argmin(pts[near, 1])]
+                elif pick_from == "back":
+                    k = near[_np.argmax(pts[near, 1])]
+                else:
+                    k = near[_np.argmax((pts[near, 0] - cx) * sign)]
+                put(f"{name}_{side}", members[k], name)
+                axes[f"{name}_{side}"] = axis
+            top = members[_np.argmax(pts[:, 2])]
+            shoulder_x = float(world[top, 0])
+            above = _np.nonzero((world[:, 2] > armpit - H * 0.01) & (world[:, 2] < armpit + H * 0.09))[0]
+            if len(above):
+                put(f"shoulder_{side}", _aria_probe(world, above, shoulder_x, armpit, "top",
+                                                    reach * 2, reach), "shoulder")
+
+    heights = {"crotch": crotch, "armpit": armpit, "knee": knee, "hip": hip, "waist": waist,
+               "chest": chest, "neck": neck}
+    return found, axes, heights, notes
+'''.replace("__HEAD_LANDMARKS__", repr(HEAD_LANDMARKS)).replace(
+    "BODY_SIZES", repr(BODY_LANDMARK_SIZES))
 
 
 def find_landmarks(params: Dict[str, Any]) -> str:
-    """Mark a head's features -- nose, chin, eyes, cheeks, mouth... -- by its shape.
+    """Mark a model's features by its shape, so strokes can aim at them by name.
 
-    For a head standing upright and facing -Y (the front view looks at
-    its face), as every model here does. The nose is found where it
-    actually sticks out, if it does; the rest are placed by stylized
-    proportions from the nose and the head's size, each on the surface
-    at that spot. Good enough to aim a brush at "the chin"; check them
-    with render_preview(show_landmarks=True), and move any that are off
-    with set_landmark, which always wins over this.
+    kind "head": a head standing upright, facing -Y -- nose (found where
+    it actually sticks out), chin, eyes, cheeks, mouth and its corners,
+    jaw, brow, forehead, ears, crown, back of the head.
 
-    only_missing (default true) keeps landmarks already set.
+    kind "body": a standing figure facing -Y with its arms hanging clear
+    of its sides (A-pose). Neck, chest, pecs, belly, back, waist, hips,
+    buttocks, shoulders; upper arm, elbow, forearm, wrist, hand along
+    each arm's own line; thigh, knee, calf, shin, ankle, foot on each
+    leg -- and the head's landmarks on the head above the neck. Heights
+    are read off the figure's slices (where the legs meet, where the
+    arms leave the body, the narrowest waist), not assumed. A T-pose is
+    marked without its arms, and says so.
+
+    Check them with render_preview(show_landmarks=True); set_landmark
+    moves any that are off and always wins. only_missing (default true)
+    keeps landmarks already set.
     """
     kind = _choice(params.get("kind"), LANDMARK_KINDS, "head")
     only_missing = "False" if params.get("only_missing") is False else "True"
-    return (_RENDER_KIT + _SCULPT_KIT +
+    return (_RENDER_KIT + _SCULPT_KIT + _LANDMARK_FINDER +
             f'_target = _obj({_text(params.get("object"))})\n'
             f'if _target.type != "MESH":\n'
             f'    raise RuntimeError("%r is a %s -- landmarks go on meshes" % (_target.name, _target.type))\n'
             f'_kind = {kind}\n'
             f'_mesh = _target.data\n'
             f'_n = len(_mesh.vertices)\n'
-            f'_co = _np.empty(_n * 3); _mesh.vertices.foreach_get("co", _co)\n'
-            f'_nr = _np.empty(_n * 3); _mesh.vertex_normals.foreach_get("vector", _nr)\n'
+            f'_co = _np.empty(_n * 3); _mesh.vertices.foreach_get("co", _co); _co = _co.reshape(-1, 3)\n'
+            f'_nr = _np.empty(_n * 3); _mesh.vertex_normals.foreach_get("vector", _nr); _nr = _nr.reshape(-1, 3)\n'
             f'_matrix = _np.array(_target.matrix_world)\n'
-            f'_world = _co.reshape(-1, 3) @ _matrix[:3, :3].T + _matrix[:3, 3]\n'
-            f'_lo, _hi = _world.min(axis=0), _world.max(axis=0)\n'
-            f'_W, _D, _H = (_hi - _lo)\n'
-            f'_cx, _cy = (_lo[0] + _hi[0]) / 2.0, (_lo[1] + _hi[1]) / 2.0\n'
-            f'\n'
-            f'def _probe(x, z, pick, reach=0.06):\n'
-            f'    for _grow in (1, 2, 4, 8):\n'
-            f'        _sel = (_np.abs(_world[:, 0] - x) < _W * reach * _grow) & '
-            f'(_np.abs(_world[:, 2] - z) < _H * reach * _grow)\n'
-            f'        if pick in ("left", "right"):\n'
-            f'            _sel = (_np.abs(_world[:, 2] - z) < _H * reach * _grow) & '
-            f'(_np.abs(_world[:, 1] - _cy) < _D * 0.3)\n'
-            f'        if pick == "top":\n'
-            f'            _sel = _np.abs(_world[:, 0] - x) < _W * 0.15 * _grow\n'
-            f'        _idx = _np.nonzero(_sel)[0]\n'
-            f'        if len(_idx):\n'
-            f'            break\n'
-            f'    else:\n'
-            f'        _idx = _np.arange(_n)\n'
-            f'    _column = _world[_idx]\n'
-            f'    _choose = {{"front": lambda c: _np.argmin(c[:, 1]), "back": lambda c: _np.argmax(c[:, 1]),\n'
-            f'               "left": lambda c: _np.argmax(c[:, 0]), "right": lambda c: _np.argmin(c[:, 0]),\n'
-            f'               "top": lambda c: _np.argmax(c[:, 2])}}[pick]\n'
-            f'    return int(_idx[_choose(_column)])\n'
-            f'\n'
-            f'# The nose: the front-most point of the middle band, if it stands\n'
-            f'# out from its neighbours; otherwise where proportions put it.\n'
-            f'_band = (_np.abs(_world[:, 0] - _cx) < _W * 0.12) & '
-            f'(_world[:, 2] > _lo[2] + _H * 0.30) & (_world[:, 2] < _lo[2] + _H * 0.60)\n'
-            f'_nose_z = _lo[2] + _H * 0.40\n'
-            f'_nose = None\n'
-            f'if _band.any():\n'
-            f'    _i = _np.nonzero(_band)[0][_np.argmin(_world[_band][:, 1])]\n'
-            f'    _around = (_np.abs(_world[:, 0] - _cx) < _W * 0.12) & '
-            f'(_np.abs(_world[:, 2] - _world[_i, 2]) < _H * 0.15) & '
-            f'(_np.abs(_world[:, 2] - _world[_i, 2]) > _H * 0.08)\n'
-            f'    _front = _world[_around][:, 1].min() if _around.any() else _world[_i, 1]\n'
-            f'    if _front - _world[_i, 1] > _H * 0.02:\n'
-            f'        _nose, _nose_z = _i, _world[_i, 2]\n'
-            f'if _nose is None:\n'
-            f'    _nose = _probe(_cx, _nose_z, "front")\n'
-            f'# Everything below the nose scales to the nose, everything above to the top.\n'
-            f'def _height(up):\n'
-            f'    _rest = _lo[2] + _H * 0.40\n'
-            f'    if up <= 0.40:\n'
-            f'        return _lo[2] + (_nose_z - _lo[2]) * (up / 0.40)\n'
-            f'    return _nose_z + (_hi[2] - _nose_z) * ((up - 0.40) / 0.60)\n'
-            f'\n'
-            f'_found = {{"nose": (_nose, 0.12)}}\n'
-            f'for _name, _across, _up, _pick, _size in {HEAD_LANDMARKS!r}:\n'
-            f'    _found[_name] = (_probe(_cx + _across * _W, _height(_up), _pick), _size)\n'
+            f'_world = _co @ _matrix[:3, :3].T + _matrix[:3, 3]\n'
+            f'_axes, _heights, _notes = {{}}, {{}}, []\n'
+            f'if _kind == "body":\n'
+            f'    _found, _axes, _heights, _notes = _aria_find_body(_world, _nr)\n'
+            f'    _head = _np.nonzero(_world[:, 2] > _heights["neck"])[0]\n'
+            f'    if len(_head) > 50:\n'
+            f'        for _name, _mark in _aria_find_head(_world, _head).items():\n'
+            f'            _found.setdefault(_name, _mark)\n'
+            f'else:\n'
+            f'    _found = _aria_find_head(_world, _np.arange(_n))\n'
             f'\n'
             f'_marks = _aria_landmarks_read(_target)\n'
-            f'_inverse_scale = 1.0 / max(sum(abs(s) for s in _target.matrix_world.to_scale()) / 3.0, 1e-9)\n'
+            f'_scale = max(sum(abs(s) for s in _target.matrix_world.to_scale()) / 3.0, 1e-9)\n'
+            f'_to_local = _np.linalg.inv(_matrix[:3, :3])\n'
             f'_placed = []\n'
-            f'for _name, (_i, _size) in _found.items():\n'
+            f'for _name, (_i, _radius) in _found.items():\n'
             f'    if {only_missing} and _name in _marks:\n'
             f'        continue\n'
-            f'    _marks[_name] = {{"at": [float(v) for v in _co.reshape(-1, 3)[_i]], '
-            f'"normal": [float(v) for v in _nr.reshape(-1, 3)[_i]], '
-            f'"radius": float(_W * _size * _inverse_scale), "source": "find_landmarks", '
-            f'"vertex": int(_i), "count": _n}}\n'
+            f'    _mark = {{"at": [float(v) for v in _co[_i]], "normal": [float(v) for v in _nr[_i]], '
+            f'"radius": float(_radius / _scale), "source": "find_landmarks", "vertex": int(_i), "count": _n}}\n'
+            f'    if _name in _axes:\n'
+            f'        _local_axis = _to_local @ _axes[_name]\n'
+            f'        _mark["axis"] = [float(v) for v in _local_axis / max(_np.linalg.norm(_local_axis), 1e-12)]\n'
+            f'    elif _name.split("_")[0] in ("thigh", "knee", "calf", "shin", "ankle", "foot"):\n'
+            f'        _down = _to_local @ _np.array([0.0, 0.0, -1.0])\n'
+            f'        _mark["axis"] = [float(v) for v in _down / max(_np.linalg.norm(_down), 1e-12)]\n'
+            f'    _marks[_name] = _mark\n'
             f'    _placed.append(_name)\n'
             f'_aria_landmarks_write(_target, _marks)\n'
             f'_RESULT["modified"].append(_target.name)\n'
             f'_note("find_landmarks", object=_target.name, kind=_kind, placed=sorted(_placed), '
-            f'kept=sorted(set(_marks) - set(_placed)), nose_found=bool(_band.any()))')
+            f'kept=sorted(set(_marks) - set(_placed)), '
+            f'heights={{k: round(float(v), 4) for k, v in _heights.items()}}, notes=_notes)')
 
 
 def set_landmark(params: Dict[str, Any]) -> str:
