@@ -855,7 +855,21 @@ def sculpt_brush(params: Dict[str, Any]) -> str:
 # ======================================================
 
 def _export_preamble(params: Dict[str, Any]) -> str:
-    """Select what is being exported, or everything."""
+    """Select what is being exported, or everything.
+
+    objects: several, each with everything parented under it -- a rig
+    and the meshes it moves, which is what a character is.
+    """
+    several = params.get("objects")
+    if several:
+        return (f'bpy.ops.object.select_all(action="DESELECT")\n'
+                f'for _name in {_names(several)}:\n'
+                f'    _root = _obj(_name)\n'
+                f'    for _o in [_root] + list(_root.children_recursive):\n'
+                f'        _o.hide_set(False)\n'
+                f'        _o.select_set(True)\n'
+                f'    bpy.context.view_layer.objects.active = _root\n'
+                f'_use_selection = True')
     only = params.get("object") or params.get("obj")
     if not only:
         return ('bpy.ops.object.select_all(action="SELECT")\n'

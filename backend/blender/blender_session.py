@@ -579,6 +579,10 @@ _FINAL = re.compile(r"\b(?:final|beauty|with (?:the |its )?(?:own )?lights)\b", 
 
 
 _MATCH = re.compile(r"\b(?:match|fit)\b", re.I)
+# "send him to Unity", "export the Miner into Unity", "put it in Unity".
+SEND_TO_UNITY = re.compile(
+    r"\b(?:send|export|put|move|take|bring|get)\b[\w\s'-]{0,40}?\b(?:to|into|in|over to)\s+unity\b", re.I)
+_CALLED = re.compile(r"\b(?:as|called|named)\s+(?:an?\s+|the\s+)?[\"']?([A-Z][\w-]*)", re.I)
 # A picture path, spaces allowed, from the drive letter to the extension.
 _PICTURE = re.compile(r"[A-Za-z]:[\\/][^\"<>|\r\n?*]*?\.(?:png|jpe?g|webp)\b", re.I)
 _VIEW_WORDS = (("right", ("side", "right", "profile")), ("left", ("left",)),
@@ -822,6 +826,31 @@ def _answer_match(said: str, session: "Session") -> dict:
     return outcome
 
 
+def answer_send(said: str, session: "Session") -> Optional[dict]:
+    """"Send him to Unity" -- the rig and its meshes, set up as a Humanoid there.
+
+    None when nothing in the scene has a skeleton: "export the car to
+    Unity" is a plain model export, which the mapper already does.
+    """
+    from backend.blender import blender_to_unity
+
+    scene = session.describe()
+    objects = (scene.get("scene") or {}).get("objects") or []
+    if not any(o.get("type") == "ARMATURE" for o in objects):
+        return None
+    project = blender_to_unity.project_named(said)
+    names = {o["name"].lower(): o["name"] for o in objects}
+    rig = next((names[w.lower()] for w in re.findall(r"[\w.-]+", said) if w.lower() in names), None)
+    called = _CALLED.search(said)
+    outcome = blender_to_unity.send(session, project=project, rig=rig,
+                                    name=called.group(1) if called else None)
+    pictures = outcome.get("pictures") or []
+    if pictures:
+        outcome["text"] += "\n\nIn Unity:\n\n" + "\n\n".join(
+            picture_markdown([p], Path(p).stem.split("_", 1)[-1]) for p in pictures)
+    return outcome
+
+
 def answer_command(text: str, session: Optional["Session"] = None, *,
                    allow_look: bool = True, gated: bool = True) -> Optional[dict]:
     """Undo, start over, describe, or look -- or None if it is none of those.
@@ -847,6 +876,10 @@ def answer_command(text: str, session: Optional["Session"] = None, *,
         return {"ran": True, **session.undo()}
     if changes_allowed and _RESET.search(said):
         return {"ran": True, **session.reset()}
+    if changes_allowed and SEND_TO_UNITY.search(said):
+        sent = answer_send(said, session)
+        if sent is not None:
+            return {"ran": True, **sent}
     if changes_allowed and _MATCH.search(said) and _PICTURE.search(said):
         return {"ran": True, **_answer_match(said, session)}
     clip = _clip_asked(said) if changes_allowed else None

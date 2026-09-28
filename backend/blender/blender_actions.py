@@ -684,6 +684,15 @@ def answer_request(text: str, *,
     live = mapping.names_live_blender(said) and not other_tool
     session = blender_session.LiveSession() if live else blender_session.Session()
 
+    # "Send him to Unity" names no Blender, and needs none: "him" is the
+    # character chat has been building. A question about it still is not
+    # an instruction.
+    if (blender_session.SEND_TO_UNITY.search(said) and not other_tool
+            and not mapping._ASKING_ABOUT.match(said) and not mapping._WANTS_EXPLANATION.search(said)):
+        sent = blender_session.answer_send(said, session)
+        if sent is not None:
+            return {"ran": True, **sent}
+
     # Undo, start over and "what is in the scene" are about the scene
     # chat has been building, not requests to build something. Looking
     # and describing change nothing, so "what's in the Blender scene?"
