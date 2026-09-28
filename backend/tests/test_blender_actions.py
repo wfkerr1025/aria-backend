@@ -291,6 +291,8 @@ EVERY_ACTION = [
     ("add_clip", {"armature": "Body_Rig", "clip": "walk", "name": "Walk", "speed": 1.0,
                   "strength": 1.0}),
     ("play_clip", {"armature": "Body_Rig", "clip": "Walk"}),
+    # Python, fenced. Run for real in test_blender_python.py.
+    ("run_python", {"code": "result['n'] = len(bpy.data.objects)"}),
     ("sculpt_stroke", {"object": "Head", "brush": "draw", "points": [[0, -0.5, 1]],
                        "radius": 0.08, "strength": 0.5, "falloff": "smooth",
                        "mirror": "X", "spacing": 0.25, "front_only": True}),

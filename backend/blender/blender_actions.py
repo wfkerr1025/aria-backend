@@ -210,7 +210,8 @@ def run_actions(actions: Sequence[Dict[str, Any]], *,
                 on_output: Optional[Callable[[str, str], None]] = None,
                 timeout: Optional[int] = None,
                 keep_script: bool = False,
-                allow_clearing_saved_file: bool = False) -> dict:
+                allow_clearing_saved_file: bool = False,
+                allow_python: bool = False) -> dict:
     """Perform a list of actions and report what happened.
 
     `blend_file` opens an existing .blend first, so a second run can
@@ -224,6 +225,15 @@ def run_actions(actions: Sequence[Dict[str, Any]], *,
     Never raises for anything Blender does. A missing object, a bad
     parameter and a crash are all answers, and each says which.
     """
+    # run_python is the one action whose body is not a template. It runs
+    # only when the caller says so, here; chat never does. See
+    # blender_script_templates.run_python for the rest of the fence.
+    if not allow_python and any(str((a or {}).get("action")) == "run_python" for a in actions):
+        return {"success": False, "ran": False, "output": "", "result": None, "script": None,
+                "error": ("run_python was refused: Python runs only when it is explicitly "
+                          "allowed -- from the session command line with --allow-python, "
+                          "never from chat. Nothing ran.")}
+
     if not allow_clearing_saved_file:
         destructive = _would_destroy_the_opened_file(actions, blend_file)
         if destructive:

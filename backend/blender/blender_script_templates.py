@@ -5439,6 +5439,68 @@ def play_clip(params: Dict[str, Any]) -> str:
             f'_note("play_clip", armature=_rig.name, clip=_act.name, frames=[_s, _e])')
 
 
+# ======================================================
+# Python, when no action fits
+#
+# Every other action is a fixed template with typed leaves, and that
+# is still the rule: the module docstring says why, with a model's
+# invented operators as the evidence. This is the one exception, and it
+# is fenced three ways, none of them this function:
+#   * run_actions refuses it unless the caller passes allow_python=True,
+#     which chat never does and the session command line does only with
+#     --allow-python -- so it is a person or Claude at a terminal, never
+#     a model, and never text pasted into chat;
+#   * a session keeps a version before every step, so it can be undone;
+#   * the words below are refused outright. That list is a guard against
+#     an accident, NOT a sandbox: Python run inside Blender can do
+#     anything Blender can, and nothing here pretends otherwise.
+# ======================================================
+
+PYTHON_REFUSED = (
+    "subprocess", "shutil", "os.system", "os.popen", "os.remove", "os.unlink", "os.rmdir",
+    "os.removedirs", "rmtree", "__import__", "ctypes", "socket", "urllib", "requests",
+    "http.client", "wm.quit_blender", "importlib",
+)
+
+
+def run_python(params: Dict[str, Any]) -> str:
+    """Run Python inside Blender, for what no action does -- explicitly allowed only.
+
+    code: the script. It sees bpy, mathutils, bmesh, numpy (np), json,
+    obj(name) (the object, or an error naming what there is), and a dict
+    `result` whose contents come back in the run's report. Blender 5.0's
+    exact operators and types: python -m backend.blender.blender_api.
+
+    Refused unless the run is allowed Python (run_actions(...,
+    allow_python=True); the session command line's --allow-python), and
+    refused if it names process, network or file-deletion calls.
+    """
+    code = str(params.get("code") or "")
+    if not code.strip():
+        raise BadValue("run_python needs code.")
+    lowered = code.lower()
+    hits = [word for word in PYTHON_REFUSED if word in lowered]
+    if hits:
+        raise BadValue(f"run_python refuses code that uses {', '.join(hits)}. Scene work "
+                       f"does not need them; if this really does, do it outside Blender.")
+    try:
+        compile(code, "<run_python>", "exec")
+    except SyntaxError as error:
+        raise BadValue(f"that Python does not parse: {error.msg} (line {error.lineno}).") from None
+    return (f'import bmesh as _bmesh\n'
+            f'import numpy as _np_rp\n'
+            f'_space = {{"bpy": bpy, "mathutils": mathutils, "bmesh": _bmesh, "np": _np_rp, '
+            f'"json": json, "obj": _obj, "result": {{}}}}\n'
+            f'exec(compile({code!r}, "<run_python>", "exec"), _space)\n'
+            f'try:\n'
+            f'    json.dumps(_space["result"])\n'
+            f'    _back = _space["result"]\n'
+            f'except (TypeError, ValueError):\n'
+            f'    _back = {{k: repr(v) for k, v in _space["result"].items()}}\n'
+            f'_RESULT.setdefault("python", []).append(_back)\n'
+            f'_note("run_python", lines={len(code.splitlines())}, result=_back)')
+
+
 TEMPLATES = {
     "apply_transforms": apply_transforms,
     "remove_stray_meshes": remove_stray_meshes,
@@ -5542,6 +5604,7 @@ TEMPLATES = {
     "auto_rig": auto_rig,
     "add_clip": add_clip,
     "play_clip": play_clip,
+    "run_python": run_python,
     "enable_dyntopo": enable_dyntopo,
     "apply_multires": apply_multires,
     # export

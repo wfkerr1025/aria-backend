@@ -200,7 +200,7 @@ class Session:
     def run(self, work: Work, *, preview: Optional[str] = "material",
             views: Optional[Sequence[str]] = None, size: int = 512,
             on_output: Optional[Callable[[str, str], None]] = None,
-            timeout: Optional[int] = None) -> dict:
+            timeout: Optional[int] = None, allow_python: bool = False) -> dict:
         """Do the work on the scene, save it, and look at the result.
 
         preview: "material", "clay", "final", or None for no picture.
@@ -256,7 +256,7 @@ class Session:
             on_output=on_output, timeout=timeout,
             # A version was just kept, so clearing and saving back is
             # undoable here -- the loss that guard exists for cannot happen.
-            allow_clearing_saved_file=True)
+            allow_clearing_saved_file=True, allow_python=allow_python)
 
         # A step that succeeded saved the scene, so its version is kept.
         # Only a failed one is checked for whether it got as far as the
@@ -278,6 +278,7 @@ class Session:
             "exported": [p for p in outcome.get("exported") or [] if p != str(self.scene)],
             "renders": outcome.get("renders") or [],
             "comparisons": outcome.get("comparisons") or [],
+            "python": outcome.get("python") or [],
             "notes": [s for s in outcome.get("steps") or []
                       if s.get("step") in REPORTING_STEPS or s.get("skipped")],
         }
@@ -777,6 +778,9 @@ def summarize(entry: dict) -> str:
                      + (f" (+{len(renders) - 1} single views)" if len(renders) > 1 else ""))
     if entry.get("scene"):
         lines.append(describe_text(entry["scene"]))
+    for back in entry.get("python") or []:
+        if back:
+            lines.append("Python result: " + json.dumps(back)[:2000])
     for comparison in entry.get("comparisons") or []:
         lines.append(comparison_text(comparison))
     for note in entry.get("notes") or []:
@@ -917,6 +921,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     run.add_argument("--size", type=int, default=512)
     run.add_argument("--no-preview", action="store_true")
     run.add_argument("--timeout", type=int)
+    run.add_argument("--allow-python", action="store_true",
+                     help="let RunPython(...) steps run (never allowed from chat)")
 
     look = sub.add_parser("look", parents=[common], help="render the scene without changing it")
     look.add_argument("--look", default="material", choices=sorted(templates.PREVIEW_LOOKS))
@@ -955,7 +961,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         else:
             work = sys.stdin.read()
         outcome = session.run(work, preview=None if args.no_preview else args.look,
-                              views=split(args.views), size=args.size, timeout=args.timeout)
+                              views=split(args.views), size=args.size, timeout=args.timeout,
+                              allow_python=args.allow_python)
     elif args.command == "look":
         outcome = session.look(args.look, split(args.views), args.size, split(args.objects))
     elif args.command == "describe":
