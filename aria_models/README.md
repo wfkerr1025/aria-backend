@@ -28,8 +28,8 @@ answer and `aria_recipes/blender/` builds those procedurally.
 | file | what |
 | --- | --- |
 | `manifest_human_base_meshes.json` | where the bundle came from, its licence, its checksum, and every base worth using with its measured poly count |
-| `blender/human/human_base_meshes_bundle.blend` | the bundle itself, 49 MB |
-| `blender/human/thumbnails/` | one picture per asset |
+| `blender/meshes/human_base_meshes_bundle.blend` | the bundle itself, 49 MB |
+| `blender/meshes/thumbnails/` | one picture per asset |
 | `fetch_human_base_meshes.py` | re-downloads and verifies the .blend against the manifest's sha256 |
 | `landmarks_human_base_meshes.json` | where each body's parts are -- ankle, knee, crotch, waist, chest, armpit, neck, chin, crown -- in the world metres a recipe sees |
 | `measure_base_landmarks.py` | re-derives that table by slicing the bodies in Blender |

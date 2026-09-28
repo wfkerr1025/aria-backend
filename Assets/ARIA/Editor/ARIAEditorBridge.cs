@@ -70,7 +70,7 @@ namespace ARIA.Bridge
     [InitializeOnLoad]
     public static class ARIAEditorBridge
     {
-        public const string Version = "1.5.1";
+        public const string Version = "1.5.4";
 
         /// <summary>Folder beside Assets/ that holds the two RPC files.</summary>
         public const string FolderName = "ARIA";
@@ -137,6 +137,18 @@ namespace ARIA.Bridge
             _mainThread = System.Threading.Thread.CurrentThread.ManagedThreadId;
             Application.logMessageReceivedThreaded += OnLogMessage;
             AssemblyReloadEvents.beforeAssemblyReload += SaveLog;
+
+            // The driven Input System settings are an in-memory copy. A reload
+            // destroys it while the Input System still points at it, and the
+            // next domain comes up with a null settings object: its static
+            // initializer then throws for ever and nothing in the editor can
+            // read input again. Hand the project's own settings back first.
+            // (Ores & Odds, 2026-09-22: a recompile during a test session put
+            // the editor in exactly that state until a settings asset was
+            // written by hand.)
+#if ENABLE_INPUT_SYSTEM
+            AssemblyReloadEvents.beforeAssemblyReload += RestoreInputSettingsBeforeReload;
+#endif
             UnityEditor.Compilation.CompilationPipeline.compilationStarted += OnCompilationStarted;
             UnityEditor.Compilation.CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompiled;
             UnityEditor.Compilation.CompilationPipeline.compilationFinished += OnCompilationFinished;
@@ -2105,6 +2117,16 @@ namespace ARIA.Bridge
         private const string TestSaveFolderName = "testsave";
         private const string LastPlayFileName = "last_play.json";
 
+        /// <summary>
+        /// A start on its way in, as a file.
+        ///
+        /// SessionState is wiped by the session going out -- EndSession runs
+        /// after the next SetPlayMode has already armed its own -- and a start
+        /// that loses its claim plays against the player's real save. A file
+        /// belongs to the request that wrote it and to nothing else.
+        /// </summary>
+        private const string PendingStartFileName = "pending_start.json";
+
         // SessionState outlives the domain reload that entering play mode
         // causes and dies with the editor, which is exactly a session's life.
         private const string PendingStartKey = "ARIA.Bridge.PendingStart";
@@ -2128,6 +2150,57 @@ namespace ARIA.Bridge
             get { return Path.Combine(BridgeFolder, LastPlayFileName); }
         }
 
+        /// <summary>The start waiting to be claimed, if a request armed one.</summary>
+        private static string PendingStartPath
+        {
+            get { return Path.Combine(BridgeFolder, PendingStartFileName); }
+        }
+
+        /// <summary>The folder a pending start asked for, or "" when there is none.</summary>
+        private static string PendingStartFolder()
+        {
+            try
+            {
+                if (!File.Exists(PendingStartPath)) return "";
+
+                object parsed;
+                string error;
+                if (!Json.TryParse(File.ReadAllText(PendingStartPath), out parsed, out error)) return "";
+
+                Dictionary<string, object> asked = parsed as Dictionary<string, object>;
+                if (asked == null) return "";
+
+                // Older than a session ever takes to start means a request that
+                // never arrived: a compile error on the way in, or an editor
+                // closed mid-start. It must not claim the next person's Play.
+                double stamped;
+                string when = Convert.ToString(asked.ContainsKey("askedAt") ? asked["askedAt"] : "",
+                                               CultureInfo.InvariantCulture);
+
+                if (!double.TryParse(when, NumberStyles.Float, CultureInfo.InvariantCulture, out stamped)) return "";
+                if (EditorApplication.timeSinceStartup - stamped >= PendingStartSeconds) return "";
+
+                return Convert.ToString(asked.ContainsKey("folder") ? asked["folder"] : "",
+                                        CultureInfo.InvariantCulture) ?? "";
+            }
+            catch (Exception)
+            {
+                return "";
+            }
+        }
+
+        private static void ErasePendingStart()
+        {
+            try
+            {
+                if (File.Exists(PendingStartPath)) File.Delete(PendingStartPath);
+            }
+            catch (Exception failure)
+            {
+                Debug.LogWarning("[ARIA] Could not clear " + PendingStartPath + ": " + failure.Message);
+            }
+        }
+
         /// <summary>Whether the game now playing was started by the bridge against its test folder.</summary>
         private static bool Driving
         {
@@ -2141,8 +2214,15 @@ namespace ARIA.Bridge
             get { return Environment.GetEnvironmentVariable(TestSaveVariable) ?? ""; }
         }
 
+        /// <summary>
+        /// Whether a SetPlayMode from moments ago is still waiting to be
+        /// claimed. The file is what decides it; SessionState is kept only so
+        /// an editor that reloaded mid-request still agrees.
+        /// </summary>
         private static bool StartPending()
         {
+            if (!string.IsNullOrEmpty(PendingStartFolder())) return true;
+
             double asked;
             string pending = SessionState.GetString(PendingStartKey, "");
             return double.TryParse(pending, NumberStyles.Float, CultureInfo.InvariantCulture, out asked) &&
@@ -2225,24 +2305,93 @@ namespace ARIA.Bridge
         /// survived: a recompile between the request and the start is a
         /// domain reload, and the one place worth being sure is here.
         /// </summary>
+        /// <summary>
+        /// Decide, as play begins, whether this session is the bridge's.
+        ///
+        /// Asked more than once for a single entry: Unity raised
+        /// ExitingEditMode twice, and the second call -- with the armed start
+        /// already consumed by the first -- used to call it a person pressing
+        /// Play and clear the variable, so the game booted against the real
+        /// save. A claim already in force is therefore re-affirmed rather than
+        /// re-decided; only an entry with nothing armed and nothing claimed is
+        /// somebody pressing Play by hand.
+        /// </summary>
         private static void ClaimOrDisownStart()
         {
-            bool claimed = StartPending();
+            // The file first: it is the one thing the session going out cannot
+            // clear. Driving is not trusted to decide, only to remember.
+            string folder = PendingStartFolder();
+
+            if (string.IsNullOrEmpty(folder))
+            {
+                folder = StartPending() ? SessionState.GetString(TestSaveKey, "") : "";
+            }
+
+            bool armed = !string.IsNullOrEmpty(folder);
+
+            // Already claimed for this entry, by an earlier call of this very
+            // method. The variable is set again rather than trusted to have
+            // survived the reload in between.
+            if (!armed && Driving)
+            {
+                string held = SessionState.GetString(TestSaveKey, "");
+
+                if (!string.IsNullOrEmpty(held))
+                {
+                    Environment.SetEnvironmentVariable(TestSaveVariable, held);
+                    Debug.Log("[ARIA] Test session still claimed: " + held);
+                    return;
+                }
+            }
+
             SessionState.EraseString(PendingStartKey);
+            ErasePendingStart();
 
-            string folder = SessionState.GetString(TestSaveKey, "");
-
-            if (claimed && Driving && !string.IsNullOrEmpty(folder))
+            if (armed)
             {
                 Environment.SetEnvironmentVariable(TestSaveVariable, folder);
+                SessionState.SetString(TestSaveKey, folder);
+                Driving = true;
+
+                Debug.Log("[ARIA] Test session claimed: " + folder);
                 return;
             }
 
-            if (!claimed) EndTestSave();
+            ForgetTestSave();
+            Debug.Log("[ARIA] Play mode entered by hand: the game plays against its real save.");
         }
 
-        /// <summary>Forget the test folder: the variable, and the session's claim to it.</summary>
+        /// <summary>
+        /// Forget the test folder: the variable, and the session's claim to it.
+        ///
+        /// Never a start that is on its way in. A session ending and a session
+        /// beginning overlap: EnteredEditMode for the one that stopped can
+        /// land AFTER SetPlayMode has armed the next, and clearing the folder
+        /// there left the claim to fail and the game boot against the
+        /// player's real save. Measured, once, on a run that began a second
+        /// after the previous one ended -- it wrote the real save on the way
+        /// out. Forced is for the two places that mean it: a start that was
+        /// disowned, and a session deliberately asked for on the real save.
+        /// </summary>
         private static void EndTestSave()
+        {
+            if (StartPending()) return;
+
+            ForgetTestSave();
+        }
+
+        /// <summary>Arm a start: the folder, and when it was asked for.</summary>
+        private static void ArmPendingStart(string folder)
+        {
+            Dictionary<string, object> asked = new Dictionary<string, object>();
+            asked["folder"] = folder.Replace('\\', '/');
+            asked["askedAt"] = EditorApplication.timeSinceStartup;
+            asked["askedAtUtc"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+
+            WriteReport(PendingStartPath, asked);
+        }
+
+        private static void ForgetTestSave()
         {
             Environment.SetEnvironmentVariable(TestSaveVariable, null);
             SessionState.EraseString(TestSaveKey);
@@ -2528,6 +2677,13 @@ namespace ARIA.Bridge
                 return Ok("Leaving play mode.", data);
             }
 
+            if (wanted && EditorApplication.isPlayingOrWillChangePlaymode != EditorApplication.isPlaying)
+            {
+                return Fail("Play mode is still changing, so play mode was not started. A request armed " +
+                            "now can be disowned by the session on its way out, and the game would boot " +
+                            "against the REAL save. Send it again once the editor has settled.");
+            }
+
             bool focused = InternalEditorUtility.isApplicationActive;
             data["focused"] = focused;
 
@@ -2581,7 +2737,7 @@ namespace ARIA.Bridge
             }
             else
             {
-                EndTestSave();
+                ForgetTestSave();
                 data["testSave"] = null;
                 data["warning"] = "testSave is off: the game is playing against its REAL save.";
             }
@@ -2606,6 +2762,9 @@ namespace ARIA.Bridge
             SessionState.SetString(SessionLogStartKey, LogNext.ToString(CultureInfo.InvariantCulture));
             SessionState.SetString(PendingStartKey,
                 EditorApplication.timeSinceStartup.ToString("R", CultureInfo.InvariantCulture));
+
+            if (testSave) ArmPendingStart(Path.GetFullPath(TestSaveFolder));
+            else ErasePendingStart();
 
             EditorApplication.EnterPlaymode();
 
@@ -4038,6 +4197,21 @@ namespace ARIA.Bridge
             InputSystem.settings = driven;
         }
 
+        /// <summary>
+        /// Put the project's settings back before the domain goes away, so no
+        /// reload is ever left holding a destroyed settings object.
+        /// </summary>
+        private static void RestoreInputSettingsBeforeReload()
+        {
+            if (_drivenInputSettings == null && _originalInputSettings == null) return;
+
+            if (_originalInputSettings != null) InputSystem.settings = _originalInputSettings;
+
+            if (_drivenInputSettings != null) Object.DestroyImmediate(_drivenInputSettings);
+            _originalInputSettings = null;
+            _drivenInputSettings = null;
+        }
+
         private static void RestoreInput()
         {
             RemoveAriaDevices();
@@ -4058,8 +4232,19 @@ namespace ARIA.Bridge
         /// </summary>
         private static void RecoverInputSettings()
         {
-            InputSettings current = InputSystem.settings;
-            if (current == null || current.name != DrivenInputSettingsName) return;
+            InputSettings current = null;
+            try
+            {
+                current = InputSystem.settings;
+            }
+            catch (TypeInitializationException)
+            {
+                // The Input System could not start at all, which is what a
+                // null settings object does to it. Nothing here can help.
+                return;
+            }
+
+            if (current != null && current.name != DrivenInputSettingsName) return;
 
             InputSettings asset;
             bool fromProject = EditorBuildSettings.TryGetConfigObject("com.unity.input.settings", out asset) && asset != null;

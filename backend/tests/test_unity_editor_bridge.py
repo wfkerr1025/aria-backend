@@ -653,8 +653,10 @@ def test_a_person_pressing_play_is_never_a_test_session():
     assert "PlayModeStateChange.EnteredEditMode" in changed and "EndSession()" in changed
 
     claim = _csharp_method(source, "private static void ClaimOrDisownStart()")
-    assert "StartPending()" in claim
-    assert "if (!claimed) EndTestSave();" in claim
+    assert "StartPending()" in claim and "PendingStartFolder()" in claim
+    # 1.5.4: entering play raises ExitingEditMode twice; the second call must
+    # re-affirm a claim in force, not decide a person pressed Play.
+    assert claim.index('"[ARIA] Test session still claimed: "') < claim.index("ForgetTestSave();")
 
     end = _csharp_method(source, "private static void EndSession()")
     assert end.index("EndTestSave()") < end.index("if (!wasDriving) return;"), \
