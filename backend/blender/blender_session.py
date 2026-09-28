@@ -67,7 +67,7 @@ READ_ONLY_ACTIONS = frozenset(RENDER_ACTIONS) | {"describe_scene", "measure_mesh
 # a brush actually did -- a stroke that moved nothing is a stroke that
 # missed, and the picture alone does not always show it.
 REPORTING_STEPS = ("measure_mesh", "measure_rig", "describe_scene", "sculpt_stroke",
-                   "fit_to_reference", "mirror_shape_key", "transfer_weights", "find_landmarks", "auto_rig")
+                   "fit_to_reference", "mirror_shape_key", "transfer_weights", "find_landmarks", "auto_rig", "add_clip")
 
 Work = Union[str, Sequence[Dict[str, Any]]]
 
@@ -610,6 +610,63 @@ def _answer_rig(said: str, session: "Session") -> dict:
     return outcome
 
 
+# Clip words, and the frames that show each one best, from the side that
+# shows it best.
+_CLIP_WORDS = (
+    ("walk", re.compile(r"\b(?:walk(?:s|ing)?|stroll(?:s|ing)?)\b", re.I), ["right"], [1, 7, 13, 19]),
+    ("wave", re.compile(r"\bwav(?:e|es|ing)\b", re.I), ["front"], [1, 13, 20, 27]),
+    ("jump", re.compile(r"\bjump(?:s|ing)?\b", re.I), ["right"], [1, 9, 17, 27]),
+    ("nod", re.compile(r"\bnod(?:s|ding)?\b", re.I), ["right"], [1, 7, 13, 19]),
+    ("idle", re.compile(r"\b(?:idle|breath(?:e|es|ing))\b", re.I), ["front"], [1, 25]),
+)
+_ANIMATE = re.compile(r"\b(?:make|makes|let|have|add|give|animate|animation|cycle|clip)\b", re.I)
+
+
+def _clip_asked(said: str) -> Optional[str]:
+    if not _ANIMATE.search(said):
+        return None
+    return next((name for name, words, _v, _f in _CLIP_WORDS if words.search(said)), None)
+
+
+def _answer_clip(said: str, clip: str, session: "Session") -> dict:
+    """"Make him walk in Blender" -- rig first if need be, then the clip, shown in frames."""
+    target, entry, problem = _pick_model(said, session, "animate", "make the {} walk")
+    if problem:
+        return problem
+    rig = entry.get("parent")
+    actions: List[dict] = []
+    rigged_now = False
+    if not rig:
+        if not {"hip_l", "knee_l", "neck", "crown"} <= set(entry.get("landmarks") or []):
+            actions.append({"action": "find_landmarks", "params": {"object": target, "kind": "body"}})
+        actions.append({"action": "auto_rig", "params": {"object": target}})
+        rig, rigged_now = f"{target}_Rig", True
+    speed = 0.6 if re.search(r"\bslow(?:ly)?\b", said, re.I) else (
+        1.6 if re.search(r"\b(?:fast|quick(?:ly)?|brisk(?:ly)?)\b", said, re.I) else 1.0)
+    actions.append({"action": "add_clip", "params": {"armature": rig, "clip": clip, "speed": speed}})
+    views, frames = next((v, f) for n, _w, v, f in _CLIP_WORDS if n == clip)
+    frames = [max(1, int(round((f - 1) / speed)) + 1) for f in frames]
+    actions.append({"action": "render_preview", "params": {
+        "look": "clay", "views": views, "frames": frames, "size": 360}})
+    outcome = session.run(actions)
+    if outcome.get("success"):
+        made = next((n for n in outcome.get("notes") or [] if n.get("step") == "add_clip"), {})
+        lines = [f"Made a {clip} clip called {made.get('clip', clip.capitalize())} on {rig}"
+                 + (f", at {speed:g}x speed" if speed != 1.0 else "") + "."]
+        if rigged_now:
+            lines.append(f"{target} had no skeleton, so I rigged it first (Unity Humanoid bone names).")
+        if made.get("skipped"):
+            lines.append("The rig has no " + ", ".join(made["skipped"]) + ", so those parts hold still.")
+        clips = made.get("clips") or []
+        if len(clips) > 1:
+            lines.append("Clips in the file: " + ", ".join(clips) + ". Exported to FBX they arrive "
+                         "in Unity as separate clips.")
+        lines.append(picture_markdown(outcome.get("renders") or [], f"{clip} frames"))
+        lines.append("Say \"undo in Blender\" to take it back.")
+        outcome["text"] = "\n\n".join(lines)
+    return outcome
+
+
 def _answer_match(said: str, session: "Session") -> dict:
     """"Match it to D:\\Refs\\front.png and D:\\Refs\\side.png in Blender"."""
     pictures = _PICTURE.findall(said)
@@ -662,6 +719,9 @@ def answer_command(text: str, session: Optional["Session"] = None, *,
         return {"ran": True, **session.reset()}
     if changes_allowed and _MATCH.search(said) and _PICTURE.search(said):
         return {"ran": True, **_answer_match(said, session)}
+    clip = _clip_asked(said) if changes_allowed else None
+    if clip:
+        return {"ran": True, **_answer_clip(said, clip, session)}
     if changes_allowed and _RIG.search(said):
         return {"ran": True, **_answer_rig(said, session)}
     if changes_allowed:

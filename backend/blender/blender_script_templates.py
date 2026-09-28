@@ -2933,6 +2933,18 @@ def _engine_line(params: Dict[str, Any], restore: str = "_restore") -> str:
             f'_aria_engine({_choice(params.get("engine"), RENDER_ENGINES, "EEVEE")}))\n')
 
 
+def _frame_list(value: Any) -> str:
+    """Frames to render, as a literal list of whole numbers (or [])."""
+    if value is None or value == "" or value == []:
+        return "[]"
+    if isinstance(value, (int, float, str)):
+        value = [value]
+    try:
+        return repr([int(v) for v in value][:24])
+    except (TypeError, ValueError):
+        raise BadValue(f"{value!r} is not a list of frame numbers.") from None
+
+
 def render_preview(params: Dict[str, Any]) -> str:
     """Look at the model from several sides and save what it looks like.
 
@@ -2947,7 +2959,9 @@ def render_preview(params: Dict[str, Any]) -> str:
     bottom, three_quarter, three_quarter_back. object/objects: frame
     only these. skip_empty: an empty scene is noted, not an error.
     show_landmarks: red dots on every landmark, to check where "the
-    nose" is before a brush is aimed at it.
+    nose" is before a brush is aimed at it. frames: render these frames
+    of the animation (up to 24) for every view, framed on the whole
+    motion -- a clip checked by eye.
     """
     views = _views(params.get("views"))
     look = _choice(params.get("look"), PREVIEW_LOOKS, "material")
@@ -3031,12 +3045,29 @@ def render_preview(params: Dict[str, Any]) -> str:
             f'    _scene.collection.objects.link(_cam)\n'
             f'    _restore.set(_scene, "camera", _cam)\n'
             f'    _restore.set(_scene.render, "filepath", _scene.render.filepath)\n'
+            f'    _frames = {_frame_list(params.get("frames"))}\n'
+            f'    if _frames:\n'
+            f'        # Framed on the whole motion, not one moment of it: a jump\n'
+            f'        # framed at its start leaves the top of the picture.\n'
+            f'        _restore.set(_scene, "frame_current", _scene.frame_current)\n'
+            f'        _points = []\n'
+            f'        for _f in _frames:\n'
+            f'            _scene.frame_set(_f)\n'
+            f'            _points += _aria_bounds(_targets)[0]\n'
+            f'        _lo = mathutils.Vector([min(p[i] for p in _points) for i in range(3)])\n'
+            f'        _hi = mathutils.Vector([max(p[i] for p in _points) for i in range(3)])\n'
+            f'        _centre, _radius = (_lo + _hi) / 2.0, max((_hi - _lo).length / 2.0, 0.001)\n'
             f'    for _view, _direction in {directions}.items():\n'
             f'        _aria_aim(_cam, _direction, _points, _centre, _radius, _view.startswith("three_quarter"))\n'
-            f'        _file = _stem + "_" + _view + ".png"\n'
-            f'        _scene.render.filepath = _file\n'
-            f'        bpy.ops.render.render(write_still=True)\n'
-            f'        _written.append(_file)\n'
+            f'        for _f in (_frames or [None]):\n'
+            f'            if _f is not None:\n'
+            f'                _scene.frame_set(_f)\n'
+            f'            _file = _stem + "_" + _view + ("" if _f is None else "_f%03d" % _f) + ".png"\n'
+            f'            _scene.render.filepath = _file\n'
+            f'            bpy.ops.render.render(write_still=True)\n'
+            f'            _written.append(_file)\n'
+            f'    if _frames:\n'
+            f'        _scene.frame_set(_scene.frame_current)\n'
             f'    if {sheet} and len(_written) > 1:\n'
             f'        _aria_sheet(_written, {size}, _target_path)\n'
             f'        _written.insert(0, _target_path)\n'
@@ -3175,6 +3206,12 @@ def describe_scene(params: Dict[str, Any]) -> str:
             '              "hidden": bool(_o.hide_render)}\n'
             '    if _o.modifiers:\n'
             '        _entry["modifiers"] = [m.type + ":" + m.name for m in _o.modifiers]\n'
+            '    if _o.type in {"MESH", "CURVE", "FONT", "SURFACE", "META"}:\n'
+            '        # As it stands at this frame -- posed, deformed, modified.\n'
+            '        _seen = _o.evaluated_get(_graph)\n'
+            '        _corners = [_seen.matrix_world @ mathutils.Vector(c) for c in _seen.bound_box]\n'
+            '        _entry["bounds"] = [[round(min(c[i] for c in _corners), 4) for i in range(3)],\n'
+            '                            [round(max(c[i] for c in _corners), 4) for i in range(3)]]\n'
             '    if _o.get("aria_landmarks"):\n'
             '        # Where each one is now, in the scene -- on its vertex if the\n'
             '        # mesh still has the vertices it was marked on.\n'
@@ -5189,6 +5226,219 @@ def auto_rig(params: Dict[str, Any]) -> str:
             f'vertices=len(_target.data.vertices), unweighted=_unweighted)')
 
 
+# ======================================================
+# Animation clips
+#
+# A clip is one Blender action: a named run of keyframes on the rig --
+# Walk, Idle, Wave. Each is kept (fake user) whether or not it is the
+# one playing, so a single FBX carries every clip and Unity lists them
+# separately under the model's Animation tab.
+#
+# Moves are said the way an animator says them -- swing the leg forward
+# 25 degrees, raise the arm 130 degrees out to the side -- and turned
+# into each bone's own rotation here, so the result does not depend on
+# which way a bone happens to be rolled.
+# ======================================================
+
+# Each clip: (frames, looping, [(frame, bone, move, degrees), ...]) plus
+# hip keys [(frame, rise)]: at each, the hips drop as far as the legs
+# lifted the planted foot -- feet stay on the floor -- then rise by
+# `rise` (a fraction of the figure's height) for a breath or a leap.
+# Moves: "forward"/"back" swing about the figure's left-right axis;
+# "out"/"in" swing sideways away from / toward the centre line; "twist"
+# turns about the vertical. The right side mirrors "out"/"in"/"twist".
+CLIP_RECIPES = {
+    "walk": (24, True, [
+        (0, "LeftUpperLeg", "forward", 25), (12, "LeftUpperLeg", "back", 25), (24, "LeftUpperLeg", "forward", 25),
+        (0, "RightUpperLeg", "back", 25), (12, "RightUpperLeg", "forward", 25), (24, "RightUpperLeg", "back", 25),
+        (0, "LeftLowerLeg", "back", 5), (6, "LeftLowerLeg", "back", 35), (12, "LeftLowerLeg", "back", 5),
+        (18, "LeftLowerLeg", "back", 10), (24, "LeftLowerLeg", "back", 5),
+        (0, "RightLowerLeg", "back", 5), (6, "RightLowerLeg", "back", 10), (12, "RightLowerLeg", "back", 5),
+        (18, "RightLowerLeg", "back", 35), (24, "RightLowerLeg", "back", 5),
+        (0, "LeftUpperArm", "back", 18), (12, "LeftUpperArm", "forward", 18), (24, "LeftUpperArm", "back", 18),
+        (0, "RightUpperArm", "forward", 18), (12, "RightUpperArm", "back", 18), (24, "RightUpperArm", "forward", 18),
+        (0, "Spine", "twist", 4), (12, "Spine", "twist", -4), (24, "Spine", "twist", 4),
+    ], [(f, 0.0) for f in range(0, 25, 3)]),
+    "idle": (48, True, [
+        (0, "Chest", "back", 0), (24, "Chest", "back", 2.5), (48, "Chest", "back", 0),
+        (0, "Head", "forward", 0), (24, "Head", "forward", 2), (48, "Head", "forward", 0),
+        (0, "LeftUpperArm", "out", 0), (24, "LeftUpperArm", "out", 2), (48, "LeftUpperArm", "out", 0),
+        (0, "RightUpperArm", "out", 0), (24, "RightUpperArm", "out", 2), (48, "RightUpperArm", "out", 0),
+    ], [(0, 0.0), (24, -0.004), (48, 0.0)]),
+    "wave": (48, False, [
+        (0, "RightUpperArm", "out", 0), (12, "RightUpperArm", "out", 130), (40, "RightUpperArm", "out", 130),
+        (48, "RightUpperArm", "out", 0),
+        (0, "RightLowerArm", "out", 0), (12, "RightLowerArm", "out", 20), (19, "RightLowerArm", "in", 25),
+        (26, "RightLowerArm", "out", 25), (33, "RightLowerArm", "in", 25), (40, "RightLowerArm", "out", 20),
+        (48, "RightLowerArm", "out", 0),
+        (0, "Head", "twist", 0), (12, "Head", "twist", -10), (40, "Head", "twist", -10), (48, "Head", "twist", 0),
+    ], []),
+    "nod": (24, False, [
+        (0, "Head", "forward", 0), (6, "Head", "forward", 15), (12, "Head", "forward", 0),
+        (18, "Head", "forward", 12), (24, "Head", "forward", 0),
+    ], []),
+    "jump": (30, False, [
+        (0, "LeftUpperLeg", "forward", 0), (8, "LeftUpperLeg", "forward", 45), (14, "LeftUpperLeg", "forward", 0),
+        (22, "LeftUpperLeg", "forward", 10), (26, "LeftUpperLeg", "forward", 40), (30, "LeftUpperLeg", "forward", 0),
+        (0, "RightUpperLeg", "forward", 0), (8, "RightUpperLeg", "forward", 45), (14, "RightUpperLeg", "forward", 0),
+        (22, "RightUpperLeg", "forward", 10), (26, "RightUpperLeg", "forward", 40), (30, "RightUpperLeg", "forward", 0),
+        (0, "LeftLowerLeg", "back", 0), (8, "LeftLowerLeg", "back", 80), (14, "LeftLowerLeg", "back", 0),
+        (22, "LeftLowerLeg", "back", 15), (26, "LeftLowerLeg", "back", 70), (30, "LeftLowerLeg", "back", 0),
+        (0, "RightLowerLeg", "back", 0), (8, "RightLowerLeg", "back", 80), (14, "RightLowerLeg", "back", 0),
+        (22, "RightLowerLeg", "back", 15), (26, "RightLowerLeg", "back", 70), (30, "RightLowerLeg", "back", 0),
+        (0, "LeftUpperArm", "out", 0), (8, "LeftUpperArm", "back", 30), (14, "LeftUpperArm", "out", 120),
+        (26, "LeftUpperArm", "back", 20), (30, "LeftUpperArm", "out", 0),
+        (0, "RightUpperArm", "out", 0), (8, "RightUpperArm", "back", 30), (14, "RightUpperArm", "out", 120),
+        (26, "RightUpperArm", "back", 20), (30, "RightUpperArm", "out", 0),
+    ], [(0, 0.0), (4, 0.0), (8, 0.0), (11, 0.0), (14, 0.10), (18, 0.14), (22, 0.02),
+        (24, 0.0), (26, 0.0), (28, 0.0), (30, 0.0)]),
+}
+CLIP_NAMES = frozenset(CLIP_RECIPES)
+
+_CLIP_KIT = r'''
+import math as _cmath
+
+
+def _aria_world_turn(move, degrees, right_side):
+    """A move said the animator's way, as a rotation about a world axis."""
+    angle = _cmath.radians(degrees)
+    if move == "forward":       # the tail swings toward -Y, the way the figure faces
+        return mathutils.Matrix.Rotation(-angle, 3, "X")
+    if move == "back":
+        return mathutils.Matrix.Rotation(angle, 3, "X")
+    if move in ("out", "in"):   # away from / toward the centre line
+        sign = 1.0 if move == "out" else -1.0
+        return mathutils.Matrix.Rotation(sign * (angle if right_side else -angle), 3, "Y")
+    if move == "twist":
+        return mathutils.Matrix.Rotation(-angle if right_side else angle, 3, "Z")
+    raise RuntimeError("no move called %r" % move)
+
+
+def _aria_key_turn(rig, bone, move, degrees, frame):
+    """Key one bone, at one frame, turned by a world-axis move from rest.
+
+    Rest-relative: the rotation is about the axis as it lay at rest,
+    turned into the bone's own frame, so a clip reads the same on any
+    rig these landmarks build, whatever each bone's roll.
+    """
+    pb = rig.pose.bones.get(bone)
+    if pb is None:
+        return False
+    rest = pb.bone.matrix_local.to_3x3()
+    local = rest.inverted() @ _aria_world_turn(move, degrees, bone.startswith("Right")) @ rest
+    bpy.context.scene.frame_set(frame)
+    pb.rotation_mode = "QUATERNION"
+    pb.rotation_quaternion = local.to_quaternion()
+    pb.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+    return True
+'''
+
+
+def add_clip(params: Dict[str, Any]) -> str:
+    """Make a named animation clip on a rig: walk, idle, wave, nod or jump.
+
+    For a rig auto_rig built (Unity Humanoid bone names). Each clip is its
+    own action -- named `name` or after the clip ("Walk") -- kept in the
+    file whether or not it is playing, with its frame range set on it, so
+    export_fbx carries every clip and Unity lists them separately. Walk
+    and idle loop (their last frame is their first). The new clip is left
+    playing; the ones before it stay in the file.
+
+    speed scales the timing (2 = twice as fast), strength the size of
+    every move (0.5 = subtler). Bones the rig lacks are skipped -- a rig
+    with no arms walks without swinging them -- and the report says which.
+    """
+    clip = str(params.get("clip") or "").strip().lower()
+    if clip not in CLIP_RECIPES:
+        raise BadValue(f"{params.get('clip')!r} is not a clip. Clips: {', '.join(sorted(CLIP_RECIPES))}.")
+    frames, loops, keys, bobs = CLIP_RECIPES[clip]
+    speed = float(_num(params.get("speed"), 1.0))
+    if speed <= 0:
+        raise BadValue("speed must be above zero.")
+    return (_CLIP_KIT +
+            f'_rig = _obj({_text(params.get("armature"))})\n'
+            f'if _rig.type != "ARMATURE":\n'
+            f'    raise RuntimeError("%r is a %s, not a rig -- auto_rig makes one" % (_rig.name, _rig.type))\n'
+            f'_name = {_text(params.get("name"))} or {clip.capitalize()!r}\n'
+            f'_speed, _strength = {speed!r}, {_num(params.get("strength"), 1.0)}\n'
+            f'_frames = max(2, int(round({frames} / _speed)))\n'
+            f'_active(_rig)\n'
+            f'_rig.animation_data_create()\n'
+            f'_old = bpy.data.actions.get(_name)\n'
+            f'if _old is not None:\n'
+            f'    bpy.data.actions.remove(_old)\n'
+            f'_act = bpy.data.actions.new(_name)\n'
+            f'_act.use_fake_user = True\n'
+            f'_rig.animation_data.action = _act\n'
+            f'bpy.ops.object.mode_set(mode="POSE")\n'
+            f'for _pb in _rig.pose.bones:\n'
+            f'    _pb.rotation_mode = "QUATERNION"\n'
+            f'    _pb.rotation_quaternion = (1, 0, 0, 0)\n'
+            f'    _pb.location = (0, 0, 0)\n'
+            f'_missing = set()\n'
+            f'for _f, _bone, _move, _deg in {keys!r}:\n'
+            f'    if not _aria_key_turn(_rig, _bone, _move, _deg * _strength, int(round(_f / _speed)) + 1):\n'
+            f'        _missing.add(_bone)\n'
+            f'_hips = _rig.pose.bones.get("Hips")\n'
+            f'_height = max(_rig.dimensions.z, 1e-6)\n'
+            f'if _hips is not None:\n'
+            f'    # The hips go down as far as the bent legs lifted the planted\n'
+            f'    # foot, so the feet stay on the floor. A fixed drop sank them\n'
+            f'    # into it (measured, in the jump\'s crouch and landing). All\n'
+            f'    # offsets are worked out first, with the hips still at rest,\n'
+            f'    # and keyed after: a hip key would move what is being measured.\n'
+            f'    _rest = _hips.bone.matrix_local.to_3x3()\n'
+            f'    _feet = [b for b in ("LeftFoot", "RightFoot") if b in _rig.pose.bones]\n'
+            f'    _offsets = []\n'
+            f'    for _f, _rise in {bobs!r}:\n'
+            f'        _frame = int(round(_f / _speed)) + 1\n'
+            f'        bpy.context.scene.frame_set(_frame)\n'
+            f'        bpy.context.view_layer.update()\n'
+            f'        # Feet level, as they lie at rest: a foot that simply followed\n'
+            f'        # its bent shin pointed its toes at the floor through a crouch.\n'
+            f'        for _b in _feet:\n'
+            f'            _fp = _rig.pose.bones[_b]\n'
+            f'            _level = _fp.bone.matrix_local.copy()\n'
+            f'            _level.translation = _fp.head.copy()\n'
+            f'            _fp.matrix = _level\n'
+            f'            _fp.keyframe_insert(data_path="rotation_quaternion", frame=_frame)\n'
+            f'        bpy.context.view_layer.update()\n'
+            f'        _lift = 0.0\n'
+            f'        if _feet:\n'
+            f'            _lift = min(min(_rig.pose.bones[b].head.z - _rig.data.bones[b].head_local.z,\n'
+            f'                            _rig.pose.bones[b].tail.z - _rig.data.bones[b].tail_local.z)\n'
+            f'                        for b in _feet)\n'
+            f'        _offsets.append((_frame, -_lift + _rise * _height * _strength))\n'
+            f'    for _frame, _dz in _offsets:\n'
+            f'        _hips.location = _rest.inverted() @ mathutils.Vector((0, 0, _dz))\n'
+            f'        _hips.keyframe_insert(data_path="location", frame=_frame)\n'
+            f'bpy.ops.object.mode_set(mode="OBJECT")\n'
+            f'_act.use_frame_range = True\n'
+            f'_act.frame_start, _act.frame_end = 1, _frames + 1\n'
+            f'_act.use_cyclic = {loops}\n'
+            f'_scene = bpy.context.scene\n'
+            f'_scene.frame_start, _scene.frame_end = 1, _frames + 1\n'
+            f'_scene.frame_set(1)\n'
+            f'_RESULT["modified"].append(_rig.name)\n'
+            f'_note("add_clip", armature=_rig.name, clip=_name, frames=_frames + 1, loops={loops}, '
+            f'skipped=sorted(_missing), clips=sorted(a.name for a in bpy.data.actions if a.use_fake_user))')
+
+
+def play_clip(params: Dict[str, Any]) -> str:
+    """Make one of a rig's clips the one playing, and set the scene to its frames."""
+    return (f'_rig = _obj({_text(params.get("armature"))})\n'
+            f'_act = bpy.data.actions.get({_text(params.get("clip"))})\n'
+            f'if _act is None:\n'
+            f'    raise RuntimeError("no clip called %r -- the file has: %s" % ({_text(params.get("clip"))}, '
+            f'", ".join(a.name for a in bpy.data.actions) or "none"))\n'
+            f'_rig.animation_data_create()\n'
+            f'_rig.animation_data.action = _act\n'
+            f'_s, _e = (int(v) for v in _act.frame_range)\n'
+            f'bpy.context.scene.frame_start, bpy.context.scene.frame_end = _s, _e\n'
+            f'bpy.context.scene.frame_set(_s)\n'
+            f'_note("play_clip", armature=_rig.name, clip=_act.name, frames=[_s, _e])')
+
+
 TEMPLATES = {
     "apply_transforms": apply_transforms,
     "remove_stray_meshes": remove_stray_meshes,
@@ -5290,6 +5540,8 @@ TEMPLATES = {
     "find_landmarks": find_landmarks,
     "set_landmark": set_landmark,
     "auto_rig": auto_rig,
+    "add_clip": add_clip,
+    "play_clip": play_clip,
     "enable_dyntopo": enable_dyntopo,
     "apply_multires": apply_multires,
     # export
