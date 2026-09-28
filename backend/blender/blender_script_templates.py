@@ -51,7 +51,9 @@ __all__ = [
     "RESULT_OPEN",
     "TEMPLATES",
     "build_script",
+    "describe_action",
     "known_actions",
+    "parameters",
 ]
 
 # The generated script prints its findings between these, so the runner
@@ -2592,6 +2594,561 @@ def inflate(params: Dict[str, Any]) -> str:
             f'distance={_num(params.get("distance"), 0.012)})')
 
 
+# ======================================================
+# Seeing the work
+#
+# THE REASON THIS SECTION EXISTS
+# Every number a run reports can be right while the model is wrong.
+# The library's own history is the proof: a tree standing on a spike,
+# a roof floating over no walls, a pebble field scattered ten metres
+# underground -- each one a run that succeeded, measured correctly and
+# looked wrong the moment anybody rendered it. A layer that cannot
+# render can only say that it ran. This one can show what it made.
+# ======================================================
+
+# What a preview looks like.
+#   clay     -- Workbench, one matte colour, cavity shading. Form only:
+#               what a sculptor turns on to judge a shape, because a
+#               texture hides the bumps a shape is made of.
+#   material -- EEVEE with the model's own materials, lit by a three-
+#               lamp studio if the scene has no lamps of its own.
+#   final    -- the scene as it stands: its engine, its lamps, its sky.
+PREVIEW_LOOKS = frozenset({"clay", "material", "final"})
+
+# Where a preview camera stands, as a direction from the model's centre.
+# Models here face -Y (the base meshes and every recipe do), so "front"
+# looks at a face and "right" is the MODEL's right, seen from -X.
+PREVIEW_VIEWS = {
+    "front": (0.0, -1.0, 0.0),
+    "back": (0.0, 1.0, 0.0),
+    "right": (-1.0, 0.0, 0.0),
+    "left": (1.0, 0.0, 0.0),
+    "top": (0.0, 0.0, 1.0),
+    "bottom": (0.0, 0.0, -1.0),
+    "three_quarter": (-0.62, -0.62, 0.48),
+    "three_quarter_back": (0.62, 0.62, 0.48),
+}
+PREVIEW_VIEW_NAMES = frozenset(PREVIEW_VIEWS)
+DEFAULT_PREVIEW_VIEWS = ("front", "right", "three_quarter", "back")
+
+# Engines by the name a person uses. Blender's own identifiers moved in
+# 4.2 (BLENDER_EEVEE_NEXT) and back again later, so the script picks
+# whichever this build actually lists instead of trusting either.
+RENDER_ENGINES = frozenset({"EEVEE", "CYCLES", "WORKBENCH"})
+
+# Common to every template that renders. Functions, so a script that
+# renders twice defines them twice and nothing worse.
+_RENDER_KIT = '''
+import math as _math
+import os as _os
+
+
+def _aria_engine(kind):
+    # Asked of the setting itself: the enum's static item list names
+    # only EEVEE, because the others register at startup.
+    render = bpy.context.scene.render
+    wanted = {"EEVEE": ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"),
+              "CYCLES": ("CYCLES",),
+              "WORKBENCH": ("BLENDER_WORKBENCH",)}[kind]
+    current = render.engine
+    for name in wanted:
+        try:
+            render.engine = name
+        except TypeError:
+            continue
+        render.engine = current
+        return name
+    raise RuntimeError("this Blender has no %s engine" % kind)
+
+
+def _aria_folder(path):
+    folder = _os.path.dirname(_os.path.abspath(path))
+    if folder:
+        _os.makedirs(folder, exist_ok=True)
+    return _os.path.abspath(path)
+
+
+class _AriaNothingToRender(Exception):
+    pass
+
+
+class _AriaRestore:
+    """Remembers settings and puts them back, whatever happened.
+
+    A preview is a look at the work, not a change to it. A script that
+    rendered and then saved must save the scene it was given -- not one
+    with a new camera, a studio of lamps and a different engine.
+    """
+
+    def __init__(self):
+        self._saved = []
+        self._made = []
+
+    def set(self, owner, attribute, value):
+        self._saved.append((owner, attribute, getattr(owner, attribute)))
+        setattr(owner, attribute, value)
+
+    def made(self, datablock):
+        self._made.append(datablock)
+        return datablock
+
+    def undo(self):
+        for owner, attribute, value in reversed(self._saved):
+            try:
+                setattr(owner, attribute, value)
+            except Exception:
+                pass
+        for block in reversed(self._made):
+            try:
+                if isinstance(block, bpy.types.Object):
+                    data = block.data
+                    bpy.data.objects.remove(block, do_unlink=True)
+                    if data is not None and data.users == 0:
+                        if isinstance(data, bpy.types.Camera):
+                            bpy.data.cameras.remove(data)
+                        elif isinstance(data, bpy.types.Light):
+                            bpy.data.lights.remove(data)
+                elif isinstance(block, bpy.types.World):
+                    bpy.data.worlds.remove(block)
+                elif isinstance(block, bpy.types.Image):
+                    bpy.data.images.remove(block)
+            except Exception:
+                pass
+
+
+def _aria_targets(names):
+    if names:
+        return [_obj(n) for n in names]
+    return [o for o in bpy.context.scene.objects
+            if o.type in {"MESH", "CURVE", "SURFACE", "META", "FONT"}
+            and not o.hide_render and not o.name.startswith("ARIA_Preview")]
+
+
+def _aria_bounds(objects):
+    """Every corner of every evaluated bounding box, the centre, the radius.
+
+    EVALUATED, because a subdivided, arrayed or mirrored object is
+    bigger than its base mesh, and framing the base crops the model.
+    """
+    graph = bpy.context.evaluated_depsgraph_get()
+    points = []
+    for obj in objects:
+        seen = obj.evaluated_get(graph)
+        try:
+            mesh = seen.to_mesh()
+        except RuntimeError:
+            mesh = None
+        if mesh is not None and len(mesh.vertices):
+            # The surface, not its box: a box's corners stand well
+            # outside anything round, and framing them leaves a head
+            # small in the middle of the picture. Thinned so a
+            # million-vertex sculpt does not take a minute to frame.
+            step = max(1, len(mesh.vertices) // 20000)
+            matrix = seen.matrix_world
+            points += [matrix @ mesh.vertices[i].co for i in range(0, len(mesh.vertices), step)]
+        else:
+            points += [seen.matrix_world @ mathutils.Vector(c) for c in seen.bound_box]
+        seen.to_mesh_clear()
+    if not points:
+        raise RuntimeError("there is nothing to render -- no visible geometry "
+                           "in the scene")
+    low = mathutils.Vector([min(p[i] for p in points) for i in range(3)])
+    high = mathutils.Vector([max(p[i] for p in points) for i in range(3)])
+    return points, (low + high) / 2.0, max((high - low).length / 2.0, 0.001)
+
+
+def _aria_aim(camera, direction, points, centre, radius, perspective):
+    """Stand the camera along a direction and fit the model in frame.
+
+    Fitted to the model's own corners, not to a sphere around it: a
+    sphere around a person is mostly empty air, and a preview that is
+    mostly empty air shows the face at a size nobody can judge.
+    """
+    direction = mathutils.Vector(direction).normalized()
+    if abs(direction.z) > 0.999:
+        rotation = mathutils.Euler((0.0 if direction.z > 0 else _math.pi, 0.0, 0.0))
+        rotation = rotation.to_quaternion()
+    else:
+        rotation = (-direction).to_track_quat("-Z", "Y")
+    camera.rotation_mode = "QUATERNION"
+    camera.rotation_quaternion = rotation
+    basis = rotation.to_matrix()
+    right, up = basis.col[0], basis.col[1]
+
+    across = [max(abs((p - centre).dot(right)), abs((p - centre).dot(up)))
+              for p in points]
+    if perspective:
+        camera.data.type = "PERSP"
+        camera.data.lens = 50.0
+        camera.data.sensor_fit = "AUTO"
+        slope = _math.tan(camera.data.angle / 2.0)
+        distance = max((p - centre).dot(direction) + a / slope
+                       for p, a in zip(points, across)) * 1.08
+    else:
+        camera.data.type = "ORTHO"
+        camera.data.ortho_scale = max(across) * 2.0 * 1.12
+        distance = radius * 3.0
+    camera.location = centre + direction * distance
+    camera.data.clip_start = max(0.001, distance / 5000.0)
+    camera.data.clip_end = distance + radius * 6.0
+
+
+def _aria_studio(restore, scene):
+    """Three lamps when the scene has none, so a material has light to show.
+
+    Only when it has none. A scene that brought its own lighting is
+    telling you how it wants to be seen.
+    """
+    lit = any(o.type == "LIGHT" and not o.hide_render for o in scene.objects)
+    if not lit:
+        for name, elevation, bearing, energy, colour in (
+                ("Key", 45.0, -40.0, 3.5, (1.0, 0.95, 0.88)),
+                ("Fill", 20.0, 60.0, 1.0, (0.80, 0.87, 1.0)),
+                ("Rim", 35.0, 160.0, 2.5, (1.0, 1.0, 1.0))):
+            data = bpy.data.lights.new("ARIA_Preview_" + name, "SUN")
+            data.energy = energy
+            data.color = colour
+            lamp = restore.made(bpy.data.objects.new("ARIA_Preview_" + name, data))
+            scene.collection.objects.link(lamp)
+            lamp.rotation_euler = (_math.radians(90.0 - elevation), 0.0,
+                                   _math.radians(bearing))
+    if scene.world is None:
+        world = restore.made(bpy.data.worlds.new("ARIA_Preview_World"))
+        world.use_nodes = True
+        background = world.node_tree.nodes.get("Background")
+        if background is not None:
+            background.inputs[0].default_value = (0.35, 0.37, 0.40, 1.0)
+            background.inputs[1].default_value = 0.5
+        restore.set(scene, "world", world)
+
+
+def _aria_clay(restore, scene):
+    """Workbench as a sculptor has it: studio light, one colour, cavity."""
+    shading = scene.display.shading
+    restore.set(shading, "light", "STUDIO")
+    restore.set(shading, "color_type", "SINGLE")
+    restore.set(shading, "single_color", (0.74, 0.71, 0.67))
+    restore.set(shading, "show_cavity", True)
+    restore.set(shading, "cavity_type", "BOTH")
+    restore.set(shading, "show_specular_highlight", True)
+    restore.set(scene.view_settings, "view_transform", "Standard")
+    if scene.world is None:
+        restore.set(scene, "world", restore.made(bpy.data.worlds.new("ARIA_Preview_World")))
+    restore.set(scene.world, "color", (0.22, 0.23, 0.25))
+
+
+def _aria_sheet(paths, size, target):
+    """The views side by side in one picture, left to right, top to bottom.
+
+    One picture because one look should take in the whole model: a
+    front that is right and a side that is wrong is a model that is
+    wrong, and four separate files invite checking the first.
+    """
+    import numpy as _np
+    columns = int(_math.ceil(_math.sqrt(len(paths))))
+    rows = int(_math.ceil(len(paths) / float(columns)))
+    gap = 4
+    width, height = columns * size + (columns - 1) * gap, rows * size + (rows - 1) * gap
+    canvas = _np.empty((height, width, 4), dtype=_np.float32)
+    canvas[:] = (0.08, 0.08, 0.09, 1.0)
+    for index, path in enumerate(paths):
+        picture = bpy.data.images.load(path, check_existing=False)
+        try:
+            w, h = picture.size
+            pixels = _np.empty(w * h * 4, dtype=_np.float32)
+            picture.pixels.foreach_get(pixels)
+            pixels = pixels.reshape((h, w, 4))
+            pixels[..., 3] = 1.0
+            row, column = divmod(index, columns)
+            top = height - (row * (size + gap)) - h
+            left = column * (size + gap)
+            canvas[top:top + h, left:left + w] = pixels
+        finally:
+            bpy.data.images.remove(picture)
+    sheet = bpy.data.images.new("ARIA_Preview_Sheet", width, height, alpha=False)
+    try:
+        sheet.pixels.foreach_set(canvas.ravel())
+        sheet.filepath_raw = target
+        sheet.file_format = "PNG"
+        sheet.save()
+    finally:
+        bpy.data.images.remove(sheet)
+'''
+
+
+def _names(value: Any) -> str:
+    """A list of object names, as a Python literal. One name is a list of one."""
+    if value is None or value == "":
+        return "[]"
+    if isinstance(value, str):
+        value = [value]
+    try:
+        return "[" + ", ".join(_text(item) for item in value) + "]"
+    except TypeError:
+        raise BadValue(f"{value!r} is not an object name or a list of them.") from None
+
+
+def _views(value: Any) -> List[str]:
+    if value is None or value == "" or value == []:
+        return list(DEFAULT_PREVIEW_VIEWS)
+    if isinstance(value, str):
+        value = [part for part in value.replace(",", " ").split() if part]
+    chosen = []
+    for item in value:
+        key = str(item).strip().lower().replace("-", "_").replace(" ", "_")
+        if key not in PREVIEW_VIEWS:
+            raise BadValue(f"{item!r} is not a view. Views: "
+                           f"{', '.join(sorted(PREVIEW_VIEWS))}.")
+        if key not in chosen:
+            chosen.append(key)
+    return chosen
+
+
+def _engine_line(params: Dict[str, Any], restore: str = "_restore") -> str:
+    """Switch engine for this render only, if one was asked for."""
+    if not params.get("engine"):
+        return ""
+    return (f'{restore}.set(_scene.render, "engine", '
+            f'_aria_engine({_choice(params.get("engine"), RENDER_ENGINES, "EEVEE")}))\n')
+
+
+def render_preview(params: Dict[str, Any]) -> str:
+    """Look at the model from several sides and save what it looks like.
+
+    One PNG per view (<name>_front.png and so on) plus a sheet of all of
+    them at the path given. Cameras, lamps and settings made for the
+    preview are removed afterwards, so previewing between steps never
+    changes what gets exported or saved.
+
+    look: clay (form only -- for judging shape and sculpting), material
+    (the model's own colours; the default) or final (the scene's own
+    engine and lights). views: any of front, back, left, right, top,
+    bottom, three_quarter, three_quarter_back. object/objects: frame
+    only these. skip_empty: an empty scene is noted, not an error.
+    """
+    views = _views(params.get("views"))
+    look = _choice(params.get("look"), PREVIEW_LOOKS, "material")
+    size = _int(params.get("size"), 640, 64, 4096)
+    sheet = "False" if params.get("sheet") is False else "True"
+    transparent = "True" if params.get("transparent") else "False"
+    directions = "{" + ", ".join(
+        f"{view!r}: {PREVIEW_VIEWS[view]!r}" for view in views) + "}"
+
+    return (_RENDER_KIT +
+            f'_scene = bpy.context.scene\n'
+            f'_target_path = _aria_folder({_text(params.get("path"))})\n'
+            f'_stem = _os.path.splitext(_target_path)[0]\n'
+            f'_look = {look}\n'
+            f'_restore = _AriaRestore()\n'
+            f'_written = []\n'
+            f'try:\n'
+            f'    _targets = _aria_targets({_names(params.get("objects") or params.get("object"))})\n'
+            f'    if not _targets and {"True" if params.get("skip_empty") else "False"}:\n'
+            f'        raise _AriaNothingToRender()\n'
+            f'    _points, _centre, _radius = _aria_bounds(_targets)\n'
+            f'    _chosen = {_names(params.get("objects") or params.get("object"))}\n'
+            f'    if _chosen:\n'
+            f'        for _o in _scene.objects:\n'
+            f'            if _o.type in {{"MESH", "CURVE", "SURFACE", "META", "FONT"}} and _o.name not in _chosen:\n'
+            f'                _restore.set(_o, "hide_render", True)\n'
+            f'    if _look == "clay":\n'
+            f'        _restore.set(_scene.render, "engine", _aria_engine("WORKBENCH"))\n'
+            f'        _aria_clay(_restore, _scene)\n'
+            f'    elif _look == "material":\n'
+            f'        _restore.set(_scene.render, "engine", _aria_engine("EEVEE"))\n'
+            f'        _aria_studio(_restore, _scene)\n'
+            f'        if hasattr(_scene, "eevee"):\n'
+            f'            _restore.set(_scene.eevee, "taa_render_samples", {_int(params.get("samples"), 16, 1, 4096)})\n'
+            f'    ' + (_engine_line(params) or 'pass\n') +
+            f'    if _scene.render.engine == "CYCLES":\n'
+            f'        _restore.set(_scene.cycles, "samples", {_int(params.get("samples"), 32, 1, 4096)})\n'
+            f'    _restore.set(_scene.render, "resolution_x", {size})\n'
+            f'    _restore.set(_scene.render, "resolution_y", {size})\n'
+            f'    _restore.set(_scene.render, "resolution_percentage", 100)\n'
+            f'    _restore.set(_scene.render, "film_transparent", {transparent})\n'
+            f'    _restore.set(_scene.render.image_settings, "file_format", "PNG")\n'
+            f'    _restore.set(_scene.render.image_settings, "color_mode", "RGBA" if {transparent} else "RGB")\n'
+            f'    _cam_data = bpy.data.cameras.new("ARIA_Preview_Camera")\n'
+            f'    _cam = _restore.made(bpy.data.objects.new("ARIA_Preview_Camera", _cam_data))\n'
+            f'    _scene.collection.objects.link(_cam)\n'
+            f'    _restore.set(_scene, "camera", _cam)\n'
+            f'    _restore.set(_scene.render, "filepath", _scene.render.filepath)\n'
+            f'    for _view, _direction in {directions}.items():\n'
+            f'        _aria_aim(_cam, _direction, _points, _centre, _radius, _view.startswith("three_quarter"))\n'
+            f'        _file = _stem + "_" + _view + ".png"\n'
+            f'        _scene.render.filepath = _file\n'
+            f'        bpy.ops.render.render(write_still=True)\n'
+            f'        _written.append(_file)\n'
+            f'    if {sheet} and len(_written) > 1:\n'
+            f'        _aria_sheet(_written, {size}, _target_path)\n'
+            f'        _written.insert(0, _target_path)\n'
+            f'    elif _written and _written[0] != _target_path:\n'
+            f'        import shutil as _shutil\n'
+            f'        _shutil.copyfile(_written[0], _target_path)\n'
+            f'        _written.insert(0, _target_path)\n'
+            f'except _AriaNothingToRender:\n'
+            f'    _note("render_preview", skipped="the scene has nothing to render")\n'
+            f'finally:\n'
+            f'    _restore.undo()\n'
+            f'_RESULT.setdefault("renders", []).extend(_written)\n'
+            f'_note("render_preview", look=_look, views={views!r}, sheet_order="left to right, top to bottom", '
+            f'path=_target_path, files=len(_written))')
+
+
+def render_image(params: Dict[str, Any]) -> str:
+    """Render the scene through a camera that is already there.
+
+    The shot a person set up, as they set it up -- unlike a preview,
+    which frames the model itself and throws its camera away. Size,
+    engine, samples and a transparent background can be given for this
+    one render; the scene's own settings are put back afterwards.
+    """
+    camera = params.get("camera")
+    return (_RENDER_KIT +
+            f'_scene = bpy.context.scene\n'
+            f'_restore = _AriaRestore()\n'
+            f'_path = _aria_folder({_text(params.get("path"))})\n'
+            f'try:\n'
+            + (f'    _restore.set(_scene, "camera", _obj({_text(camera)}))\n' if camera else '') +
+            f'    if _scene.camera is None:\n'
+            f'        raise RuntimeError("there is no camera to render through -- add_camera '
+            f'first, or use render_preview, which brings its own")\n'
+            f'    ' + (_engine_line(params) or 'pass\n') +
+            (f'    _restore.set(_scene.render, "resolution_x", {_int(params.get("width"), 1920, 16, 16384)})\n'
+             if params.get("width") else '') +
+            (f'    _restore.set(_scene.render, "resolution_y", {_int(params.get("height"), 1080, 16, 16384)})\n'
+             if params.get("height") else '') +
+            (f'    _restore.set(_scene.render, "film_transparent", {"True" if params.get("transparent") else "False"})\n'
+             if params.get("transparent") is not None else '') +
+            (f'    if _scene.render.engine == "CYCLES":\n'
+             f'        _restore.set(_scene.cycles, "samples", {_int(params.get("samples"), 64, 1, 65536)})\n'
+             f'    elif hasattr(_scene, "eevee"):\n'
+             f'        _restore.set(_scene.eevee, "taa_render_samples", {_int(params.get("samples"), 64, 1, 65536)})\n'
+             if params.get("samples") else '') +
+            f'    _restore.set(_scene.render.image_settings, "file_format", "PNG")\n'
+            f'    _restore.set(_scene.render, "filepath", _path)\n'
+            f'    bpy.ops.render.render(write_still=True)\n'
+            f'finally:\n'
+            f'    _restore.undo()\n'
+            f'_RESULT.setdefault("renders", []).append(_path)\n'
+            f'_note("render_image", path=_path, camera=_scene.camera.name if _scene.camera else None)')
+
+
+def set_render(params: Dict[str, Any]) -> str:
+    """Change how the scene renders, and keep it that way.
+
+    Unlike the render actions, this is meant to last: it is saved with
+    the file, so a scene set up for Cycles at 4K stays set up.
+    """
+    lines = [_RENDER_KIT, '_scene = bpy.context.scene\n']
+    if params.get("engine"):
+        lines.append(f'_scene.render.engine = _aria_engine('
+                     f'{_choice(params.get("engine"), RENDER_ENGINES, "EEVEE")})\n')
+    if params.get("width"):
+        lines.append(f'_scene.render.resolution_x = {_int(params.get("width"), 1920, 16, 16384)}\n')
+    if params.get("height"):
+        lines.append(f'_scene.render.resolution_y = {_int(params.get("height"), 1080, 16, 16384)}\n')
+    if params.get("percentage"):
+        lines.append(f'_scene.render.resolution_percentage = {_int(params.get("percentage"), 100, 1, 1000)}\n')
+    if params.get("transparent") is not None:
+        lines.append(f'_scene.render.film_transparent = {"True" if params.get("transparent") else "False"}\n')
+    if params.get("samples"):
+        samples = _int(params.get("samples"), 64, 1, 65536)
+        lines.append(f'_scene.cycles.samples = {samples}\n'
+                     f'if hasattr(_scene, "eevee"):\n'
+                     f'    _scene.eevee.taa_render_samples = {samples}\n')
+    if params.get("frame_start") is not None:
+        lines.append(f'_scene.frame_start = {_int(params.get("frame_start"), 1, 0, 1_000_000)}\n')
+    if params.get("frame_end") is not None:
+        lines.append(f'_scene.frame_end = {_int(params.get("frame_end"), 250, 0, 1_000_000)}\n')
+    if params.get("fps"):
+        lines.append(f'_scene.render.fps = {_int(params.get("fps"), 24, 1, 240)}\n')
+    lines.append('_note("set_render", engine=_scene.render.engine, '
+                 'width=_scene.render.resolution_x, height=_scene.render.resolution_y)')
+    return "".join(lines)
+
+
+def add_camera(params: Dict[str, Any]) -> str:
+    """A camera that stays in the scene, aimed at an object or a point.
+
+    `target` names an object to look at, `look_at` gives a point. With
+    neither it faces straight down -Y's opposite way: toward the front
+    of a model standing at the origin. It becomes the scene's camera
+    unless `active` is false.
+    """
+    target = params.get("target")
+    aim = (f'_point = _obj({_text(target)}).matrix_world.translation.copy()\n' if target else
+           f'_point = mathutils.Vector({_vector(params.get("look_at"), (0.0, 0.0, 0.9))})\n')
+    ortho = bool(params.get("ortho"))
+    return (f'_name = {_named(params, "Camera")}\n'
+            f'_data = bpy.data.cameras.new(_name)\n'
+            f'_data.lens = {_num(params.get("lens"), 50.0)}\n'
+            + (f'_data.type = "ORTHO"\n_data.ortho_scale = {_num(params.get("ortho_scale"), 4.0)}\n'
+               if ortho else '') +
+            f'_cam = bpy.data.objects.new(_name, _data)\n'
+            f'bpy.context.scene.collection.objects.link(_cam)\n'
+            f'_cam.location = {_vector(params.get("location"), (0.0, -6.0, 1.4))}\n'
+            + aim +
+            f'_cam.rotation_mode = "QUATERNION"\n'
+            f'_cam.rotation_quaternion = (_point - _cam.location).to_track_quat("-Z", "Y")\n'
+            + ('' if params.get("active") is False else 'bpy.context.scene.camera = _cam\n') +
+            f'_RESULT["created"].append(_cam.name)\n'
+            f'_note("add_camera", name=_cam.name, lens=_data.lens)')
+
+
+def describe_scene(params: Dict[str, Any]) -> str:
+    """Everything in the file, as data. Changes nothing.
+
+    What a person gets by glancing at the outliner and the properties
+    panel: every object with where it is, how big, what it is made of
+    and what is stacked on it. Without this, working on a file ARIA did
+    not build in this very run means guessing its names.
+    """
+    return ('import math as _math\n'
+            '_graph = bpy.context.evaluated_depsgraph_get()\n'
+            '_objects = []\n'
+            'for _o in sorted(bpy.context.scene.objects, key=lambda o: o.name):\n'
+            '    _entry = {"name": _o.name, "type": _o.type,\n'
+            '              "location": [round(v, 4) for v in _o.matrix_world.translation],\n'
+            '              "rotation": [round(_math.degrees(v), 2) for v in _o.matrix_world.to_euler()],\n'
+            '              "scale": [round(v, 4) for v in _o.scale],\n'
+            '              "dimensions": [round(v, 4) for v in _o.dimensions],\n'
+            '              "parent": _o.parent.name if _o.parent else None,\n'
+            '              "hidden": bool(_o.hide_render)}\n'
+            '    if _o.modifiers:\n'
+            '        _entry["modifiers"] = [m.type + ":" + m.name for m in _o.modifiers]\n'
+            '    if _o.type == "MESH":\n'
+            '        _seen = _o.evaluated_get(_graph).to_mesh()\n'
+            '        _entry.update(vertices=len(_o.data.vertices), faces=len(_o.data.polygons),\n'
+            '                      evaluated_faces=len(_seen.polygons),\n'
+            '                      materials=[m.name for m in _o.data.materials if m],\n'
+            '                      uv_layers=[u.name for u in _o.data.uv_layers],\n'
+            '                      vertex_groups=[g.name for g in _o.vertex_groups][:40],\n'
+            '                      shape_keys=[k.name for k in _o.data.shape_keys.key_blocks] if _o.data.shape_keys else [])\n'
+            '        _o.evaluated_get(_graph).to_mesh_clear()\n'
+            '    elif _o.type == "ARMATURE":\n'
+            '        _entry["bones"] = [b.name for b in _o.data.bones][:200]\n'
+            '        _entry["action"] = _o.animation_data.action.name if _o.animation_data and _o.animation_data.action else None\n'
+            '    elif _o.type == "CAMERA":\n'
+            '        _entry.update(lens=_o.data.lens, camera_type=_o.data.type)\n'
+            '    elif _o.type == "LIGHT":\n'
+            '        _entry.update(light_type=_o.data.type, energy=_o.data.energy)\n'
+            '    _objects.append(_entry)\n'
+            '_s = bpy.context.scene\n'
+            '_RESULT["scene"] = {\n'
+            '    "objects": _objects,\n'
+            '    "camera": _s.camera.name if _s.camera else None,\n'
+            '    "engine": _s.render.engine,\n'
+            '    "resolution": [_s.render.resolution_x, _s.render.resolution_y],\n'
+            '    "frames": [_s.frame_start, _s.frame_end, _s.frame_current],\n'
+            '    "materials": sorted(m.name for m in bpy.data.materials),\n'
+            '    "images": sorted(i.name for i in bpy.data.images),\n'
+            '    "actions": sorted(a.name for a in bpy.data.actions),\n'
+            '    "node_groups": sorted(g.name for g in bpy.data.node_groups),\n'
+            '}\n'
+            '_note("describe_scene", objects=len(_objects))')
+
+
 TEMPLATES = {
     "apply_transforms": apply_transforms,
     "remove_stray_meshes": remove_stray_meshes,
@@ -2685,6 +3242,12 @@ TEMPLATES = {
     "export_fbx": export_fbx,
     "export_glb": export_glb,
     "export_obj": export_obj,
+    # seeing the work
+    "render_preview": render_preview,
+    "render_image": render_image,
+    "set_render": set_render,
+    "add_camera": add_camera,
+    "describe_scene": describe_scene,
     # scene
     "clear_scene": clear_scene,
     "save_file": save_file,
@@ -2693,6 +3256,52 @@ TEMPLATES = {
 
 def known_actions() -> List[str]:
     return sorted(TEMPLATES)
+
+
+def _read_parameters(function, names: List[str], seen: set) -> None:
+    """Every params.get() in a function, and in the helpers it hands params to."""
+    import inspect
+    import re
+
+    if function in seen:
+        return
+    seen.add(function)
+    source = inspect.getsource(function)
+    for found in re.findall(r'params\.get\("([a-z_]+)"', source):
+        if found not in names:
+            names.append(found)
+    for helper in re.findall(r'\b(_[a-z_]+)\(params\b', source):
+        target = globals().get(helper)
+        if callable(target):
+            _read_parameters(target, names, seen)
+
+
+def parameters(action: str) -> List[str]:
+    """The parameter names an action reads, in the order it reads them.
+
+    Read from the template's own source -- and the helpers it passes
+    params to -- so it cannot drift from what the template does. A
+    caller spelling one wrong can then be told, rather than having the
+    value dropped: every template reads with params.get(), which is
+    silent about names it never asks for.
+    """
+    template = TEMPLATES.get(action)
+    if template is None:
+        raise UnknownAction(f"{action!r} is not an action.")
+    names: List[str] = []
+    _read_parameters(template, names, set())
+    return names
+
+
+def describe_action(action: str) -> str:
+    """What an action does and what it takes, for a person or a model."""
+    import inspect
+
+    template = TEMPLATES.get(action)
+    if template is None:
+        raise UnknownAction(f"{action!r} is not an action.")
+    doc = inspect.getdoc(template) or "(no description)"
+    return f"{action}({', '.join(parameters(action))})\n\n{doc}"
 
 
 class UnknownAction(ValueError):

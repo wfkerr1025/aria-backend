@@ -5,24 +5,51 @@ import pytest
 from backend.blender import blender_typed_calls as tc
 
 
+@pytest.fixture(autouse=True)
+def _sessions_in_tmp(tmp_path, monkeypatch):
+    """Chat runs land in a session folder -- never the real one in a test."""
+    from backend.blender import blender_actions
+
+    monkeypatch.setenv(blender_actions.ENV_OUTPUT, str(tmp_path / "out"))
+
+
 # ======================================================
 # The vocabulary
 # ======================================================
 
 def test_every_action_is_callable_as_a_typed_name():
-    """The table is derived, so it cannot drift from blender_actions."""
-    import inspect
+    """Every template, not only the ones with a Python wrapper.
 
-    from backend.blender import blender_actions
-
-    expected = {
-        name for name in blender_actions.__all__
-        if name not in tc._NOT_OPERATIONS
-        and inspect.isfunction(getattr(blender_actions, name, None))
-    }
+    For a while the wrappers were the gate, and 47 of 84 actions --
+    shrinkwrap, baking, lights, IK, remeshing, delete -- could be
+    reached only from a recipe.
+    """
+    from backend.blender import blender_script_templates as templates
 
     derived = {operation.python_name for operation in tc.OPERATIONS.values()}
-    assert derived == expected
+    assert derived == set(templates.TEMPLATES)
+
+
+def test_a_template_only_call_takes_the_thing_it_acts_on_first():
+    planned = tc.plan_blender_calls('ApplyShrinkwrap("Vest", target="Body", offset=0.01)')
+    assert planned == [{"action": "apply_shrinkwrap",
+                        "params": {"object": "Vest", "target": "Body", "offset": 0.01}}]
+
+
+def test_a_template_only_call_names_a_misspelt_argument():
+    with pytest.raises(tc.Unmappable, match="tagret"):
+        tc.plan_blender_calls('ApplyShrinkwrap("Vest", tagret="Body")')
+
+
+def test_a_template_only_call_will_not_guess_a_second_unnamed_value():
+    with pytest.raises(tc.Unmappable, match="Name the rest"):
+        tc.plan_blender_calls('ApplyShrinkwrap("Vest", "Body")')
+
+
+def test_the_render_calls_are_typed():
+    planned = tc.plan_blender_calls('RenderPreview(look="clay", views=["front", "right"])')
+    assert planned[0]["action"] == "render_preview"
+    assert planned[0]["params"] == {"look": "clay", "views": ["front", "right"]}
 
 
 def test_names_are_pascal_case():
@@ -153,7 +180,9 @@ def test_a_build_is_one_blender_launch(monkeypatch):
         'ExportGlb("out.glb")')
 
     assert len(launches) == 1
-    assert launches[0] == ["add_cube", "scale", "export_glb"]
+    # What was asked, then the session's own two steps: save the scene
+    # so the next message can build on it, and look at it.
+    assert launches[0] == ["add_cube", "scale", "export_glb", "save_file", "render_preview"]
     assert answer["ran"] is True
 
 

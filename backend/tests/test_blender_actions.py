@@ -251,6 +251,20 @@ EVERY_ACTION = [
     ("set_interpolation", {"object": "Rig", "bone": "Shoulder_L",
                            "frame": 12, "interpolation": "CONSTANT",
                            "easing": "EASE_OUT"}),
+
+    # Seeing the work. Rendered for real in test_blender_render.py.
+    ("render_preview", {"path": "C:/out/look.png", "look": "clay",
+                        "views": ["front", "three_quarter"], "size": 256,
+                        "objects": ["Cube"], "skip_empty": True}),
+    ("render_image", {"path": "C:/out/shot.png", "camera": "Shot",
+                      "engine": "CYCLES", "width": 800, "height": 600,
+                      "samples": 16, "transparent": True}),
+    ("set_render", {"engine": "EEVEE", "width": 1920, "height": 1080,
+                    "samples": 64, "transparent": False, "fps": 24,
+                    "frame_start": 1, "frame_end": 120}),
+    ("add_camera", {"name": "Shot", "location": [0, -6, 1.5],
+                    "target": "Cube", "lens": 85}),
+    ("describe_scene", {}),
 ]
 
 

@@ -113,10 +113,12 @@ class Operation:
         """The keyword arguments this call means, or Unmappable."""
         arguments: dict[str, Any] = {}
 
-        if len(node.args) > len(self.order):
+        limit = getattr(self, "max_positional", len(self.order))
+        if len(node.args) > limit:
             raise Unmappable(
-                f"{self.typed_name} takes at most {len(self.order)} unnamed "
-                f"values ({', '.join(self.order)}); {len(node.args)} were given.")
+                f"{self.typed_name} takes at most {limit} unnamed "
+                f"value(s) ({', '.join(self.order[:limit])}); {len(node.args)} were "
+                f"given. Name the rest: {', '.join(self.order)}.")
 
         for index, value in enumerate(node.args):
             parameter = self.order[index]
@@ -147,8 +149,41 @@ class Operation:
         return arguments
 
 
+# The one value a template-only call may give without naming it: the
+# thing it acts on. ApplyShrinkwrap("Vest", target="Body") reads as it
+# should; a second unnamed value would be a guess about which slot it
+# fills, and a wrong guess is silent.
+_FIRST_POSITIONAL = ("object", "objects", "mesh", "armature", "material",
+                     "image", "lattice", "path", "name")
+
+
+class TemplateOperation(Operation):
+    """An action with no Python wrapper, callable straight from its template.
+
+    Every template takes a dict, so its parameters are read from its
+    source (templates.parameters) rather than from a signature. Named
+    arguments only, apart from the first -- see _FIRST_POSITIONAL.
+    """
+
+    def __init__(self, typed_name: str, action: str) -> None:
+        from backend.blender import blender_script_templates as templates
+
+        self.typed_name = typed_name
+        self.function = None
+        self.python_name = action
+        accepted = templates.parameters(action)
+        first = next((p for p in _FIRST_POSITIONAL if p in accepted), None)
+        self.order = ((first,) if first else ()) + tuple(p for p in accepted if p != first)
+        self.max_positional = 1 if first else 0
+        self.aliases = {}
+        for parameter in self.order:
+            self.aliases[parameter.lower()] = parameter
+            self.aliases[_camel(parameter).lower()] = parameter
+
+
 def _build() -> dict[str, Operation]:
     from backend.blender import blender_actions
+    from backend.blender import blender_script_templates as templates
 
     built: dict[str, Operation] = {}
     for name in getattr(blender_actions, "__all__", []):
@@ -161,6 +196,14 @@ def _build() -> dict[str, Operation]:
 
         typed = _pascal(name)
         built[typed] = Operation(typed, function)
+
+    # Everything else the templates can do. A wrapper is a nicety for
+    # Python callers; it was never meant to be the gate on what a typed
+    # call can reach, and for a while 47 of 84 actions sat behind it.
+    wrapped = {operation.python_name for operation in built.values()}
+    for action in templates.known_actions():
+        if action not in wrapped and _pascal(action) not in built:
+            built[_pascal(action)] = TemplateOperation(_pascal(action), action)
 
     return built
 
@@ -227,8 +270,14 @@ def answer_typed(text: Any, *, on_output=None) -> Optional[dict]:
     if not actions:
         return None
 
+    # Chat works on ONE scene that carries over between messages -- the
+    # "chat" session -- so "ApplyBevel('Box')" can follow the message
+    # that made the box, every step keeps a version to undo to, and
+    # every step ends with a picture of what it did.
+    from backend.blender import blender_session
+
     named = ", ".join(action["action"] for action in actions)
-    result = blender_actions.run_actions(actions, on_output=on_output)
+    result = blender_session.Session().run(actions, on_output=on_output)
 
     if not result.get("ran"):
         return {"ran": False, "text": (
@@ -238,16 +287,20 @@ def answer_typed(text: Any, *, on_output=None) -> Optional[dict]:
     if not result.get("success"):
         return {"ran": True, "text": (
             f"I ran Blender with {len(actions)} operation(s) and it failed: "
-            + str(result.get("error")) + "\n\nSteps: " + named)}
+            + str(result.get("error")) + "\n\nSteps: " + named
+            + "\n\nThe scene was left as it was.")}
 
-    outcome = result.get("result") or {}
-    made = outcome.get("created") or []
-    exported = outcome.get("exported") or []
+    made = result.get("created") or []
+    exported = result.get("exported") or []
 
     lines = [f"Ran {len(actions)} Blender operation(s): {named}."]
     if made:
         lines.append("Created: " + ", ".join(made) + ".")
     if exported:
         lines.append("Exported:\n" + "\n".join("- " + path for path in exported))
+    picture = blender_session.picture_markdown(result.get("renders") or [])
+    if picture:
+        lines.append(picture)
+    lines.append("Say \"undo in Blender\" to take this step back.")
 
-    return {"ran": True, "text": "\n\n".join(lines)}
+    return {"ran": True, "text": "\n\n".join(lines), "renders": result.get("renders") or []}

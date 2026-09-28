@@ -664,11 +664,32 @@ def answer_request(text: str, *,
     if answered is not None:
         return answered
 
-    if not mapping.names_blender(said) or mapping.names_another_tool(said):
+    from backend.blender import blender_session
+
+    other_tool = mapping.names_another_tool(said)
+    gated = mapping.names_blender(said) and not other_tool
+    mentioned = bool(re.search(r"\bblender\b", said, re.I)) and not other_tool
+
+    # Undo, start over and "what is in the scene" are about the scene
+    # chat has been building, not requests to build something. Looking
+    # and describing change nothing, so "what's in the Blender scene?"
+    # is enough for them; answer_command holds undo to the strict gate.
+    if mentioned:
+        command = blender_session.answer_command(said, allow_look=not gated, gated=gated)
+        if command is not None:
+            return {"ran": command.get("ran", True), "text": command.get("text", "")}
+
+    if not gated:
         return None
 
     plan = mapping.map_text(said)
     if plan is None:
+        # "Show me it in clay in Blender" -- a look, not a build. Only
+        # once the mapper has passed: "build a car and show me" is a
+        # build, and a build already ends with a picture.
+        command = blender_session.answer_command(said)
+        if command is not None:
+            return {"ran": command.get("ran", True), "text": command.get("text", "")}
         if not mapping.wants_something_built(said):
             return None      # a question about Blender -- let a model answer
 
@@ -684,7 +705,9 @@ def answer_request(text: str, *,
 
     folder = output_dir()
     actions, written = _with_outputs(plan["actions"], folder)
-    result = run_actions(actions, on_output=on_output)
+    # Run in chat's session: the scene stays open for the next message,
+    # a version is kept to undo to, and the step ends with a picture.
+    result = blender_session.Session().run(actions, on_output=on_output)
 
     if not result["ran"]:
         return {"ran": False, "text": (
@@ -693,16 +716,18 @@ def answer_request(text: str, *,
     if not result["success"]:
         return {"ran": True, "text": (
             f"I ran Blender and it failed: {result['error']}\n\n"
-            f"{_tail(result['output'])}")}
+            f"{result.get('output_tail', '')}")}
 
-    made = (result["result"] or {}).get("created") or []
+    made = result.get("created") or []
     files = "\n".join(f"- {path}" for path in written)
+    picture = blender_session.picture_markdown(result.get("renders") or [])
     return {"ran": True, "text": (
         f"Built {_base_name(actions)} in Blender: {len(made)} object"
         f"{'' if len(made) == 1 else 's'} "
         f"({', '.join(made[:6])}{' and more' if len(made) > 6 else ''}).\n\n"
         f"{files}\n\n"
-        f"Steps: {plan['summary']}.")}
+        + (f"{picture}\n\n" if picture else "")
+        + f"Steps: {plan['summary']}.")}
 
 
 # ======================================================

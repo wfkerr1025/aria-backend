@@ -32,6 +32,31 @@ function unifiedLog(subsystem, level, message, context = {}) {
   }
 }
 
+// Pictures ARIA made on this machine -- Blender previews -- arrive as
+// ![Preview](file:///D:/...png). DOMPurify strips file: URLs by default;
+// this keeps them, but only on an <img>, only for a path on a local
+// drive letter, and only for an image file. Not a link (clicking one
+// would navigate the whole window away), and never file://server/...:
+// Windows answers a network path by trying to sign in to that server.
+const LOCAL_IMAGE_SRC = /^file:\/\/\/[A-Za-z]:\/[^?#"'<>]*\.(?:png|jpe?g|webp)$/i;
+
+function allowLocalImages(purifier) {
+  if (!purifier || typeof purifier.addHook !== "function" || purifier.__ariaLocalImages) {
+    return;
+  }
+  purifier.addHook("uponSanitizeAttribute", (node, data) => {
+    if (node.nodeName === "IMG" && data.attrName === "src"
+        && LOCAL_IMAGE_SRC.test(data.attrValue || "")) {
+      data.forceKeepAttr = true;
+    }
+  });
+  purifier.__ariaLocalImages = true;
+}
+
+if (typeof DOMPurify !== "undefined") {
+  allowLocalImages(DOMPurify);
+}
+
 chatLog("=== CHAT MODULE LOADED ===");
 
 const CHAT_DOM_POLL_INTERVAL_MS = 50;
