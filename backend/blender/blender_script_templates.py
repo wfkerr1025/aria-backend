@@ -470,6 +470,111 @@ def scale(params: Dict[str, Any]) -> str:
             f'_note("scale", object=_target.name)')
 
 
+def t_pose(params: Dict[str, Any]) -> str:
+    """Make a rig's rest pose a T-pose: arms straight out to the sides.
+
+    Unity builds a Humanoid avatar taking the rest pose AS the T-pose.
+    A Ludo character stands in an A-pose, arms 45 degrees down, and
+    every clip played on it came out skewed -- arms thrown forward,
+    stretched past the hands (measured, in Unity's own pictures).
+
+    The arms are posed level, the meshes are baked in that pose, and
+    the pose becomes the rest. Before any clips: a clip keyed against
+    the old rest would be wrong against the new one, so a rig that
+    already has clips is refused.
+    """
+    return (f'import math\n'
+            f'from mathutils import Matrix, Vector\n'
+            f'_rig = _obj({_text(params.get("armature"))})\n'
+            f'if _rig.type != "ARMATURE":\n'
+            f'    raise RuntimeError("%r is not a skeleton" % _rig.name)\n'
+            f'if _rig.animation_data and (_rig.animation_data.action or _rig.animation_data.nla_tracks):\n'
+            f'    raise RuntimeError("%r already has clips -- T-pose it before adding them" % _rig.name)\n'
+            f'_skinned = [o for o in bpy.data.objects if o.type == "MESH" and any('
+            f'm.type == "ARMATURE" and m.object == _rig for m in o.modifiers)]\n'
+            f'for _o in _skinned:\n'
+            f'    if _o.data.shape_keys:\n'
+            f'        raise RuntimeError("%r has shape keys; T-pose before making them" % _o.name)\n'
+            f'_active(_rig)\n'
+            f'bpy.ops.object.mode_set(mode="POSE")\n'
+            f'_turned = {{}}\n'
+            f'for _side, _sign in (("Left", 1.0), ("Right", -1.0)):\n'
+            f'    for _part in ("UpperArm", "LowerArm", "Hand"):\n'
+            f'        _pb = _rig.pose.bones.get(_side + _part)\n'
+            f'        if _pb is None:\n'
+            f'            continue\n'
+            f'        bpy.context.view_layer.update()\n'
+            f'        _now = (_pb.tail - _pb.head)\n'
+            f'        if _now.length < 1e-6:\n'
+            f'            continue\n'
+            f'        _turn = _now.normalized().rotation_difference(Vector((_sign, 0.0, 0.0)))\n'
+            f'        _turned[_pb.name] = round(math.degrees(_turn.angle), 1)\n'
+            f'        _pb.matrix = (Matrix.Translation(_pb.head) @ _turn.to_matrix().to_4x4() @ '
+            f'Matrix.Translation(-_pb.head) @ _pb.matrix)\n'
+            f'bpy.context.view_layer.update()\n'
+            f'bpy.ops.object.mode_set(mode="OBJECT")\n'
+            f'for _o in _skinned:\n'
+            f'    _mod = next(m for m in _o.modifiers if m.type == "ARMATURE" and m.object == _rig)\n'
+            f'    _name = _mod.name\n'
+            f'    _active(_o)\n'
+            f'    bpy.ops.object.modifier_apply(modifier=_name)\n'
+            f'    _new = _o.modifiers.new(name=_name, type="ARMATURE")\n'
+            f'    _new.object = _rig\n'
+            f'    bpy.ops.object.modifier_move_to_index(modifier=_name, index=0)\n'
+            f'_active(_rig)\n'
+            f'bpy.ops.object.mode_set(mode="POSE")\n'
+            f'bpy.ops.pose.select_all(action="SELECT")\n'
+            f'bpy.ops.pose.armature_apply(selected=False)\n'
+            f'bpy.ops.object.mode_set(mode="OBJECT")\n'
+            f'_RESULT["modified"].extend([_rig.name] + [o.name for o in _skinned])\n'
+            f'_note("t_pose", armature=_rig.name, turned=_turned, meshes=[o.name for o in _skinned])')
+
+
+def flatten_hierarchy(params: Dict[str, Any]) -> str:
+    """Lift every mesh out of the empties a generator wrapped it in.
+
+    Ludo's GLB puts the mesh under a "world" empty that carries its own
+    transform. Applying the mesh's transform then leaves that one behind:
+    measured, the data said 0.96 m while the figure stood 1.8 m, and the
+    skeleton built from it came out 2.19 m tall with legs that barely
+    stepped. Each mesh keeps where it is in the world; the empties go.
+    """
+    return ('_lifted = []\n'
+            'for _o in list(bpy.context.scene.objects):\n'
+            '    if _o.type == "MESH" and _o.parent is not None and _o.parent.type == "EMPTY":\n'
+            '        _keep = _o.matrix_world.copy()\n'
+            '        _o.parent = None\n'
+            '        _o.matrix_world = _keep\n'
+            '        _lifted.append(_o.name)\n'
+            '_gone = []\n'
+            'for _o in list(bpy.context.scene.objects):\n'
+            '    if _o.type == "EMPTY" and not _o.children:\n'
+            '        _gone.append(_o.name)\n'
+            '        bpy.data.objects.remove(_o, do_unlink=True)\n'
+            '_RESULT["modified"].extend(_lifted)\n'
+            '_note("flatten_hierarchy", lifted=_lifted, removed=_gone)')
+
+
+def rename_object(params: Dict[str, Any]) -> str:
+    """Give an object a name -- a generator's "geometry_0" becomes "Wick".
+
+    Its mesh data takes the name too. Refused when the name is taken,
+    since Blender would quietly make it "Wick.001" instead.
+    """
+    return (f'_target = _obj({_text(params.get("object"))})\n'
+            f'_new = {_text(params.get("name"))}.strip()\n'
+            f'if not _new:\n'
+            f'    raise RuntimeError("rename_object needs a name")\n'
+            f'_clash = bpy.data.objects.get(_new)\n'
+            f'if _clash is not None and _clash != _target:\n'
+            f'    raise RuntimeError("there is already an object called %r" % _new)\n'
+            f'_target.name = _new\n'
+            f'if getattr(_target, "data", None) is not None and _target.data.users == 1:\n'
+            f'    _target.data.name = _new\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("rename_object", object=_target.name)')
+
+
 def parent(params: Dict[str, Any]) -> str:
     return (f'_child = _obj({_text(params.get("child"))})\n'
             f'_parent = _obj({_text(params.get("parent"))})\n'
@@ -908,21 +1013,106 @@ def export_fbx(params: Dict[str, Any]) -> str:
     return (f'{_export_preamble(params)}\n'
             + guard +
             f'_path = {_text(params.get("path"))}\n'
-            f'bpy.ops.export_scene.fbx(filepath=_path, use_selection=_use_selection, '
+            # The skeleton goes out at REST. The FBX stores it as it stands, and
+            # Unity builds a Humanoid from that: exported mid-stride (the last
+            # clip's frame), a Ludo dwarf became an avatar whose every clip --
+            # Mixamo's too -- stretched his arms to the floor. Every action is
+            # still baked, each from itself; the pose is put back after.
+            f'_held = []\n'
+            f'_held_rests = []\n'
+            f'for _a in (bpy.context.selected_objects if _use_selection else bpy.context.scene.objects):\n'
+            f'    if _a.type != "ARMATURE":\n'
+            f'        continue\n'
+            f'    _ad = _a.animation_data\n'
+            f'    _held.append((_a, _ad.action if _ad else None, [(b.name, b.matrix_basis.copy()) '
+            f'for b in _a.pose.bones]))\n'
+            f'    if _ad:\n'
+            f'        _ad.action = None\n'
+            f'    for _b in _a.pose.bones:\n'
+            f'        _b.matrix_basis = mathutils.Matrix.Identity(4)\n'
+            # ...and Unity takes a model's pose from frame 0 of the file's FIRST
+            # take, not from its rest: "Idle" sorted first and the dwarf's
+            # avatar was built with his arms hanging (measured). A one-frame
+            # rest take that sorts before any name goes first; Unity's side
+            # drops it from the clips.
+            f'    if any(True for _x in bpy.data.actions if not _x.name.startswith("!Rest")):\n'
+            f'        _rest = bpy.data.actions.new("!Rest")\n'
+            f'        if _ad is None:\n'
+            f'            _ad = _a.animation_data_create()\n'
+            f'        _ad.action = _rest\n'
+            f'        for _b in _a.pose.bones:\n'
+            f'            _b.keyframe_insert("location", frame=1)\n'
+            f'            _b.keyframe_insert("rotation_quaternion" if _b.rotation_mode == "QUATERNION" '
+            f'else "rotation_euler", frame=1)\n'
+            f'            _b.keyframe_insert("scale", frame=1)\n'
+            f'        _ad.action = None\n'
+            f'        _held_rests.append(_rest)\n'
+            f'bpy.context.view_layer.update()\n'
+            f'try:\n'
+            f'    bpy.ops.export_scene.fbx(filepath=_path, use_selection=_use_selection, '
             f'object_types={{"MESH", "ARMATURE"}}, '
             f'apply_unit_scale=True, bake_space_transform=False, '
-            f'add_leaf_bones=False, path_mode="COPY", embed_textures=True)\n'
+            f'add_leaf_bones=False, path_mode="COPY", embed_textures=True, '
+            f'bake_anim_use_all_actions=True)\n'
+            f'finally:\n'
+            f'    for _r in _held_rests:\n'
+            f'        bpy.data.actions.remove(_r)\n'
+            f'    for _a, _action, _pose in _held:\n'
+            f'        if _action is not None:\n'
+            f'            _a.animation_data.action = _action\n'
+            f'        for _bn, _m in _pose:\n'
+            f'            _a.pose.bones[_bn].matrix_basis = _m\n'
+            f'    bpy.context.view_layer.update()\n'
             f'_RESULT["exported"].append(_path)\n'
             # The texture maps behind the exported materials, by the label
             # make_game_ready gives them (Color, AO, Normal): an FBX cannot
             # carry "colour times AO", so whoever imports it rebuilds the
             # material from these.
+            # A map's role is its label when make_game_ready gave it one, or
+            # else what it feeds: Base Color is colour, a Normal Map node is
+            # normal. A map with no file on disk -- packed inside a
+            # generator's GLB, as Ludo's are -- is written out beside the FBX
+            # (raw pixels, so no colour management touches it); without that
+            # a Ludo character arrived in Unity white.
+            f'import os as _xos\n'
+            f'import numpy as _xnp\n'
+            f'def _x_role(_node):\n'
+            f'    if _node.label in ("Color", "AO", "Normal"):\n'
+            f'        return _node.label\n'
+            f'    for _link in _node.outputs["Color"].links:\n'
+            f'        _to = _link.to_node\n'
+            f'        if _to.type == "NORMAL_MAP":\n'
+            f'            return "Normal"\n'
+            f'        if _to.type == "BSDF_PRINCIPLED" and _link.to_socket.name == "Base Color":\n'
+            f'            return "Color"\n'
+            f'        if _to.type in ("MIX", "MIX_RGB") and any(l.to_socket.name == "Base Color" '
+            f'for out in _to.outputs for l in out.links):\n'
+            f'            return "Color"\n'
+            f'    return None\n'
             f'_maps = {{}}\n'
             f'for _o in (bpy.context.selected_objects if _use_selection else bpy.context.scene.objects):\n'
             f'    for _m in (getattr(_o.data, "materials", None) or []):\n'
             f'        for _n in (_m.node_tree.nodes if _m and _m.node_tree else []):\n'
-            f'            if _n.type == "TEX_IMAGE" and _n.image and _n.image.filepath:\n'
-            f'                _maps.setdefault(_n.label or _n.name, bpy.path.abspath(_n.image.filepath))\n'
+            f'            if _n.type != "TEX_IMAGE" or _n.image is None:\n'
+            f'                continue\n'
+            f'            _role = _x_role(_n)\n'
+            f'            if _role is None or _role in _maps:\n'
+            f'                continue\n'
+            f'            _file = bpy.path.abspath(_n.image.filepath) if _n.image.filepath else ""\n'
+            f'            if not _file or _n.image.packed_file is not None or not _xos.path.isfile(_file):\n'
+            f'                _w, _h = _n.image.size\n'
+            f'                if not _w or not _h:\n'
+            f'                    continue\n'
+            f'                _px = _xnp.empty(_w * _h * 4, dtype=_xnp.float32)\n'
+            f'                _n.image.pixels.foreach_get(_px)\n'
+            f'                _copy = bpy.data.images.new("ARIA_export_map", _w, _h, alpha=True)\n'
+            f'                _copy.pixels.foreach_set(_px)\n'
+            f'                _file = _xos.path.splitext(_path)[0] + "_" + _role.lower() + ".png"\n'
+            f'                _copy.filepath_raw = _file\n'
+            f'                _copy.file_format = "PNG"\n'
+            f'                _copy.save()\n'
+            f'                bpy.data.images.remove(_copy)\n'
+            f'            _maps[_role] = _file\n'
             f'_note("export_fbx", path=_path, maps=_maps)')
 
 
@@ -1243,6 +1433,10 @@ def apply_transforms(params: Dict[str, Any]) -> str:
     The armature and everything skinned to it are applied together --
     applying to one and not the other would separate a mesh from the
     skeleton that deforms it.
+
+    location=True bakes where it stands too, leaving the origin at the
+    world's: needed before auto_rig, which read a mesh lifted out of
+    Ludo's 0.9 m-high empty and swapped its arms and legs (measured).
     """
     # mode_set only with something active: it fails its poll when nothing
     # is -- the state right after the active object was deleted, which is
@@ -1259,8 +1453,8 @@ def apply_transforms(params: Dict[str, Any]) -> str:
         'if _applied:\n'
         '    bpy.context.view_layer.objects.active = '
         'bpy.data.objects[_applied[0]]\n'
-        '    bpy.ops.object.transform_apply(location=False, rotation=True, '
-        'scale=True)\n'
+        f'    bpy.ops.object.transform_apply(location={"True" if params.get("location") else "False"}, '
+        'rotation=True, scale=True)\n'
         '_note("apply_transforms", objects=_applied)')
 
 
@@ -5495,13 +5689,20 @@ def _aria_build_rig(obj, name):
     lo, hi = world.min(axis=0), world.max(axis=0)
     H = hi[2] - lo[2]
     cx = float((L("hip_l")["point"].x + L("hip_r")["point"].x) / 2.0)
+    # A body standing square is centred in its own box. When the hip marks
+    # disagree -- a stout Ludo dwarf with his hands at hip height put them
+    # at +0.08 and -0.38, and every bone came out 0.15 m off centre -- the
+    # box is believed instead.
+    box_x = float((lo[0] + hi[0]) / 2.0)
+    if abs(cx - box_x) > H * 0.03:
+        cx = box_x
     up = (0.0, 0.0, 1.0)
 
     def torso_centre(z, half):
         sel = (_np.abs(world[:, 2] - z) < H * 0.012) & (_np.abs(world[:, 0] - cx) < half)
         return world[sel].mean(axis=0) if sel.sum() >= 6 else _np.array([cx, 0.0, z])
 
-    hip_half = abs(L("hip_l")["point"].x - cx)
+    hip_half = (abs(L("hip_l")["point"].x - cx) + abs(L("hip_r")["point"].x - cx)) / 2.0
     waist_half = abs(L("waist_l")["point"].x - cx) * 1.2
     hips = torso_centre((L("hip_l")["point"].z + L("hip_r")["point"].z) / 2.0, hip_half)
     spine = torso_centre(L("waist_l")["point"].z, waist_half)
@@ -5538,6 +5739,15 @@ def _aria_build_rig(obj, name):
             # The shoulder joint: back up the line from the elbow as far as
             # the upper-arm mark sits from it again (0.22 and 0.48 along).
             shoulder = elbow + (upper - elbow) * (0.48 / 0.26)
+            # Thick arms hanging close to a wide body: the upper-arm section
+            # took in the torso and the line back from the elbow flew off --
+            # 0.8 m in front of the dwarf and down at his waist. The shoulder
+            # mark itself, a little inside the surface, is the fallback.
+            if ("shoulder_" + side) in marks:
+                shoulder_mark = _np.array(L("shoulder_" + side)["point"])
+                if _np.linalg.norm(shoulder - shoulder_mark) > H * 0.12:
+                    shoulder = _np.array([shoulder_mark[0] - sign * H * 0.02, (shoulder_mark[1] + chest[1]) / 2.0,
+                                          shoulder_mark[2] - H * 0.045])
             hand_end = wrist + (wrist - elbow) * 0.45
             clavicle = _np.array([cx + sign * H * 0.02, chest[1], shoulder[2] - H * 0.01])
             joints[word + "Shoulder"] = (clavicle, shoulder)
@@ -6397,6 +6607,9 @@ TEMPLATES = {
     "set_shader_node": set_shader_node,
     "quad_remesh": quad_remesh,
     "make_game_ready": make_game_ready,
+    "rename_object": rename_object,
+    "flatten_hierarchy": flatten_hierarchy,
+    "t_pose": t_pose,
     "copy_landmarks": copy_landmarks,
     "voxel_remesh": voxel_remesh,
     "stamp_detail": stamp_detail,

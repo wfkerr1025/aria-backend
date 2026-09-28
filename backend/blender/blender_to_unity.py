@@ -291,7 +291,8 @@ def send(session, *, project: Optional[Path] = None, rig: Optional[str] = None,
         role = {"color": "color", "ao": "occlusion", "normal": "normal"}.get(label.lower())
         if role and Path(source).is_file():
             target = folder / f"{name}_{label.lower()}{Path(source).suffix}"
-            shutil.copy2(source, target)
+            if Path(source).resolve() != target.resolve():      # written beside the FBX already
+                shutil.copy2(source, target)
             textures[role] = f"{CHARACTERS if rigged else PROPS}/{name}/{target.name}"
     if textures:
         sidecar["textures"] = [{"role": r, "path": p} for r, p in textures.items()]
@@ -339,7 +340,7 @@ def describe(report: dict, project: Path) -> str:
     if report.get("lods"):
         lines.append(f"LOD Group: {len(report['lods'])} levels (" + ", ".join(report["lods"]) + ").")
     if report.get("material"):
-        lines.append(f"Material {report['material']} built from the baked maps.")
+        lines.append(f"Material {report['material']} built from its texture maps.")
     if clips:
         lines.append("Clips: " + ", ".join(f"{c['name']} ({c['length']:.1f} s"
                                            + (", loops" if c.get("loop") else "") + ")"

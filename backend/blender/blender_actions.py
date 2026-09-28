@@ -684,6 +684,14 @@ def answer_request(text: str, *,
     live = mapping.names_live_blender(said) and not other_tool
     session = blender_session.LiveSession() if live else blender_session.Session()
 
+    # "Turn D:\Art\wick.png into a playable character" / "make a playable
+    # character of a dwarf miner": Ludo, Blender and Unity in one go. It
+    # spends credits, so it is asked for by that phrase and never taken
+    # from a question.
+    playable = _PLAYABLE.search(said)
+    if playable and not mapping._ASKING_ABOUT.match(said) and not mapping._WANTS_EXPLANATION.search(said):
+        return _answer_playable(said, session)
+
     # "Send him to Unity" names no Blender, and needs none: "him" is the
     # character chat has been building. A question about it still is not
     # an instruction.
@@ -754,6 +762,44 @@ def answer_request(text: str, *,
         f"{files}\n\n"
         + (f"{picture}\n\n" if picture else "")
         + f"Steps: {plan['summary']}.")}
+
+
+_PLAYABLE = re.compile(r"\b(?:playable|game|animated|rigged)\s+(?:3d\s+)?character\b", re.I)
+_PICTURE_OR_LINK = re.compile(r"https?://\S+\.(?:png|jpe?g|webp)\b|[A-Za-z]:[\\/][^\"<>|\r\n?*]*?\.(?:png|jpe?g|webp)\b",
+                              re.I)
+_DESCRIBED = re.compile(r"\bcharacter\s+(?:of|from|that looks like|looking like)\s+(?!D:|[A-Za-z]:[\\/])(.+)$", re.I)
+
+
+def _answer_playable(said: str, session) -> dict:
+    """A picture or a description, all the way to a character in Unity."""
+    from backend.blender import blender_character
+    from backend.ludo import ludo_client
+
+    try:
+        ludo_client.api_key()
+    except Exception:
+        return {"ran": False, "text": ("I did not start: this needs Ludo.ai (it turns the picture into "
+                                       "a 3D model), and Ludo is not set up. Add its key on the Ludo "
+                                       "page under Plugins.")}
+    found = _PICTURE_OR_LINK.search(said)
+    picture = found.group(0).strip() if found else None
+    described = None if picture else _DESCRIBED.search(said)
+    description = described.group(1).strip(" .!") if described else None
+    if not picture and not description:
+        return {"ran": False, "text": (
+            "I did not start. Give me a picture -- a file like D:\\Art\\hero.png, or a link -- or "
+            "say what the character looks like: \"make a playable character of a dwarf miner\". "
+            f"Pictures that work best show {blender_character.PICTURE_ADVICE}.")}
+    named = re.search(r"\b(?:called|named)\s+([A-Z][\w-]*)", said)
+    outcome = blender_character.picture_to_character(picture, description=description, session=session,
+                                                     name=named.group(1) if named else None)
+    text = outcome.get("text", "")
+    pictures = outcome.get("pictures") or []
+    if pictures:
+        from backend.blender import blender_session
+
+        text += "\n\n" + "\n\n".join(blender_session.picture_markdown([p], Path(p).stem) for p in pictures)
+    return {"ran": True, "text": text}
 
 
 def _build_live(plan: dict, session, on_output) -> dict:

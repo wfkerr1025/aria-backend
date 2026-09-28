@@ -68,6 +68,7 @@ namespace ARIA.Characters
         // Where the left foot is (forward, m) in each pictured frame: proof the frames differ.
         public float[] leftFootZ = new float[0];
         public float[] meshFootZ = new float[0];   // the same for the skinned mesh as drawn
+        public string pose;                         // root rotation and body line at the first frame
     }
 
     [Serializable]
@@ -93,6 +94,8 @@ namespace ARIA.Characters
         public string material;
         public string[] lods = new string[0];
         public string picture;     // a prop's four views
+        public string restArm;     // the left upper arm's direction before any clip
+        public string[] humanMap = new string[0];   // Unity body part = our bone
     }
 
     public class ARIACharacterImporter : AssetPostprocessor
@@ -161,7 +164,10 @@ namespace ARIA.Characters
                 return;
             var importer = (ModelImporter)assetImporter;
             var loops = new HashSet<string>((sidecar.loop ?? new string[0]).Select(l => l.ToLowerInvariant()));
-            var clips = importer.defaultClipAnimations;
+            // "!Rest" is there only to be the first take -- the pose Unity reads
+            // the model in (see export_fbx on ARIA's side). Not a clip.
+            var clips = importer.defaultClipAnimations
+                .Where(c => !ShortName(c.takeName).StartsWith("!")).ToArray();
             foreach (var clip in clips)
             {
                 clip.name = ShortName(clip.takeName);
@@ -288,6 +294,11 @@ namespace ARIA.Characters
             report.humanoid = importer.animationType == ModelImporterAnimationType.Human;
             string folder = Path.GetDirectoryName(modelPath).Replace('\\', '/');
 
+            if (sidecar.rigged && MapHumanoid(importer, model))
+            {
+                importer.SaveAndReimport();
+                model = AssetDatabase.LoadAssetAtPath<GameObject>(modelPath);
+            }
             var assets = AssetDatabase.LoadAllAssetsAtPath(modelPath);
             Avatar avatar = null;
             AnimatorController controller = null;
@@ -301,6 +312,8 @@ namespace ARIA.Characters
                 var description = avatar != null ? avatar.humanDescription : importer.humanDescription;
                 var mapped = new HashSet<string>((description.human ?? new HumanBone[0]).Select(h => h.humanName.Replace(" ", "")));
                 report.humanBones = mapped.Count;
+                report.humanMap = (description.human ?? new HumanBone[0])
+                    .Select(h => h.humanName.Replace(" ", "") + "=" + h.boneName).OrderBy(x => x).ToArray();
                 report.missingBones = RequiredBones.Where(b => !mapped.Contains(b)).ToArray();
                 if (!report.avatarHuman)
                     report.warnings.Add("the avatar is not a valid Humanoid -- clips from other characters will not play on it");
@@ -363,6 +376,13 @@ namespace ARIA.Characters
                 }
                 else if (render)
                 {
+                    // At rest first, no clip: what the skin does on its own, apart
+                    // from anything retargeting does to it.
+                    var upperArm = animator.isHuman ? animator.GetBoneTransform(HumanBodyBones.LeftUpperArm) : null;
+                    var lowerArm = animator.isHuman ? animator.GetBoneTransform(HumanBodyBones.LeftLowerArm) : null;
+                    if (upperArm != null && lowerArm != null)
+                        report.restArm = (lowerArm.position - upperArm.position).normalized.ToString("F2");
+                    report.picture = Picture(stage, instance, null, null, sidecar.name, null);
                     var pictured = new List<AnimationClip>(clips);
                     foreach (string extra in sidecar.preview_clips ?? new string[0])
                     {
@@ -450,6 +470,62 @@ namespace ARIA.Characters
                     importer.sRGBTexture = false;
                 return;
             }
+        }
+
+        // The Humanoid mapping, written rather than guessed. ARIA's bones carry
+        // Unity's own names, so each body part is the bone of that name, and
+        // the reference pose is the model as it stands (its first take is the
+        // rest -- see export_fbx). Two things this replaces, both measured:
+        // Unity's auto-mapper lost a game-ready character's LeftHand, and the
+        // description Unity keeps in the .meta held on to a stride from an
+        // earlier import, tilting every clip 65 degrees. True when it changed.
+        static bool MapHumanoid(ModelImporter importer, GameObject model)
+        {
+            var named = new Dictionary<string, Transform>();
+            foreach (var t in model.GetComponentsInChildren<Transform>(true))
+                if (!named.ContainsKey(t.name)) named[t.name] = t;
+            var human = new List<HumanBone>();
+            foreach (string trait in HumanTrait.BoneName)
+            {
+                string bone = trait.Replace(" ", "");
+                if (named.ContainsKey(bone))
+                {
+                    var entry = new HumanBone { humanName = trait, boneName = bone };
+                    entry.limit.useDefaultValues = true;
+                    human.Add(entry);
+                }
+            }
+            if (RequiredBones.Any(r => !named.ContainsKey(r)))
+                return false;                          // not ARIA's naming: leave it to Unity
+            var skeleton = model.GetComponentsInChildren<Transform>(true).Select(t => new SkeletonBone
+            {
+                name = t.name, position = t.localPosition, rotation = t.localRotation, scale = t.localScale,
+            }).ToArray();
+
+            var current = importer.humanDescription;
+            bool same = current.human != null && current.skeleton != null
+                && current.human.Length == human.Count
+                && human.All(h => current.human.Any(c => c.humanName == h.humanName && c.boneName == h.boneName))
+                && current.skeleton.Length == skeleton.Length
+                && skeleton.All(b => current.skeleton.Any(c => c.name == b.name
+                    && Quaternion.Angle(c.rotation, b.rotation) < 0.5f && (c.position - b.position).magnitude < 0.001f));
+            if (same)
+                return false;
+            var description = current;
+            description.human = human.ToArray();
+            description.skeleton = skeleton;
+            if (description.armStretch == 0f && description.legStretch == 0f)
+            {
+                description.upperArmTwist = 0.5f;
+                description.lowerArmTwist = 0.5f;
+                description.upperLegTwist = 0.5f;
+                description.lowerLegTwist = 0.5f;
+                description.armStretch = 0.05f;
+                description.legStretch = 0.05f;
+                description.feetSpacing = 0f;
+            }
+            importer.humanDescription = description;
+            return true;
         }
 
         static AnimatorController BuildController(string path, List<AnimationClip> clips, CharacterSidecar sidecar,
@@ -568,6 +644,12 @@ namespace ARIA.Characters
                         var foot = animator != null && animator.isHuman ? animator.GetBoneTransform(HumanBodyBones.LeftFoot) : null;
                         if (foot != null)
                             feet.Add(Mathf.Round(foot.position.z * 100f) / 100f);
+                        var hipsBone = animator != null && animator.isHuman ? animator.GetBoneTransform(HumanBodyBones.Hips) : null;
+                        if (entry != null && i == 0)
+                            entry.pose = "root " + instance.transform.eulerAngles.ToString("F0") + " hipsUp "
+                                + (hipsBone != null ? hipsBone.up.ToString("F2") : "?")
+                                + " headAboveHips " + (hipsBone != null && animator.GetBoneTransform(HumanBodyBones.Head) != null
+                                    ? (animator.GetBoneTransform(HumanBodyBones.Head).position - hipsBone.position).normalized.ToString("F2") : "?");
                         // The drawn mesh, not the bone: the lowest left-side vertex of the
                         // first skinned mesh, after skinning.
                         var skin = instance.GetComponentInChildren<SkinnedMeshRenderer>();
