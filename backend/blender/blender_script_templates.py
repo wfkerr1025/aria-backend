@@ -2722,10 +2722,17 @@ class _AriaRestore:
                             bpy.data.cameras.remove(data)
                         elif isinstance(data, bpy.types.Light):
                             bpy.data.lights.remove(data)
+                        elif isinstance(data, bpy.types.Mesh):
+                            bpy.data.meshes.remove(data)
                 elif isinstance(block, bpy.types.World):
                     bpy.data.worlds.remove(block)
                 elif isinstance(block, bpy.types.Image):
                     bpy.data.images.remove(block)
+                elif isinstance(block, bpy.types.Mesh):
+                    if block.users == 0:
+                        bpy.data.meshes.remove(block)
+                elif isinstance(block, bpy.types.Material):
+                    bpy.data.materials.remove(block)
             except Exception:
                 pass
 
@@ -2939,6 +2946,8 @@ def render_preview(params: Dict[str, Any]) -> str:
     engine and lights). views: any of front, back, left, right, top,
     bottom, three_quarter, three_quarter_back. object/objects: frame
     only these. skip_empty: an empty scene is noted, not an error.
+    show_landmarks: red dots on every landmark, to check where "the
+    nose" is before a brush is aimed at it.
     """
     views = _views(params.get("views"))
     look = _choice(params.get("look"), PREVIEW_LOOKS, "material")
@@ -2948,7 +2957,9 @@ def render_preview(params: Dict[str, Any]) -> str:
     directions = "{" + ", ".join(
         f"{view!r}: {PREVIEW_VIEWS[view]!r}" for view in views) + "}"
 
-    return (_RENDER_KIT +
+    # The landmark helpers live with the sculpting kit; a preview that
+    # draws landmarks needs them even when nothing is sculpted in the run.
+    return (_RENDER_KIT + (_SCULPT_KIT if params.get("show_landmarks") else "") +
             f'_scene = bpy.context.scene\n'
             f'_target_path = _aria_folder({_text(params.get("path"))})\n'
             f'_stem = _os.path.splitext(_target_path)[0]\n'
@@ -2973,6 +2984,39 @@ def render_preview(params: Dict[str, Any]) -> str:
             f'        _aria_studio(_restore, _scene)\n'
             f'        if hasattr(_scene, "eevee"):\n'
             f'            _restore.set(_scene.eevee, "taa_render_samples", {_int(params.get("samples"), 16, 1, 4096)})\n'
+            f'    if {"True" if params.get("show_landmarks") else "False"}:\n'
+            f'        # Red dots where the landmarks are, so "the nose" can be checked\n'
+            f'        # by eye before a brush is aimed at it. Removed afterwards.\n'
+            f'        _red = _restore.made(bpy.data.materials.new("ARIA_Preview_Mark"))\n'
+            f'        _red.diffuse_color = (0.9, 0.12, 0.1, 1.0)\n'
+            f'        _red.use_nodes = True\n'
+            f'        _bsdf = _red.node_tree.nodes.get("Principled BSDF")\n'
+            f'        if _bsdf is not None:\n'
+            f'            _bsdf.inputs["Base Color"].default_value = (0.9, 0.12, 0.1, 1.0)\n'
+            f'            _bsdf.inputs["Emission Color"].default_value = (0.9, 0.12, 0.1, 1.0)\n'
+            f'            _bsdf.inputs["Emission Strength"].default_value = 1.0\n'
+            f'        if _look == "clay":\n'
+            f'            _restore.set(_scene.display.shading, "color_type", "MATERIAL")\n'
+            f'            for _o in _targets:\n'
+            f'                for _slot in _o.material_slots:\n'
+            f'                    if _slot.material is not None:\n'
+            f'                        _restore.set(_slot.material, "diffuse_color", (0.74, 0.71, 0.67, 1.0))\n'
+            f'        for _o in _targets:\n'
+            f'            if _o.type != "MESH" or not _o.get("aria_landmarks"):\n'
+            f'                continue\n'
+            f'            for _lname in sorted(_aria_landmarks_read(_o)):\n'
+            f'                _lm = _aria_landmark(_o, _lname)\n'
+            f'                _dot_mesh = _restore.made(bpy.data.meshes.new("ARIA_Preview_Mark_" + _lname))\n'
+            f'                import bmesh as _bmesh\n'
+            f'                _bm = _bmesh.new()\n'
+            f'                _bmesh.ops.create_uvsphere(_bm, u_segments=12, v_segments=8, '
+            f'radius=max(_lm["radius"] * 0.18, _radius * 0.012))\n'
+            f'                _bm.to_mesh(_dot_mesh)\n'
+            f'                _bm.free()\n'
+            f'                _dot_mesh.materials.append(_red)\n'
+            f'                _dot = _restore.made(bpy.data.objects.new("ARIA_Preview_Mark_" + _lname, _dot_mesh))\n'
+            f'                _dot.location = _lm["point"]\n'
+            f'                _scene.collection.objects.link(_dot)\n'
             f'    ' + (_engine_line(params) or 'pass\n') +
             f'    if _scene.render.engine == "CYCLES":\n'
             f'        _restore.set(_scene.cycles, "samples", {_int(params.get("samples"), 32, 1, 4096)})\n'
@@ -3131,6 +3175,8 @@ def describe_scene(params: Dict[str, Any]) -> str:
             '              "hidden": bool(_o.hide_render)}\n'
             '    if _o.modifiers:\n'
             '        _entry["modifiers"] = [m.type + ":" + m.name for m in _o.modifiers]\n'
+            '    if _o.get("aria_landmarks"):\n'
+            '        _entry["landmarks"] = sorted(json.loads(_o["aria_landmarks"]))\n'
             '    if _o.type == "MESH":\n'
             '        _seen = _o.evaluated_get(_graph).to_mesh()\n'
             '        _entry.update(vertices=len(_o.data.vertices), faces=len(_o.data.polygons),\n'
@@ -3453,6 +3499,55 @@ def _aria_view_point(obj, framing, view, u, v, depth="surface"):
                 break
         location = (location + exit_point) / 2.0
     return obj.matrix_world @ location
+def _aria_landmarks_read(obj):
+    raw = obj.get("aria_landmarks")
+    return json.loads(raw) if raw else {}
+
+
+def _aria_landmarks_write(obj, marks):
+    obj["aria_landmarks"] = json.dumps(marks, sort_keys=True)
+
+
+def _aria_landmark(obj, name):
+    """A named place on the model, in the scene: point, outward normal, radius."""
+    marks = _aria_landmarks_read(obj)
+    key = str(name).strip().lower()
+    if key not in marks:
+        raise RuntimeError("%r has no landmark called %r -- it has: %s. find_landmarks marks "
+                           "a head; set_landmark marks anything" % (
+                               obj.name, name, ", ".join(sorted(marks)) or "none"))
+    mark = marks[key]
+    matrix = obj.matrix_world
+    at, normal = mathutils.Vector(mark["at"]), mathutils.Vector(mark["normal"])
+    # A landmark is the VERTEX it was put on, so it rides along as the
+    # surface is sculpted -- stored as a point, the nose's mark was left
+    # inside the nose once the nose had been pulled out (measured, in
+    # the landmark preview). Only if the mesh was rebuilt since (a
+    # remesh: different vertices) does the stored point stand in.
+    vertex = mark.get("vertex")
+    if (vertex is not None and obj.type == "MESH"
+            and mark.get("count") == len(obj.data.vertices)):
+        at = obj.data.vertices[vertex].co.copy()
+        normal = obj.data.vertices[vertex].normal.copy()
+    normal = matrix.to_3x3().inverted().transposed() @ normal
+    scale = sum(abs(s) for s in matrix.to_scale()) / 3.0
+    return {"point": matrix @ at, "normal": normal.normalized(), "radius": mark["radius"] * scale}
+
+
+def _aria_direction(names, outward, anchor, obj):
+    """Named directions added up into one: out, up, the model's left..."""
+    side = 1.0 if anchor.x >= obj.matrix_world.translation.x else -1.0
+    table = {
+        "out": outward, "in": -outward,
+        "up": mathutils.Vector((0, 0, 1)), "down": mathutils.Vector((0, 0, -1)),
+        "forward": mathutils.Vector((0, -1, 0)), "back": mathutils.Vector((0, 1, 0)),
+        "left": mathutils.Vector((1, 0, 0)), "right": mathutils.Vector((-1, 0, 0)),
+        "outward": mathutils.Vector((side, 0, 0)), "inward": mathutils.Vector((-side, 0, 0)),
+    }
+    total = mathutils.Vector((0.0, 0.0, 0.0))
+    for name in names:
+        total += table[name]
+    return total.normalized() if total.length > 1e-9 else total
 '''.replace("__ARIA_VIEWS__", repr(PREVIEW_VIEWS))
 
 
@@ -3492,6 +3587,27 @@ def sculpt_ready(params: Dict[str, Any]) -> str:
             f'_RESULT["modified"].append(_target.name)\n'
             f'_note("sculpt_ready", object=_target.name, faces_before=_before, '
             f'faces=len(_target.data.polygons), voxel=round(_target.data.remesh_voxel_size, 5))')
+
+
+STROKE_DIRECTIONS = frozenset({
+    "out", "in", "up", "down", "forward", "back", "left", "right", "outward", "inward",
+})
+
+
+def _directions(value: Any) -> List[str]:
+    """Named directions for a grab, checked against the list."""
+    if value is None or value == "" or value == []:
+        return []
+    if isinstance(value, str):
+        value = [part for part in value.replace(",", " ").replace("+", " ").split() if part]
+    chosen = []
+    for item in value:
+        key = str(item).strip().lower()
+        if key not in STROKE_DIRECTIONS:
+            raise BadValue(f"{item!r} is not a direction. Use "
+                           f"{', '.join(sorted(STROKE_DIRECTIONS))}.")
+        chosen.append(key)
+    return chosen
 
 
 def _stroke_points(value: Any, view: Any) -> str:
@@ -3540,12 +3656,23 @@ def sculpt_stroke(params: Dict[str, Any]) -> str:
     "Blink_L") instead of the mesh itself. add_shape_key makes one. The
     base cannot be sculpted once a mesh has keys, because every key
     stores its own full shape and would be left behind.
+
+    landmark: aim at a named place on the model (find_landmarks or
+    set_landmark put them there) instead of giving points -- the brush
+    lands on it and takes its size (times `size`) unless a radius is
+    given. direction: which way a grab carries it, as one or more of
+    out, in, up, down, forward, back, left, right (the model's own),
+    outward, inward (away from / toward its centre line); `distance` is
+    how far, as a fraction of the radius.
     """
     brush = _choice(params.get("brush"), SCULPT_STROKE_BRUSHES, "draw")
     falloff = _choice(params.get("falloff"), SCULPT_FALLOFFS, "smooth")
     view = params.get("view")
     view_literal = _choice(view, SCULPT_VIEWS, "front") if view else "None"
-    points = _stroke_points(params.get("points"), view)
+    landmark = params.get("landmark")
+    points = ("None" if landmark and not params.get("points")
+              else _stroke_points(params.get("points"), view))
+    directions = _directions(params.get("direction"))
     mirror = str(params.get("mirror") or "").strip().upper()
     if mirror not in ("", "X", "Y", "Z"):
         raise BadValue(f"{params.get('mirror')!r} is not a mirror axis. Use X, Y or Z.")
@@ -3569,7 +3696,11 @@ def sculpt_stroke(params: Dict[str, Any]) -> str:
     return (_RENDER_KIT + _SCULPT_KIT +
             f'_target = _obj({_text(params.get("object"))})\n'
             f'_sculpt = _AriaSculpt(_target, {_text(params.get("shape_key"))} or None)\n'
-            f'_radius_world = {_num(params.get("radius"), 0.05)}\n'
+            f'_landmark = {_text(landmark)}\n'
+            f'_lm = _aria_landmark(_target, _landmark) if _landmark else None\n'
+            f'_radius_world = ({_num(params.get("radius"), 0.05)} '
+            f'if {params.get("radius") is not None} or _lm is None '
+            f'else _lm["radius"] * {_num(params.get("size"), 1.0)})\n'
             f'if _radius_world <= 0:\n'
             f'    raise RuntimeError("a brush needs a radius above zero")\n'
             f'_scale = sum(abs(s) for s in _target.matrix_world.to_scale()) / 3.0\n'
@@ -3577,7 +3708,9 @@ def sculpt_stroke(params: Dict[str, Any]) -> str:
             f'_inverse = _target.matrix_world.inverted()\n'
             f'_view = {view_literal}\n'
             f'_raw = {points}\n'
-            f'if _view is not None:\n'
+            f'if _raw is None:\n'
+            f'    _world = [_lm["point"]]\n'
+            f'elif _view is not None:\n'
             f'    _framing = [_target] if {frame!r} == "object" else _aria_targets([])\n'
             f'    _world = [_aria_view_point(_target, _framing, _view, p[0], p[1], {depth!r}) for p in _raw]\n'
             f'else:\n'
@@ -3588,7 +3721,15 @@ def sculpt_stroke(params: Dict[str, Any]) -> str:
             f'    _near = _tree.find_nearest(_inverse @ _p) if {snap} else (None,)\n'
             f'    _path.append(_near[0] if _near[0] is not None else _inverse @ _p)\n'
             f'_dabs = _aria_resample([tuple(p) for p in _path], _radius * {_num(params.get("spacing"), 0.25)})\n'
-            f'_offset = _inverse.to_3x3() @ mathutils.Vector({_vector(params.get("offset"))})\n'
+            f'_offset_world = mathutils.Vector({_vector(params.get("offset"))})\n'
+            f'_directions = {directions!r}\n'
+            f'if _directions:\n'
+            f'    _anchor = _lm["point"] if _lm is not None else _world[0]\n'
+            f'    _outward = (_lm["normal"] if _lm is not None else '
+            f'(_anchor - _target.matrix_world.translation).normalized())\n'
+            f'    _offset_world = _aria_direction(_directions, _outward, _anchor, _target) * '
+            f'(_radius_world * {_num(params.get("distance"), 0.5)})\n'
+            f'_offset = _inverse.to_3x3() @ _offset_world\n'
             f'_moved = 0\n'
             f'_mirror = {mirror_index}\n'
             f'_brush = {brush}\n'
@@ -4358,6 +4499,178 @@ def apply_modifiers(params: Dict[str, Any]) -> str:
             f'shape_keys=[k[0] for k in _kept], vertices=len(_target.data.vertices))')
 
 
+# ======================================================
+# Landmarks
+#
+# "Make the nose bigger" needs to know where the nose is. A landmark is
+# a named place on a model -- a point on its surface, the way out from
+# it, and how big the feature is -- kept on the object itself, so it is
+# saved with the file and every later stroke can aim at it by name.
+# ======================================================
+
+# Where a head's features sit, as fractions of its width (x) and height
+# (z) -- stylized proportions, the kind a sculptor blocks in first.
+# (name, across, up, pick, radius as a fraction of the width)
+#   across: offset from the centre line; up: from the bottom;
+#   pick: which vertex of that column -- the front-most, unless noted.
+HEAD_LANDMARKS = (
+    ("forehead", 0.00, 0.76, "front", 0.28),
+    ("brow", 0.00, 0.69, "front", 0.30),
+    ("eye_l", 0.20, 0.58, "front", 0.10),
+    ("eye_r", -0.20, 0.58, "front", 0.10),
+    ("cheek_l", 0.27, 0.43, "front", 0.14),
+    ("cheek_r", -0.27, 0.43, "front", 0.14),
+    ("mouth", 0.00, 0.27, "front", 0.12),
+    ("mouth_corner_l", 0.12, 0.27, "front", 0.07),
+    ("mouth_corner_r", -0.12, 0.27, "front", 0.07),
+    ("chin", 0.00, 0.13, "front", 0.14),
+    ("jaw_l", 0.32, 0.20, "front", 0.16),
+    ("jaw_r", -0.32, 0.20, "front", 0.16),
+    ("ear_l", 0.50, 0.50, "left", 0.10),
+    ("ear_r", -0.50, 0.50, "right", 0.10),
+    ("crown", 0.00, 1.00, "top", 0.30),
+    ("back_of_head", 0.00, 0.55, "back", 0.30),
+)
+LANDMARK_KINDS = frozenset({"head"})
+
+
+def find_landmarks(params: Dict[str, Any]) -> str:
+    """Mark a head's features -- nose, chin, eyes, cheeks, mouth... -- by its shape.
+
+    For a head standing upright and facing -Y (the front view looks at
+    its face), as every model here does. The nose is found where it
+    actually sticks out, if it does; the rest are placed by stylized
+    proportions from the nose and the head's size, each on the surface
+    at that spot. Good enough to aim a brush at "the chin"; check them
+    with render_preview(show_landmarks=True), and move any that are off
+    with set_landmark, which always wins over this.
+
+    only_missing (default true) keeps landmarks already set.
+    """
+    kind = _choice(params.get("kind"), LANDMARK_KINDS, "head")
+    only_missing = "False" if params.get("only_missing") is False else "True"
+    return (_RENDER_KIT + _SCULPT_KIT +
+            f'_target = _obj({_text(params.get("object"))})\n'
+            f'if _target.type != "MESH":\n'
+            f'    raise RuntimeError("%r is a %s -- landmarks go on meshes" % (_target.name, _target.type))\n'
+            f'_kind = {kind}\n'
+            f'_mesh = _target.data\n'
+            f'_n = len(_mesh.vertices)\n'
+            f'_co = _np.empty(_n * 3); _mesh.vertices.foreach_get("co", _co)\n'
+            f'_nr = _np.empty(_n * 3); _mesh.vertex_normals.foreach_get("vector", _nr)\n'
+            f'_matrix = _np.array(_target.matrix_world)\n'
+            f'_world = _co.reshape(-1, 3) @ _matrix[:3, :3].T + _matrix[:3, 3]\n'
+            f'_lo, _hi = _world.min(axis=0), _world.max(axis=0)\n'
+            f'_W, _D, _H = (_hi - _lo)\n'
+            f'_cx, _cy = (_lo[0] + _hi[0]) / 2.0, (_lo[1] + _hi[1]) / 2.0\n'
+            f'\n'
+            f'def _probe(x, z, pick, reach=0.06):\n'
+            f'    for _grow in (1, 2, 4, 8):\n'
+            f'        _sel = (_np.abs(_world[:, 0] - x) < _W * reach * _grow) & '
+            f'(_np.abs(_world[:, 2] - z) < _H * reach * _grow)\n'
+            f'        if pick in ("left", "right"):\n'
+            f'            _sel = (_np.abs(_world[:, 2] - z) < _H * reach * _grow) & '
+            f'(_np.abs(_world[:, 1] - _cy) < _D * 0.3)\n'
+            f'        if pick == "top":\n'
+            f'            _sel = _np.abs(_world[:, 0] - x) < _W * 0.15 * _grow\n'
+            f'        _idx = _np.nonzero(_sel)[0]\n'
+            f'        if len(_idx):\n'
+            f'            break\n'
+            f'    else:\n'
+            f'        _idx = _np.arange(_n)\n'
+            f'    _column = _world[_idx]\n'
+            f'    _choose = {{"front": lambda c: _np.argmin(c[:, 1]), "back": lambda c: _np.argmax(c[:, 1]),\n'
+            f'               "left": lambda c: _np.argmax(c[:, 0]), "right": lambda c: _np.argmin(c[:, 0]),\n'
+            f'               "top": lambda c: _np.argmax(c[:, 2])}}[pick]\n'
+            f'    return int(_idx[_choose(_column)])\n'
+            f'\n'
+            f'# The nose: the front-most point of the middle band, if it stands\n'
+            f'# out from its neighbours; otherwise where proportions put it.\n'
+            f'_band = (_np.abs(_world[:, 0] - _cx) < _W * 0.12) & '
+            f'(_world[:, 2] > _lo[2] + _H * 0.30) & (_world[:, 2] < _lo[2] + _H * 0.60)\n'
+            f'_nose_z = _lo[2] + _H * 0.40\n'
+            f'_nose = None\n'
+            f'if _band.any():\n'
+            f'    _i = _np.nonzero(_band)[0][_np.argmin(_world[_band][:, 1])]\n'
+            f'    _around = (_np.abs(_world[:, 0] - _cx) < _W * 0.12) & '
+            f'(_np.abs(_world[:, 2] - _world[_i, 2]) < _H * 0.15) & '
+            f'(_np.abs(_world[:, 2] - _world[_i, 2]) > _H * 0.08)\n'
+            f'    _front = _world[_around][:, 1].min() if _around.any() else _world[_i, 1]\n'
+            f'    if _front - _world[_i, 1] > _H * 0.02:\n'
+            f'        _nose, _nose_z = _i, _world[_i, 2]\n'
+            f'if _nose is None:\n'
+            f'    _nose = _probe(_cx, _nose_z, "front")\n'
+            f'# Everything below the nose scales to the nose, everything above to the top.\n'
+            f'def _height(up):\n'
+            f'    _rest = _lo[2] + _H * 0.40\n'
+            f'    if up <= 0.40:\n'
+            f'        return _lo[2] + (_nose_z - _lo[2]) * (up / 0.40)\n'
+            f'    return _nose_z + (_hi[2] - _nose_z) * ((up - 0.40) / 0.60)\n'
+            f'\n'
+            f'_found = {{"nose": (_nose, 0.12)}}\n'
+            f'for _name, _across, _up, _pick, _size in {HEAD_LANDMARKS!r}:\n'
+            f'    _found[_name] = (_probe(_cx + _across * _W, _height(_up), _pick), _size)\n'
+            f'\n'
+            f'_marks = _aria_landmarks_read(_target)\n'
+            f'_inverse_scale = 1.0 / max(sum(abs(s) for s in _target.matrix_world.to_scale()) / 3.0, 1e-9)\n'
+            f'_placed = []\n'
+            f'for _name, (_i, _size) in _found.items():\n'
+            f'    if {only_missing} and _name in _marks:\n'
+            f'        continue\n'
+            f'    _marks[_name] = {{"at": [float(v) for v in _co.reshape(-1, 3)[_i]], '
+            f'"normal": [float(v) for v in _nr.reshape(-1, 3)[_i]], '
+            f'"radius": float(_W * _size * _inverse_scale), "source": "find_landmarks", '
+            f'"vertex": int(_i), "count": _n}}\n'
+            f'    _placed.append(_name)\n'
+            f'_aria_landmarks_write(_target, _marks)\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("find_landmarks", object=_target.name, kind=_kind, placed=sorted(_placed), '
+            f'kept=sorted(set(_marks) - set(_placed)), nose_found=bool(_band.any()))')
+
+
+def set_landmark(params: Dict[str, Any]) -> str:
+    """Mark a named place on a model by hand, or move one.
+
+    point: [x, y, z] in the scene, snapped onto the surface -- or [u, v]
+    on an orthographic preview picture with `view`, like a stroke.
+    radius: how big the feature is, in metres (a nose is ~0.1 of a
+    head's width). Names are kept lower-case: "Nose" and "nose" are one
+    landmark. Replaces whatever find_landmarks put there.
+    """
+    view = params.get("view")
+    view_literal = _choice(view, SCULPT_VIEWS, "front") if view else "None"
+    point = _stroke_points([params.get("point")] if params.get("point") is not None else None, view)
+    name = str(params.get("name") or "").strip().lower()
+    if not name:
+        raise BadValue("a landmark needs a name.")
+    return (_RENDER_KIT + _SCULPT_KIT +
+            f'_target = _obj({_text(params.get("object"))})\n'
+            f'_raw = {point}[0]\n'
+            f'_view = {view_literal}\n'
+            f'_where = (_aria_view_point(_target, _aria_targets([]), _view, _raw[0], _raw[1]) '
+            f'if _view is not None else mathutils.Vector(_raw))\n'
+            f'_inverse = _target.matrix_world.inverted()\n'
+            f'_tree = _BVHTree.FromObject(_target, bpy.context.evaluated_depsgraph_get())\n'
+            f'_at, _normal, _i, _d = _tree.find_nearest(_inverse @ _where)\n'
+            f'if _at is None:\n'
+            f'    raise RuntimeError("could not find the surface of %r near that point" % _target.name)\n'
+            f'_scale = sum(abs(s) for s in _target.matrix_world.to_scale()) / 3.0\n'
+            f'_marks = _aria_landmarks_read(_target)\n'
+            f'_mark = {{"at": list(_at), "normal": list(_normal.normalized()), '
+            f'"radius": {_num(params.get("radius"), 0.05)} / max(_scale, 1e-9), "source": "set_landmark"}}\n'
+            f'if _target.type == "MESH" and len(_target.data.vertices):\n'
+            f'    _vco = _np.empty(len(_target.data.vertices) * 3)\n'
+            f'    _target.data.vertices.foreach_get("co", _vco)\n'
+            f'    _vco = _vco.reshape(-1, 3)\n'
+            f'    _mark["vertex"] = int(_np.argmin(((_vco - _np.array(_at)) ** 2).sum(axis=1)))\n'
+            f'    _mark["count"] = len(_target.data.vertices)\n'
+            f'_marks[{name!r}] = _mark\n'
+            f'_aria_landmarks_write(_target, _marks)\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("set_landmark", object=_target.name, name={name!r}, '
+            f'at=[round(v, 4) for v in _target.matrix_world @ _at])')
+
+
 TEMPLATES = {
     "apply_transforms": apply_transforms,
     "remove_stray_meshes": remove_stray_meshes,
@@ -4456,6 +4769,8 @@ TEMPLATES = {
     "mirror_shape_key": mirror_shape_key,
     "transfer_weights": transfer_weights,
     "apply_modifiers": apply_modifiers,
+    "find_landmarks": find_landmarks,
+    "set_landmark": set_landmark,
     "enable_dyntopo": enable_dyntopo,
     "apply_multires": apply_multires,
     # export

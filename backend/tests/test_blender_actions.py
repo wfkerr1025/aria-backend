@@ -282,6 +282,9 @@ EVERY_ACTION = [
     ("transfer_weights", {"source": "Body", "target": "Shirt", "method": "nearest_face",
                           "armature": "Rig", "replace": True}),
     ("apply_modifiers", {"object": "Head"}),
+    # Landmarks, for sculpting by name. Run for real in test_blender_sculpt_language.py.
+    ("find_landmarks", {"object": "Head", "kind": "head", "only_missing": True}),
+    ("set_landmark", {"object": "Head", "name": "nose", "point": [0, -0.5, 1], "radius": 0.06}),
     ("sculpt_stroke", {"object": "Head", "brush": "draw", "points": [[0, -0.5, 1]],
                        "radius": 0.08, "strength": 0.5, "falloff": "smooth",
                        "mirror": "X", "spacing": 0.25, "front_only": True}),

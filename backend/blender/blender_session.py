@@ -299,14 +299,15 @@ class Session:
         return {"success": True, "scene": scene, "text": describe_text(scene)}
 
     def look(self, look: str = "material", views: Optional[Sequence[str]] = None,
-             size: int = 640, objects: Optional[Sequence[str]] = None) -> dict:
+             size: int = 640, objects: Optional[Sequence[str]] = None,
+             show_landmarks: bool = False) -> dict:
         """Render the scene without changing it."""
         if not self.scene.is_file():
             return {"success": False, "text": f"Session {self.name!r} is empty -- nothing to look at."}
         self.renders.mkdir(parents=True, exist_ok=True)
         path = self.renders / f"look_{time.strftime('%Y%m%d_%H%M%S')}_{look}.png"
         params: Dict[str, Any] = {"path": str(path), "look": look, "views": list(views or []),
-                                  "size": size}
+                                  "size": size, "show_landmarks": show_landmarks}
         if objects:
             params["objects"] = list(objects)
         result = blender_actions.run_actions(
@@ -447,6 +448,100 @@ _VIEW_WORDS = (("right", ("side", "right", "profile")), ("left", ("left",)),
                ("back", ("back", "rear")), ("top", ("top",)), ("front", ("front",)))
 
 
+def _pick_model(said: str, session: "Session", verb: str, example: str):
+    """The mesh a sentence means: the one it names, or the only one there is.
+
+    Returns (name, its describe_scene entry, None), or (None, None, an
+    answer asking which) -- never a guess between two.
+    """
+    scene = session.describe()
+    entries = {o["name"]: o for o in (scene.get("scene") or {}).get("objects") or []
+               if o.get("type") == "MESH"}
+    if not entries:
+        return None, None, {"success": False,
+                            "text": f"There is nothing in the Blender scene to {verb} yet."}
+    named = [m for m in entries if re.search(r"\b" + re.escape(m) + r"\b", said, re.I)]
+    if len(named) == 1 or len(entries) == 1:
+        name = (named or list(entries))[0]
+        return name, entries[name], None
+    first = sorted(entries)[0]
+    return None, None, {"success": False, "text": (
+        f"Which one should I {verb}? The scene has " + ", ".join(sorted(entries))
+        + ". Say its name, e.g. \"" + example.format(first) + "\".")}
+
+
+def _answer_sculpt(said: str, sculpt: dict, session: "Session") -> dict:
+    """"Make the nose bigger in Blender" -- landmarks, strokes, a picture."""
+    target, entry, problem = _pick_model(said, session, "sculpt",
+                                         "make the {}'s nose bigger")
+    if problem:
+        return problem
+    actions: List[dict] = []
+    marked = not entry.get("landmarks")
+    if marked:
+        actions.append({"action": "find_landmarks", "params": {"object": target}})
+    expression = sculpt.get("expression")
+    keys = entry.get("shape_keys") or []
+    if expression:
+        actions.append({"action": "add_shape_key", "params": {"object": target, "name": expression}})
+    elif keys:
+        return {"success": False, "text": (
+            f"I did not sculpt anything. {target} has expressions ({', '.join(keys[1:])}), and "
+            f"reshaping the face under them would leave them behind. Sculpt the face before "
+            f"adding expressions, or ask for an expression.")}
+    for stroke in sculpt["strokes"]:
+        params = {"object": target, **stroke}
+        if expression:
+            params["shape_key"] = expression
+        actions.append({"action": "sculpt_stroke", "params": params})
+    if expression:
+        actions.append({"action": "set_shape_key",
+                        "params": {"object": target, "name": expression, "value": 1.0}})
+
+    outcome = session.run(actions, preview="clay", views=["front", "right", "three_quarter"])
+    if not outcome.get("success"):
+        return outcome
+    lines = []
+    if expression:
+        lines.append(f"Added {sculpt['summary']} to {target} as a shape key called "
+                     f"{expression}, dialled all the way in. Say \"set {expression.lower()} to "
+                     f"50% in Blender\" to soften it; the neutral face is untouched underneath.")
+    else:
+        lines.append(f"Sculpted {target}: {sculpt['summary']}.")
+    if marked:
+        lines.append("I marked the face first (nose, chin, eyes, cheeks, mouth, jaw, brow, "
+                     "ears). Say \"show me the landmarks in Blender\" to check where they are.")
+    lines.append(picture_markdown(outcome.get("renders") or []))
+    lines.append("Say \"undo in Blender\" to take this back.")
+    outcome["text"] = "\n\n".join(line for line in lines if line)
+    return outcome
+
+
+_SET_KEY = re.compile(r"\bset (?:the |his |her |its )?([\w ]+?) (?:expression |shape key )?"
+                      r"to (\d+(?:\.\d+)?)\s*(%|percent)?", re.I)
+
+
+def _answer_set_key(said: str, session: "Session") -> Optional[dict]:
+    """"Set smile to 50% in Blender" -- only when that shape key exists."""
+    found = _SET_KEY.search(said)
+    if not found:
+        return None
+    wanted = found.group(1).strip().lower().replace(" ", "_")
+    value = float(found.group(2)) / (100.0 if found.group(3) else 1.0)
+    scene = session.describe()
+    for o in (scene.get("scene") or {}).get("objects") or []:
+        for key in (o.get("shape_keys") or [])[1:]:
+            if key.lower() == wanted:
+                outcome = session.run([{"action": "set_shape_key", "params": {
+                    "object": o["name"], "name": key, "value": value}}],
+                    preview="clay", views=["front", "three_quarter"])
+                if outcome.get("success"):
+                    outcome["text"] = (f"Set {key} on {o['name']} to {value:.0%}.\n\n"
+                                       + picture_markdown(outcome.get("renders") or []))
+                return outcome
+    return None
+
+
 def _answer_match(said: str, session: "Session") -> dict:
     """"Match it to D:\\Refs\\front.png and D:\\Refs\\side.png in Blender"."""
     pictures = _PICTURE.findall(said)
@@ -459,18 +554,9 @@ def _answer_match(said: str, session: "Session") -> dict:
                         if v not in references)
         references[view] = path
 
-    scene = session.describe()
-    meshes = [o["name"] for o in (scene.get("scene") or {}).get("objects") or []
-              if o.get("type") == "MESH"]
-    if not meshes:
-        return {"success": False, "text": "There is nothing in the Blender scene to match yet."}
-    named = [m for m in meshes if re.search(r"\b" + re.escape(m) + r"\b", said, re.I)]
-    if len(named) == 1 or len(meshes) == 1:
-        target = (named or meshes)[0]
-    else:
-        return {"success": False, "text": (
-            "Which one should I match? The scene has " + ", ".join(meshes)
-            + ". Say its name, e.g. \"match the " + meshes[0] + " to ...\".")}
+    target, _entry, problem = _pick_model(said, session, "match", "match the {} to ...")
+    if problem:
+        return problem
 
     outcome = session.match(target, references)
     if outcome.get("success"):
@@ -508,15 +594,28 @@ def answer_command(text: str, session: Optional["Session"] = None, *,
         return {"ran": True, **session.reset()}
     if changes_allowed and _MATCH.search(said) and _PICTURE.search(said):
         return {"ran": True, **_answer_match(said, session)}
+    if changes_allowed:
+        answered = _answer_set_key(said, session) if _SET_KEY.search(said) else None
+        if answered is not None:
+            return {"ran": True, **answered}
+        from backend.blender import blender_sculpt_language as language
+
+        sculpt = language.plan(said)
+        if sculpt is not None:
+            return {"ran": True, **_answer_sculpt(said, sculpt, session)}
     if _DESCRIBE.search(said):
         return {"ran": True, **session.describe()}
-    if allow_look and _LOOK.search(said):
-        look = "clay" if _CLAY.search(said) else "final" if _FINAL.search(said) else "material"
+    marks = bool(re.search(r"\blandmarks?\b", said, re.I))
+    if (allow_look or marks) and (_LOOK.search(said) or marks):
+        look = ("clay" if _CLAY.search(said) or marks else
+                "final" if _FINAL.search(said) else "material")
         views = [v for v in templates.PREVIEW_VIEWS
                  if re.search(r"\b" + v.replace("_", "[ -]") + r"\b", said, re.I)]
         if re.search(r"\bside\b", said, re.I) and "right" not in views:
             views.append("right")
-        outcome = session.look(look, views or None)
+        if marks and not views:
+            views = ["front", "right", "three_quarter"]
+        outcome = session.look(look, views or None, show_landmarks=marks)
         if outcome.get("success"):
             outcome["text"] = (f"Here is the scene ({look}).\n\n"
                                + picture_markdown(outcome.get("renders") or []))
