@@ -68,7 +68,7 @@ READ_ONLY_ACTIONS = frozenset(RENDER_ACTIONS) | {"describe_scene", "measure_mesh
 # missed, and the picture alone does not always show it.
 REPORTING_STEPS = ("measure_mesh", "measure_rig", "describe_scene", "sculpt_stroke",
                    "fit_to_reference", "mirror_shape_key", "transfer_weights", "find_landmarks", "auto_rig", "add_clip",
-                   "make_game_ready", "export_fbx", "turntable", "hero_shot")
+                   "make_game_ready", "export_fbx", "turntable", "hero_shot", "add_cape", "bake_cloth")
 
 Work = Union[str, Sequence[Dict[str, Any]]]
 
@@ -821,6 +821,9 @@ def _answer_clip(said: str, clip: str, session: "Session") -> dict:
     speed = 0.6 if re.search(r"\bslow(?:ly)?\b", said, re.I) else (
         1.6 if re.search(r"\b(?:fast|quick(?:ly)?|brisk(?:ly)?)\b", said, re.I) else 1.0)
     actions.append({"action": "add_clip", "params": {"armature": rig, "clip": clip, "speed": speed}})
+    # A cape, if he has one, moves through the new clip too.
+    actions.append({"action": "bake_cloth", "params": {"armature": rig, "clips": [clip.capitalize()],
+                                                       "if_cape": True}})
     views, frames = next((v, f) for n, _w, v, f in _CLIP_WORDS if n == clip)
     frames = [max(1, int(round((f - 1) / speed)) + 1) for f in frames]
     actions.append({"action": "render_preview", "params": {
@@ -980,6 +983,68 @@ def _answer_pose(said: str, asked: tuple, session: "Session") -> dict:
     return outcome
 
 
+_CAPE = re.compile(r"\b(?:give|put|add)\b[\w\s'-]{0,25}\b(?:cape|cloak)\b", re.I)
+_CAPE_MOVE = re.compile(r"\b(?:cape|cloak)\b[\w\s'-]{0,20}\b(?:move|moves|flow|flows|swing|swings|flap|flaps|"
+                        r"sway|sways|simulat\w*|bake\w*)\b|\b(?:simulate|bake)\b[\w\s'-]{0,15}\b(?:cape|cloak|cloth)\b",
+                        re.I)
+
+
+def _rig_for(said: str, session: "Session"):
+    """The skeleton a sentence means -- the only one, or the one it names."""
+    objects = (session.describe().get("scene") or {}).get("objects") or []
+    rigs = [o["name"] for o in objects if o.get("type") == "ARMATURE"]
+    if not rigs:
+        return None, objects, {"success": False, "text": "There is no skeleton to hang it on -- say \"rig him\" first."}
+    named = [r for r in rigs if re.search(r"\b" + re.escape(r.rsplit("_Rig", 1)[0]) + r"\b", said, re.I)]
+    if len(rigs) > 1 and len(named) != 1:
+        return None, objects, {"success": False, "text": "Which one? The scene has " + ", ".join(rigs) + "."}
+    return (named or rigs)[0], objects, None
+
+
+def _answer_cape(said: str, session: "Session", move_only: bool = False) -> dict:
+    """"Give him a cape in Blender" -- the cape, and its cloth baked into every clip."""
+    from backend.blender.blender_nl_mapping import _find_color
+
+    rig, objects, problem = _rig_for(said, session)
+    if problem:
+        return problem
+    cape = rig.rsplit("_Rig", 1)[0] + "_Cape"
+    actions: List[dict] = []
+    if not move_only:
+        params: Dict[str, Any] = {"armature": rig}
+        colour = _find_color(said)
+        if colour:
+            params["color"] = list(colour[1])[:3]      # _find_color gives (name, rgb)
+        if re.search(r"\blong\b|\bto the (?:floor|ground)\b", said, re.I):
+            params["length"] = 0.8
+        elif re.search(r"\bshort\b", said, re.I):
+            params["length"] = 0.4
+        actions.append({"action": "add_cape", "params": params})
+    elif not any(o["name"] == cape for o in objects):
+        return {"success": False, "text": "There is no cape to move -- say \"give him a cape\" first."}
+    actions.append({"action": "bake_cloth", "params": {"armature": rig}})
+    actions.append({"action": "render_preview", "params": {"look": "material", "views": ["right"],
+                                                           "frames": [1, 7, 13, 19], "size": 360}})
+    outcome = session.run(actions)
+    if not outcome.get("success") and "no clips" in str(outcome.get("error")) and not move_only:
+        # Nothing to move through yet: the cape alone, hanging.
+        outcome = session.run(actions[:1], preview="material", views=["right", "three_quarter_back"])
+        if outcome.get("success"):
+            outcome["text"] = "\n\n".join([
+                f"Gave {rig.rsplit('_Rig', 1)[0]} a cape. He has no clips yet, so it only hangs; after "
+                f"\"make him walk\" it moves with him.", picture_markdown(outcome.get("renders") or []),
+                session.undo_hint])
+        return outcome
+    if outcome.get("success"):
+        note = next((n for n in outcome.get("notes") or [] if n.get("step") == "bake_cloth"), {})
+        clips = ", ".join(note.get("clips") or {}) or "his clips"
+        outcome["text"] = "\n\n".join([
+            ("Gave him a cape; " if not move_only else "") + f"its cloth is simulated through {clips} and "
+            f"baked into bones in the cape, so it moves in Unity too (Unity cannot run Blender's cloth).",
+            picture_markdown(outcome.get("renders") or [], "cape frames"), session.undo_hint])
+    return outcome
+
+
 _HERO = re.compile(r"\b(?:hero|beauty|marketing|promo(?:tional)?|store|steam|kickstarter|capsule)\s+"
                    r"(?:shot|render|picture|image|art)\b|\brender (?:him|her|it|them) (?:properly|nicely|for real)\b",
                    re.I)
@@ -1108,7 +1173,7 @@ def _answer_material(said: str, kind: str, session: "Session") -> dict:
     params: Dict[str, Any] = {"object": targets[0], "kind": kind}
     colour = _find_color(said)
     if colour:
-        params["color"] = list(colour)[:3]
+        params["color"] = list(colour[1])[:3]      # _find_color gives (name, rgb)
     name = f"{targets[0].rsplit('_LOD', 1)[0]}_{kind.capitalize()}"
     params["name"] = name
     actions = [{"action": "procedural_material", "params": params}]
@@ -1242,6 +1307,10 @@ def answer_command(text: str, session: Optional["Session"] = None, *,
         return {"ran": True, **_answer_match(said, session)}
     # Pictures for a store page. They change nothing, but they take a while
     # and write files, so they are asked for the way changes are.
+    if changes_allowed and _CAPE_MOVE.search(said):
+        return {"ran": True, **_answer_cape(said, session, move_only=True)}
+    if changes_allowed and _CAPE.search(said):
+        return {"ran": True, **_answer_cape(said, session)}
     if changes_allowed and _TURNTABLE.search(said):
         return {"ran": True, **_answer_turntable(said, session)}
     if changes_allowed and _HERO.search(said):

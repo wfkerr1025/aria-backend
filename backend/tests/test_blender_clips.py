@@ -65,7 +65,7 @@ def body(monkeypatch):
 def test_an_unrigged_body_is_rigged_before_it_walks(body):
     runs, _ = body
     answer = bs.answer_command("make him walk in Blender")
-    assert [a["action"] for a in runs[0]] == ["find_landmarks", "auto_rig", "add_clip", "render_preview"]
+    assert [a["action"] for a in runs[0]] == ["find_landmarks", "auto_rig", "add_clip", "bake_cloth", "render_preview"]
     assert runs[0][2]["params"] == {"armature": "Body_Rig", "clip": "walk", "speed": 1.0}
     assert "rigged it first" in answer["text"]
 
@@ -74,7 +74,7 @@ def test_a_rigged_body_just_gets_the_clip(body):
     runs, entry = body
     entry["parent"], entry["modifiers"] = "Body_Rig", ["ARMATURE:Armature"]
     bs.answer_command("make him wave in Blender")
-    assert [a["action"] for a in runs[0]] == ["add_clip", "render_preview"]
+    assert [a["action"] for a in runs[0]] == ["add_clip", "bake_cloth", "render_preview"]
 
 
 @pytest.mark.parametrize("said, clip, speed", [

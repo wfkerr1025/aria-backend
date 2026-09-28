@@ -49,6 +49,8 @@ namespace ARIA.Characters
         // false: a prop -- no skeleton, no avatar, no controller.
         public bool rigged = true;
         public TextureSlot[] textures = new TextureSlot[0];
+        // The material those maps belong to; empty means every renderer's.
+        public string material = "";
     }
 
     [Serializable]
@@ -69,6 +71,7 @@ namespace ARIA.Characters
         public float[] leftFootZ = new float[0];
         public float[] meshFootZ = new float[0];   // the same for the skinned mesh as drawn
         public string pose;                         // root rotation and body line at the first frame
+        public int extraCurves;                     // curves on bones that are not the Humanoid's
     }
 
     [Serializable]
@@ -168,8 +171,19 @@ namespace ARIA.Characters
             // the model in (see export_fbx on ARIA's side). Not a clip.
             var clips = importer.defaultClipAnimations
                 .Where(c => !ShortName(c.takeName).StartsWith("!")).ToArray();
+            var before = importer.clipAnimations ?? new ModelImporterClipAnimation[0];
             foreach (var clip in clips)
             {
+                // Keep a mask set on an earlier import (see MaskExtraBones): rebuilt
+                // from the defaults, the clips lost it and dropped the cape again.
+                var kept = before.FirstOrDefault(b => b.takeName == clip.takeName);
+                if (kept != null && kept.maskType == ClipAnimationMaskType.CreateFromThisModel)
+                {
+                    var mask = new AvatarMask();
+                    kept.ConfigureMaskFromClip(ref mask);
+                    clip.maskType = ClipAnimationMaskType.CreateFromThisModel;
+                    clip.ConfigureClipFromMask(mask);
+                }
                 clip.name = ShortName(clip.takeName);
                 clip.loopTime = loops.Contains(clip.name.ToLowerInvariant());
                 clip.loopPose = clip.loopTime;
@@ -299,6 +313,11 @@ namespace ARIA.Characters
                 importer.SaveAndReimport();
                 model = AssetDatabase.LoadAssetAtPath<GameObject>(modelPath);
             }
+            if (sidecar.rigged && MaskExtraBones(importer, model))
+            {
+                importer.SaveAndReimport();
+                model = AssetDatabase.LoadAssetAtPath<GameObject>(modelPath);
+            }
             var assets = AssetDatabase.LoadAllAssetsAtPath(modelPath);
             Avatar avatar = null;
             AnimatorController controller = null;
@@ -340,7 +359,18 @@ namespace ARIA.Characters
                 }
                 if (material != null)
                     foreach (var r in instance.GetComponentsInChildren<Renderer>(true))
-                        r.sharedMaterials = Enumerable.Repeat(material, Math.Max(1, r.sharedMaterials.Length)).ToArray();
+                    {
+                        if (string.IsNullOrEmpty(sidecar.material))
+                        {
+                            r.sharedMaterials = Enumerable.Repeat(material, Math.Max(1, r.sharedMaterials.Length)).ToArray();
+                            continue;
+                        }
+                        var slots = r.sharedMaterials;
+                        for (int m = 0; m < slots.Length; m++)
+                            if (slots[m] != null && slots[m].name == sidecar.material)
+                                slots[m] = material;
+                        r.sharedMaterials = slots;
+                    }
                 var group = instance.GetComponentInChildren<LODGroup>();
                 if (group != null)
                     report.lods = group.GetLODs().Select((l, i) => "LOD" + i + " " + string.Join("+",
@@ -368,7 +398,13 @@ namespace ARIA.Characters
                 foreach (var clip in clips)
                 {
                     var settings = AnimationUtility.GetAnimationClipSettings(clip);
-                    report.clips.Add(new ClipReport { name = clip.name, loop = settings.loopTime, length = clip.length });
+                    report.clips.Add(new ClipReport
+                    {
+                        name = clip.name, loop = settings.loopTime, length = clip.length,
+                        // Bones that are not the Humanoid's -- a cape's -- ride along as
+                        // ordinary curves; how many made it into the clip.
+                        extraCurves = AnimationUtility.GetCurveBindings(clip).Count(b => b.path.Length > 0),
+                    });
                 }
                 if (render && !sidecar.rigged)
                 {
@@ -526,6 +562,42 @@ namespace ARIA.Characters
             }
             importer.humanDescription = description;
             return true;
+        }
+
+        // A Humanoid clip keeps curves for bones that are not the Humanoid's -- a
+        // cape's -- only when its mask names them. Without one, the cape's baked
+        // cloth was dropped on import: 0 extra curves in every clip (measured).
+        // True when a clip's mask had to change.
+        static bool MaskExtraBones(ModelImporter importer, GameObject model)
+        {
+            var human = new HashSet<string>(importer.humanDescription.human.Select(h => h.boneName));
+            var extra = model.GetComponentsInChildren<Transform>(true)
+                .Where(t => t != model.transform && !human.Contains(t.name) && t.GetComponent<Renderer>() == null)
+                .Where(t => t.GetComponentsInChildren<Transform>(true).Length > 0 && t.parent != model.transform)
+                .ToList();
+            if (extra.Count == 0)
+                return false;
+            var mask = new AvatarMask();
+            mask.AddTransformPath(model.transform, true);
+            var clips = importer.clipAnimations;
+            if (clips == null || clips.Length == 0)
+                return false;
+            bool changed = false;
+            foreach (var clip in clips)
+            {
+                var current = new AvatarMask();
+                if (clip.maskType == ClipAnimationMaskType.CreateFromThisModel)
+                    clip.ConfigureMaskFromClip(ref current);
+                if (clip.maskType == ClipAnimationMaskType.CreateFromThisModel
+                    && current.transformCount == mask.transformCount)
+                    continue;
+                clip.maskType = ClipAnimationMaskType.CreateFromThisModel;
+                clip.ConfigureClipFromMask(mask);
+                changed = true;
+            }
+            if (changed)
+                importer.clipAnimations = clips;
+            return changed;
         }
 
         static AnimatorController BuildController(string path, List<AnimationClip> clips, CharacterSidecar sidecar,

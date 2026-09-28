@@ -310,8 +310,8 @@ def send(session, *, project: Optional[Path] = None, rig: Optional[str] = None,
                                           + str(exported.get("error"))}
     # Baked maps travel beside the model; Unity's side builds the material
     # from them (an FBX cannot say "colour times AO").
-    maps = next((n.get("maps") or {} for n in exported.get("notes") or []
-                 if n.get("step") == "export_fbx"), {})
+    export_note = next((n for n in exported.get("notes") or [] if n.get("step") == "export_fbx"), {})
+    maps = export_note.get("maps") or {}
     textures = {}
     for label, source in maps.items():
         role = {"color": "color", "ao": "occlusion", "normal": "normal"}.get(label.lower())
@@ -322,6 +322,9 @@ def send(session, *, project: Optional[Path] = None, rig: Optional[str] = None,
             textures[role] = f"{CHARACTERS if rigged else PROPS}/{name}/{target.name}"
     if textures:
         sidecar["textures"] = [{"role": r, "path": p} for r, p in textures.items()]
+        # Only the material the maps belong to is replaced: a cape put on over
+        # the dwarf came out wearing his skin (measured).
+        sidecar["material"] = export_note.get("material") or ""
         sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
     changed = install_importer(project)
 

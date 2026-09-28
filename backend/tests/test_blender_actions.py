@@ -244,6 +244,8 @@ EVERY_ACTION = [
     ("pose_character", {"armature": "Body_Rig", "pose": "sit"}),
     ("hero_shot", {"path": "C:/t/hero.png", "lighting": "warm"}),
     ("turntable", {"folder": "C:/t/turn", "frames": 24}),
+    ("add_cape", {"armature": "Body_Rig", "length": 0.5}),
+    ("bake_cloth", {"armature": "Body_Rig"}),
     ("voxel_remesh", {"object": "Head", "size": 0.02, "adaptivity": 0.0}),
     ("stamp_detail", {"object": "Head", "texture": "CLOUDS", "scale": 0.25,
                       "strength": 0.05, "coords": "LOCAL", "apply": True}),

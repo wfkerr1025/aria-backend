@@ -153,3 +153,12 @@ def test_chat_routes_a_ludo_texture_past_the_other_tool_guard(monkeypatch):
                         lambda said, session: (seen.append(said), {"success": True, "text": "ok"})[-1])
     assert blender_actions.answer_request("give it a Ludo texture of moss in Blender")["ran"]
     assert seen == ["give it a Ludo texture of moss in Blender"]
+
+
+def test_a_colour_word_tints_the_material():
+    # _find_color gives (name, rgb); taking the pair as the colour broke
+    # "make it red wood" and "give him a blue cape" (found on the cape).
+    session = Scene([{"name": "Crate", "type": "MESH"}])
+    blender_session.answer_command("make it red wood in Blender", session)
+    colour = session.ran[0][0]["params"]["color"]
+    assert len(colour) == 3 and all(isinstance(c, float) for c in colour)
