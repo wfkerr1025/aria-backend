@@ -530,6 +530,196 @@ def t_pose(params: Dict[str, Any]) -> str:
             f'_note("t_pose", armature=_rig.name, turned=_turned, meshes=[o.name for o in _skinned])')
 
 
+# ======================================================
+# Poses, by name, on any rig named for Unity
+# ======================================================
+
+POSES = ("rest", "stand", "raise_arm", "arms_out", "arms_down", "hands_on_hips", "point", "sit", "crouch",
+         "kneel", "look", "bow", "cheer", "shrug", "salute")
+POSE_SIDES = ("left", "right", "both")
+LOOK_WAYS = ("left", "right", "up", "down", "forward")
+
+_POSE_KIT = r'''
+from mathutils import Matrix as _PM, Vector as _PV
+
+# The character faces -Y: forward is -Y, its left is +X, up is +Z.
+_FWD, _UP = _PV((0.0, -1.0, 0.0)), _PV((0.0, 0.0, 1.0))
+
+
+def _pz_side(side):
+    return {"left": [("Left", 1.0)], "right": [("Right", -1.0)]}.get(side, [("Left", 1.0), ("Right", -1.0)])
+
+
+def _pz_aim(rig, bone, direction):
+    """Turn one bone so it points `direction` (armature space), children following."""
+    pb = rig.pose.bones.get(bone)
+    if pb is None:
+        return False
+    bpy.context.view_layer.update()
+    now = pb.tail - pb.head
+    if now.length < 1e-6 or direction.length < 1e-6:
+        return False
+    turn = now.normalized().rotation_difference(direction.normalized())
+    pb.matrix = _PM.Translation(pb.head) @ turn.to_matrix().to_4x4() @ _PM.Translation(-pb.head) @ pb.matrix
+    bpy.context.view_layer.update()
+    return True
+
+
+def _pz_plan(pose, side, target_point, rig, way):
+    """[(bone, direction)] in order, parents first."""
+    plan = []
+    for word, s in _pz_side(side):
+        out = _PV((s, 0.0, 0.0))
+        if pose == "raise_arm":
+            plan += [(word + "UpperArm", _PV((0.4 * s, 0.0, 1.0))), (word + "LowerArm", _PV((0.15 * s, 0.0, 1.0))),
+                     (word + "Hand", _PV((0.05 * s, 0.0, 1.0)))]
+        elif pose == "cheer":
+            plan += [(word + "UpperArm", _PV((0.55 * s, 0.0, 1.0))), (word + "LowerArm", _PV((0.35 * s, 0.0, 1.0))),
+                     (word + "Hand", _PV((0.3 * s, 0.0, 1.0)))]
+        elif pose == "arms_out":
+            plan += [(word + p, out) for p in ("UpperArm", "LowerArm", "Hand")]
+        elif pose == "arms_down":
+            plan += [(word + "UpperArm", _PV((0.18 * s, 0.0, -1.0))), (word + "LowerArm", _PV((0.12 * s, -0.08, -1.0))),
+                     (word + "Hand", _PV((0.1 * s, -0.05, -1.0)))]
+        elif pose == "hands_on_hips":
+            plan += [(word + "UpperArm", _PV((0.75 * s, 0.25, -0.6))), (word + "LowerArm", _PV((-0.8 * s, -0.1, -0.55))),
+                     (word + "Hand", _PV((-0.6 * s, -0.2, -0.3)))]
+        elif pose == "shrug":
+            plan += [(word + "Shoulder", _PV((s, 0.0, 0.25))), (word + "UpperArm", _PV((0.35 * s, 0.0, -1.0))),
+                     (word + "LowerArm", _PV((0.6 * s, -1.0, 0.1))), (word + "Hand", _PV((0.7 * s, -1.0, 0.3)))]
+        elif pose == "salute" and word == "Right":
+            plan += [(word + "UpperArm", _PV((-0.9, -0.15, 0.2))), (word + "LowerArm", _PV((0.55, -0.3, 0.8))),
+                     (word + "Hand", _PV((0.6, -0.2, 0.5)))]
+        elif pose == "point":
+            shoulder = rig.pose.bones.get(word + "UpperArm")
+            if shoulder is not None:
+                aim = (target_point - shoulder.head) if target_point is not None else _FWD
+                plan += [(word + "UpperArm", aim), (word + "LowerArm", aim), (word + "Hand", aim)]
+        elif pose == "sit":
+            plan += [(word + "UpperLeg", _PV((0.08 * s, -1.0, -0.05))), (word + "LowerLeg", _PV((0.0, 0.05, -1.0))),
+                     (word + "Foot", _PV((0.0, -1.0, -0.35)))]
+        elif pose == "crouch":
+            plan += [(word + "UpperLeg", _PV((0.2 * s, -1.0, -0.55))), (word + "LowerLeg", _PV((0.0, 0.65, -1.0))),
+                     (word + "Foot", _PV((0.0, -1.0, -0.35)))]
+    if pose == "kneel":
+        plan += [("RightUpperLeg", _PV((-0.1, -1.0, -0.1))), ("RightLowerLeg", _PV((0.0, 0.0, -1.0))),
+                 ("RightFoot", _PV((0.0, -1.0, -0.35))),
+                 ("LeftUpperLeg", _PV((0.1, 0.0, -1.0))), ("LeftLowerLeg", _PV((0.0, 1.0, -0.05))),
+                 ("LeftFoot", _PV((0.0, 0.6, -1.0)))]
+    if pose == "bow":
+        plan += [("Spine", _PV((0.0, -0.45, 1.0))), ("Chest", _PV((0.0, -0.8, 1.0))), ("Neck", _PV((0.0, -0.9, 1.0))),
+                 ("Head", _PV((0.0, -0.9, 1.0)))]
+    if pose == "look":
+        plan += [("Head", {"left": _PV((0.5, -0.35, 1.0)), "right": _PV((-0.5, -0.35, 1.0)),
+                           "up": _PV((0.0, 0.5, 1.0)), "down": _PV((0.0, -0.7, 1.0)),
+                           "forward": _PV((0.0, -0.1, 1.0))}[way])]
+    return plan
+
+
+def _pz_feet_down(rig, floor):
+    """Lower (or raise) the hips so the lowest foot rests on the floor."""
+    hips = rig.pose.bones.get("Hips")
+    feet = [rig.pose.bones.get(n) for n in ("LeftFoot", "RightFoot", "LeftLowerLeg", "RightLowerLeg")]
+    feet = [f for f in feet if f is not None]
+    if hips is None or not feet:
+        return 0.0
+    bpy.context.view_layer.update()
+    lowest = min(min(f.head.z, f.tail.z) for f in feet)
+    shift = floor - lowest
+    hips.matrix = _PM.Translation(_PV((0.0, 0.0, shift))) @ hips.matrix
+    bpy.context.view_layer.update()
+    return shift
+
+
+def _pz_apply(rig, pose, side, target, way):
+    if rig.type != "ARMATURE":
+        raise RuntimeError("%r is not a skeleton" % rig.name)
+    ad = rig.animation_data or rig.animation_data_create()
+    carry_on = ad.action is not None and ad.action.name.startswith("Pose")
+    _active(rig)
+    bpy.context.scene.frame_set(1)
+    bpy.ops.object.mode_set(mode="POSE")
+    # The floor is where the feet are at rest, measured before anything moves.
+    for pb in rig.pose.bones:
+        pb.matrix_basis = _PM.Identity(4)
+    bpy.context.view_layer.update()
+    feet = [rig.pose.bones.get(n) for n in ("LeftFoot", "RightFoot", "LeftLowerLeg", "RightLowerLeg")]
+    floor = min((min(f.head.z, f.tail.z) for f in feet if f is not None), default=0.0)
+    if carry_on:
+        # "Make him sit" after "raise his arm" keeps the arm: start from the pose there is.
+        bpy.context.scene.frame_set(1)
+        bpy.context.view_layer.update()
+    target_point = None
+    if target:
+        found = bpy.data.objects.get(target)
+        if found is None:
+            raise RuntimeError("there is nothing called %r to point at" % target)
+        target_point = rig.matrix_world.inverted() @ found.matrix_world.translation
+    if not carry_on and pose not in ("rest", "stand"):
+        # A first pose starts from standing naturally, not from the T of the
+        # rest pose: one arm raised with the other held straight out looked
+        # like a signal, not a person.
+        for bone, direction in _pz_plan("arms_down", "both", None, rig, way):
+            _pz_aim(rig, bone, direction)
+    if pose in ("rest", "stand"):
+        for pb in rig.pose.bones:
+            pb.matrix_basis = _PM.Identity(4)
+        if pose == "stand":
+            # Standing as a person does: straight, arms down -- not the T.
+            for bone, direction in _pz_plan("arms_down", "both", None, rig, way):
+                _pz_aim(rig, bone, direction)
+    elif pose in ("sit", "crouch", "kneel"):
+        # Legs first, from a standing pelvis; then the feet go back to the floor.
+        hips = rig.pose.bones.get("Hips")
+        if hips is not None:
+            hips.matrix_basis = _PM.Identity(4)
+        for bone, direction in _pz_plan(pose, "both", target_point, rig, way):
+            _pz_aim(rig, bone, direction)
+        _pz_feet_down(rig, floor)
+    else:
+        for bone, direction in _pz_plan(pose, side, target_point, rig, way):
+            _pz_aim(rig, bone, direction)
+    if not carry_on or ad.action is None:
+        ad.action = bpy.data.actions.new("Pose")
+    # Held for two frames: a one-key take came into Unity as a 1-second clip
+    # that did not hold the pose (arms thrust forward for a cheer; measured).
+    for frame in (1, 2):
+        for pb in rig.pose.bones:
+            pb.keyframe_insert("location", frame=frame)
+            pb.keyframe_insert("rotation_quaternion" if pb.rotation_mode == "QUATERNION" else "rotation_euler",
+                               frame=frame)
+            pb.keyframe_insert("scale", frame=frame)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.context.scene.frame_set(1)
+    return ad.action.name
+'''
+
+
+def pose_character(params: Dict[str, Any]) -> str:
+    """Put a rigged character in a pose, by name -- on top of the pose it has.
+
+    Poses: stand (straight, arms down), rest (the T), raise_arm, arms_out, arms_down, hands_on_hips, cheer, shrug,
+    salute, point (at `target`, an object, or straight ahead), look
+    (`way`: left/right/up/down/forward), bow, sit, crouch, kneel, rest.
+    `side`: left, right or both, for the arms.
+
+    Each pose aims bones in the world -- "the left upper arm points up" --
+    so it does not depend on how a rig's bones are rolled. Sitting,
+    crouching and kneeling bring the hips down until the feet are on the
+    floor where they stood. The pose is keyed into a one-frame action
+    called Pose: it shows in pictures, a second pose adds to it, and in
+    Unity it is a clip.
+    """
+    pose = _choice(params.get("pose"), POSES, "rest").strip("'\"")
+    side = _choice(params.get("side"), POSE_SIDES, "right" if pose in ("point", "salute") else "both").strip("'\"")
+    way = _choice(params.get("way"), LOOK_WAYS, "forward").strip("'\"")
+    return (_POSE_KIT +
+            f'_rig = _obj({_text(params.get("armature"))})\n'
+            f'_posed = _pz_apply(_rig, {pose!r}, {side!r}, {_text(params.get("target") or "")} or None, {way!r})\n'
+            f'_RESULT["modified"].append(_rig.name)\n'
+            f'_note("pose_character", armature=_rig.name, pose={pose!r}, side={side!r}, action=_posed)')
+
+
 def flatten_hierarchy(params: Dict[str, Any]) -> str:
     """Lift every mesh out of the empties a generator wrapped it in.
 
@@ -6983,6 +7173,7 @@ TEMPLATES = {
     "procedural_material": procedural_material,
     "image_material": image_material,
     "bake_material": bake_material,
+    "pose_character": pose_character,
     "copy_landmarks": copy_landmarks,
     "voxel_remesh": voxel_remesh,
     "stamp_detail": stamp_detail,

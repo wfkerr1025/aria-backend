@@ -898,6 +898,84 @@ def _answer_game_ready(said: str, session: "Session") -> dict:
 # Something already there ("it", "him", "the table", "Wick") made of something, with
 # the material word closing the phrase: "make a wooden table" is a build, and "give
 # him a golden crown" is not a request to gild him.
+# Poses in plain words. Checked in order; the first that fits wins.
+_POSE_WORDS = (
+    ("rest", re.compile(r"\b(?:reset (?:the |his |her |their )?pose|back to (?:the )?rest|t-?pose)\b", re.I)),
+    ("stand", re.compile(r"\bstand(?:s|ing)? (?:\w+ )?(?:up )?(?:straight|up|normally)\b", re.I)),
+    ("hands_on_hips", re.compile(r"\bhands? on (?:his |her |their |the )?hips\b", re.I)),
+    ("raise_arm", re.compile(r"\b(?:raise|lift|put up|hold up|stick up)\b[\w\s']{0,20}\b(?:arms?|hands?)\b", re.I)),
+    ("arms_down", re.compile(r"\b(?:lower|drop|put down|relax)\b[\w\s']{0,20}\barms?\b|\barms? (?:down|at (?:his|her|their) sides)\b", re.I)),
+    ("arms_out", re.compile(r"\barms? out\b|\bspread (?:his |her |their )?arms\b", re.I)),
+    ("cheer", re.compile(r"\bcheer(?:s|ing)?\b|\bboth arms up\b|\bcelebrat\w*\b", re.I)),
+    ("shrug", re.compile(r"\bshrug(?:s|ging)?\b", re.I)),
+    ("salute", re.compile(r"\bsalut(?:e|es|ing)\b", re.I)),
+    ("point", re.compile(r"\bpoint(?:s|ing)?\b", re.I)),
+    ("sit", re.compile(r"\bsit(?:s|ting)?(?: down)?\b|\bsat down\b|\bseated\b", re.I)),
+    ("kneel", re.compile(r"\bkneel(?:s|ing)?\b|\bknelt\b|\bon one knee\b", re.I)),
+    ("crouch", re.compile(r"\bcrouch(?:es|ing)?\b|\bsquat(?:s|ting)?\b", re.I)),
+    ("bow", re.compile(r"\bbow(?:s|ing)?\b(?! and arrow)|\btake a bow\b", re.I)),
+    ("look", re.compile(r"\blook(?:s|ing)? (?:to the )?(?:left|right|up|down|forward|ahead)\b", re.I)),
+)
+_POSE_VERB = re.compile(r"\b(?:make|have|let|pose|put|get|raise|lift|lower|drop|point|look|turn|bend|sit|kneel|"
+                        r"crouch|squat|bow|salute|shrug|cheer|stand|reset|relax|spread|hold|stick)\b", re.I)
+
+
+def _pose_asked(said: str) -> Optional[tuple]:
+    """(pose, side, way, target word) for a sentence that asks for one, or None."""
+    if not _POSE_VERB.search(said):
+        return None
+    pose = next((name for name, words in _POSE_WORDS if words.search(said)), None)
+    if pose is None:
+        return None
+    side = ("left" if re.search(r"\bleft\b", said, re.I) and not re.search(r"\bright\b", said, re.I)
+            else "right" if re.search(r"\bright\b", said, re.I) and not re.search(r"\bleft\b", said, re.I)
+            else "both" if re.search(r"\b(?:both|arms)\b", said, re.I) else None)
+    way = next((w for w in ("left", "right", "up", "down") if re.search(r"\blook(?:s|ing)? (?:to the )?" + w, said, re.I)),
+               "forward")
+    target = re.search(r"\bpoint(?:s|ing)?\s+(?:at|to|towards?)\s+(?:the\s+|a\s+|an\s+)?([\w-]+)", said, re.I)
+    return pose, side, way, (target.group(1) if target else None)
+
+
+def _answer_pose(said: str, asked: tuple, session: "Session") -> dict:
+    """"Make him sit in Blender" -- a named pose on the character's rig, pictured."""
+    pose, side, way, target_word = asked
+    scene = (session.describe().get("scene") or {})
+    objects = scene.get("objects") or []
+    rigs = [o["name"] for o in objects if o.get("type") == "ARMATURE"]
+    if not rigs:
+        return {"success": False, "text": "There is no skeleton to pose -- say \"rig him\" first."}
+    named = [r for r in rigs if re.search(r"\b" + re.escape(r.rsplit("_Rig", 1)[0]) + r"\b", said, re.I)]
+    if len(rigs) > 1 and len(named) != 1:
+        return {"success": False, "text": "Which one? The scene has " + ", ".join(rigs) + "."}
+    rig = (named or rigs)[0]
+    params: Dict[str, Any] = {"armature": rig, "pose": pose}
+    if side:
+        params["side"] = side
+    if pose == "look":
+        params["way"] = way
+    if target_word:
+        match = next((o["name"] for o in objects if o["name"].lower() == target_word.lower()
+                      or o["name"].lower().startswith(target_word.lower())), None)
+        if match is None:
+            return {"success": False, "text": f"There is nothing called {target_word} in the scene to point "
+                                              f"at. It has: {', '.join(o['name'] for o in objects)}."}
+        params["target"] = match
+    outcome = session.run([{"action": "pose_character", "params": params}], preview="material",
+                          views=["front", "right"])
+    if outcome.get("success"):
+        described = {"raise_arm": "raised " + ("both arms" if side in (None, "both") else f"the {side} arm"),
+                     "sit": "sitting, feet on the floor", "crouch": "crouching, feet on the floor",
+                     "kneel": "kneeling on his left knee", "point": "pointing" + (f" at {params.get('target')}"
+                                                                                   if target_word else " ahead"),
+                     "look": f"looking {way}", "rest": "back in his rest pose (the T)",
+                     "stand": "standing straight, arms down"}.get(pose, pose.replace("_", " "))
+        outcome["text"] = "\n\n".join([
+            f"Posed {rig.rsplit('_Rig', 1)[0]}: {described}. Poses add up -- the next one keeps this -- and it "
+            f"goes to Unity as a one-frame clip called Pose.",
+            picture_markdown(outcome.get("renders") or []), session.undo_hint])
+    return outcome
+
+
 _MATERIAL_WORD = re.compile(
     r"\b(?:make|turn|paint|give|change)\s+(?:it|him|her|them|this|that|the\s+[\w-]+|[A-Z][\w-]*)\b"
     r"[\w\s'-]{0,25}?\b(wood(?:en)?|metal(?:lic)?|steel|iron|stone|stony|rock|cloth|fabric|leather|"
@@ -1062,6 +1140,9 @@ def answer_command(text: str, session: Optional["Session"] = None, *,
             return {"ran": True, **sent}
     if changes_allowed and _MATCH.search(said) and _PICTURE.search(said):
         return {"ran": True, **_answer_match(said, session)}
+    posed = _pose_asked(said) if changes_allowed else None
+    if posed:
+        return {"ran": True, **_answer_pose(said, posed, session)}
     clip = _clip_asked(said) if changes_allowed else None
     if clip:
         return {"ran": True, **_answer_clip(said, clip, session)}
