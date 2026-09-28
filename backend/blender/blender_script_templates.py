@@ -3176,7 +3176,15 @@ def describe_scene(params: Dict[str, Any]) -> str:
             '    if _o.modifiers:\n'
             '        _entry["modifiers"] = [m.type + ":" + m.name for m in _o.modifiers]\n'
             '    if _o.get("aria_landmarks"):\n'
-            '        _entry["landmarks"] = sorted(json.loads(_o["aria_landmarks"]))\n'
+            '        # Where each one is now, in the scene -- on its vertex if the\n'
+            '        # mesh still has the vertices it was marked on.\n'
+            '        _entry["landmarks"] = {}\n'
+            '        for _k, _m in sorted(json.loads(_o["aria_landmarks"]).items()):\n'
+            '            _p = mathutils.Vector(_m["at"])\n'
+            '            if (_o.type == "MESH" and _m.get("vertex") is not None\n'
+            '                    and _m.get("count") == len(_o.data.vertices)):\n'
+            '                _p = _o.data.vertices[_m["vertex"]].co\n'
+            '            _entry["landmarks"][_k] = [round(v, 4) for v in _o.matrix_world @ _p]\n'
             '    if _o.type == "MESH":\n'
             '        _seen = _o.evaluated_get(_graph).to_mesh()\n'
             '        _entry.update(vertices=len(_o.data.vertices), faces=len(_o.data.polygons),\n'
@@ -4692,19 +4700,48 @@ def _aria_find_body(world, nr):
     crotch = _aria_sustained(rows, lo[2], lambda r: _aria_central(r, world, cx) is not None)
     if crotch is None:
         raise RuntimeError("could not find where the legs meet -- is this a standing figure?")
+    # How far from the centre line the torso reaches. Unlimited for an
+    # A-pose, where the arms are separate clusters anyway; for a T-pose,
+    # set below, so the arms straight out at shoulder height are not
+    # measured as a chest two metres wide.
+    limit = float("inf")
+
+    def own(g):
+        return g[_np.abs(world[g, 0] - cx) <= limit] if g is not None else None
+
+    def width(r):
+        g = own(_aria_central(r, world, cx))
+        return None if g is None or not len(g) else float(world[g, 0].max() - world[g, 0].min())
+
+    pose = "A"
     armed = lambda r: len(r["groups"]) >= 3
     armpit = _aria_sustained(rows, crotch, armed, last=True)
     fingertip = _aria_sustained(rows, crotch, armed)
+    arm_band = None
     if armpit is None or fingertip is None or armpit - fingertip < H * 0.12:
-        notes.append("the arms are not hanging clear of the body (T-pose, or at the sides), "
-                     "so they were not marked")
         armpit, fingertip = crotch + (hi[2] - crotch) * 0.55, None
+        # A T-pose: no arm-torso-arm run, but a band high on the body
+        # where the one cluster is suddenly more than twice as wide as
+        # the torso below it -- the arms, straight out.
+        raw = [width(r) for r in rows]
+        lower = [v for r, v in zip(rows, raw) if v is not None
+                 and crotch + H * 0.05 <= r["z"] <= crotch + H * 0.25]
+        if lower:
+            base = sorted(lower)[len(lower) // 2]
+            wide = [r["z"] for r, v in zip(rows, raw)
+                    if v is not None and r["z"] > crotch + H * 0.10 and v > base * 2.2]
+            if len(wide) >= 3:
+                pose = "T"
+                arm_band = (min(wide), max(wide))
+                armpit = arm_band[0]
+                below = [v for r, v in zip(rows, raw) if v is not None
+                         and crotch <= r["z"] < arm_band[0] - H * 0.01]
+                limit = max(below) / 2.0 * 1.15 if below else base
+        if pose != "T":
+            notes.append("the arms are neither hanging clear of the body nor straight out "
+                         "(at the sides?), so they were not marked")
     else:
         armpit += step
-
-    def width(r):
-        g = _aria_central(r, world, cx)
-        return None if g is None else float(world[g, 0].max() - world[g, 0].min())
 
     def leg(r):
         g = r["groups"][-1] if r["groups"] else None
@@ -4720,9 +4757,16 @@ def _aria_find_body(world, nr):
     knee = pick(legs, lo[2] + span_leg * 0.55, lo[2] + span_leg * 0.80, min)
     calf = pick(legs, lo[2] + span_leg * 0.30, lo[2] + span_leg * 0.60, max)
     ankle = pick(legs, lo[2] + H * 0.02, lo[2] + span_leg * 0.35, min)
-    hip = pick(widths, crotch, crotch + (armpit - crotch) * 0.30, max)
-    waist = pick(widths, hip, armpit - (armpit - crotch) * 0.10, min)
-    chest = pick(widths, waist, armpit - (armpit - crotch) * 0.05, max)
+    # Each searched only where it can be. A torso with no shape to read
+    # -- a blockout cylinder -- otherwise has its "narrowest" and "widest"
+    # anywhere, and chest, belly and waist all landed on the hip line
+    # (measured, on a primitive T-pose figure). The ranges are fractions
+    # of crotch-to-armpit around the measured base body (waist 0.67,
+    # chest 0.92), so a real torso finds what it did before.
+    torso_span = armpit - crotch
+    hip = pick(widths, crotch, crotch + torso_span * 0.30, max)
+    waist = pick(widths, max(hip, crotch + torso_span * 0.30), crotch + torso_span * 0.75, min)
+    chest = pick(widths, max(waist, crotch + torso_span * 0.60), crotch + torso_span * 0.97, max)
     neck, best = None, None
     for r, v in zip(rows, widths):
         if v is None or not (armpit + H * 0.02 <= r["z"] <= hi[2] - H * 0.03):
@@ -4735,7 +4779,7 @@ def _aria_find_body(world, nr):
     neck = neck if neck is not None else (best[0] if best else armpit + (hi[2] - armpit) * 0.45)
 
     everything = _np.arange(n)
-    torso = lambda z: next((g for r in rows if abs(r["z"] - z) < step * 0.6
+    torso = lambda z: next((own(g) for r in rows if abs(r["z"] - z) < step * 0.6
                             for g in [_aria_central(r, world, cx)] if g is not None), everything)
     reach = H * 0.015
     found = {}
@@ -4787,20 +4831,30 @@ def _aria_find_body(world, nr):
     # Arms: each a line from the shoulder to the fingertip, measured on
     # its own vertices, with its landmarks along that line.
     axes = {}
-    if fingertip is not None:
+    if fingertip is not None or pose == "T":
         for side, sign in (("l", 1), ("r", -1)):
-            members = []
-            for r in rows:
-                if fingertip <= r["z"] <= armpit and len(r["groups"]) >= 3:
-                    outer = max(r["groups"], key=lambda g: (world[g, 0].mean() - cx) * sign)
-                    members.extend(outer.tolist())
-            members = _np.unique(_np.array(members, dtype=_np.int64))
+            if pose == "T":
+                # Everything past the torso's side in the arm band.
+                margin = H * 0.04
+                members = _np.nonzero((world[:, 2] >= arm_band[0] - margin)
+                                      & (world[:, 2] <= arm_band[1] + margin)
+                                      & ((world[:, 0] - cx) * sign > limit))[0]
+            else:
+                members = []
+                for r in rows:
+                    if fingertip <= r["z"] <= armpit and len(r["groups"]) >= 3:
+                        outer = max(r["groups"], key=lambda g: (world[g, 0].mean() - cx) * sign)
+                        members.extend(outer.tolist())
+                members = _np.unique(_np.array(members, dtype=_np.int64))
             if len(members) < 20:
                 continue
             pts = world[members]
             centre = pts.mean(axis=0)
             _u, _s, vt = _np.linalg.svd(pts - centre, full_matrices=False)
-            axis = vt[0] if vt[0][2] < 0 else -vt[0]           # toward the hand: downward
+            if pose == "T":
+                axis = vt[0] if vt[0][0] * sign > 0 else -vt[0]  # toward the hand: outward
+            else:
+                axis = vt[0] if vt[0][2] < 0 else -vt[0]         # toward the hand: downward
             t = (pts - centre) @ axis
             t0, t1 = t.min(), t.max()
             frac = (t - t0) / max(t1 - t0, 1e-9)
@@ -4818,15 +4872,24 @@ def _aria_find_body(world, nr):
                     k = near[_np.argmax((pts[near, 0] - cx) * sign)]
                 put(f"{name}_{side}", members[k], name)
                 axes[f"{name}_{side}"] = axis
-            top = members[_np.argmax(pts[:, 2])]
-            shoulder_x = float(world[top, 0])
-            above = _np.nonzero((world[:, 2] > armpit - H * 0.01) & (world[:, 2] < armpit + H * 0.09))[0]
+            if pose == "T":
+                # The top of the shoulder: where the arm leaves the torso.
+                shoulder_x = cx + sign * limit
+                above = _np.nonzero((world[:, 2] > arm_band[0]) & (world[:, 2] < arm_band[1] + H * 0.06)
+                                    & (_np.abs(world[:, 0] - shoulder_x) < limit * 0.35))[0]
+            else:
+                top = members[_np.argmax(pts[:, 2])]
+                shoulder_x = float(world[top, 0])
+                above = _np.nonzero((world[:, 2] > armpit - H * 0.01)
+                                    & (world[:, 2] < armpit + H * 0.09))[0]
             if len(above):
                 put(f"shoulder_{side}", _aria_probe(world, above, shoulder_x, armpit, "top",
                                                     reach * 2, reach), "shoulder")
 
     heights = {"crotch": crotch, "armpit": armpit, "knee": knee, "hip": hip, "waist": waist,
                "chest": chest, "neck": neck}
+    if pose == "T":
+        notes.append("a T-pose: the arms were found straight out at the sides")
     return found, axes, heights, notes
 '''.replace("__HEAD_LANDMARKS__", repr(HEAD_LANDMARKS)).replace(
     "BODY_SIZES", repr(BODY_LANDMARK_SIZES))

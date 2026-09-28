@@ -407,3 +407,88 @@ def test_longer_arms_reach_further_down():
     ok = lambda r: next(s for s in r["result"]["steps"] if s.get("step") == "sculpt_stroke")
     assert ok(after)["vertices_moved"] > 100
     assert ok(after)["largest_move"] > 0.02
+
+
+# ======================================================
+# T-pose
+# ======================================================
+
+def _primitive_figure(arms: str, extra=()):
+    """A figure welded from primitives: legs, hips, torso, neck, head, nose, arms.
+
+    arms: "out" (T-pose), "down" (A-pose, 45 degrees) or "sides" (hanging
+    against the body -- the pose that cannot be read).
+    """
+    _blender_or_skip()
+    arm_steps = {
+        "out": [("ArmL", [0.52, 0, 1.40], [0, 90, 0]), ("ArmR", [-0.52, 0, 1.40], [0, 90, 0])],
+        "down": [("ArmL", [0.40, 0, 1.18], [0, 45, 0]), ("ArmR", [-0.40, 0, 1.18], [0, -45, 0])],
+        "sides": [("ArmL", [0.20, 0, 1.12], [0, 0, 0]), ("ArmR", [-0.20, 0, 1.12], [0, 0, 0])],
+    }[arms]
+    steps = [
+        {"action": "clear_scene"},
+        {"action": "add_cylinder", "params": {"name": "LegL", "radius": 0.08, "depth": 0.86, "location": [0.1, 0, 0.43]}},
+        {"action": "add_cylinder", "params": {"name": "LegR", "radius": 0.08, "depth": 0.86, "location": [-0.1, 0, 0.43]}},
+        {"action": "add_sphere", "params": {"name": "Hips", "radius": 0.19, "location": [0, 0, 0.9]}},
+        {"action": "add_cylinder", "params": {"name": "Torso", "radius": 0.17, "depth": 0.62, "location": [0, 0, 1.17]}},
+        {"action": "add_cylinder", "params": {"name": "Neck", "radius": 0.055, "depth": 0.14, "location": [0, 0, 1.52]}},
+        {"action": "add_sphere", "params": {"name": "Head", "radius": 0.12, "location": [0, 0, 1.68]}},
+        {"action": "add_sphere", "params": {"name": "Nose", "radius": 0.03, "location": [0, -0.12, 1.66]}},
+    ]
+    for name, where, turn in arm_steps:
+        steps.append({"action": "add_cylinder", "params": {"name": name, "radius": 0.05,
+                                                          "depth": 0.72, "location": where}})
+        steps.append({"action": "rotate", "params": {"object": name, "x": turn[0], "y": turn[1], "z": turn[2]}})
+    steps += [
+        {"action": "join_objects", "params": {"objects": ["Torso", "LegL", "LegR", "Hips", "Neck",
+                                                         "Head", "Nose", "ArmL", "ArmR"]}},
+        {"action": "voxel_remesh", "params": {"object": "Torso", "size": 0.015}},
+        {"action": "find_landmarks", "params": {"object": "Torso", "kind": "body"}},
+    ] + list(extra) + [{"action": "describe_scene"}]
+    result = blender_actions.run_actions(steps, timeout=600)
+    assert result["success"], result["output"][-2500:]
+    note = next(s for s in result["result"]["steps"] if s.get("step") == "find_landmarks")
+    figure = next(o for o in result["result"]["scene"]["objects"] if o["name"] == "Torso")
+    return note, figure
+
+
+def test_a_t_pose_is_recognised_and_its_arms_marked_along_them():
+    note, figure = _primitive_figure("out")
+    assert any("T-pose" in n for n in note["notes"])
+    marks = figure["landmarks"]
+    # Out along the arm, in order: upper arm, elbow, wrist, hand.
+    for side, sign in (("l", 1), ("r", -1)):
+        xs = [marks[f"{p}_{side}"][0] * sign for p in ("upper_arm", "elbow", "wrist", "hand")]
+        assert xs == sorted(xs) and xs[0] > 0.2
+        assert abs(marks[f"hand_{side}"][2] - 1.40) < 0.1          # still at shoulder height
+
+
+def test_a_t_pose_chest_is_the_torso_not_the_arms():
+    note, figure = _primitive_figure("out")
+    marks = figure["landmarks"]
+    assert abs(marks["pec_l"][0]) < 0.2 and abs(marks["pec_r"][0]) < 0.2
+    assert 1.0 < note["heights"]["chest"] < 1.40
+    assert marks["chest"][2] > marks["belly"][2]
+
+
+def test_an_a_pose_figure_still_reads_as_one():
+    note, figure = _primitive_figure("down")
+    assert not any("T-pose" in n for n in note["notes"])
+    assert {"elbow_l", "hand_r"} <= set(figure["landmarks"])
+    assert figure["landmarks"]["hand_l"][2] < figure["landmarks"]["elbow_l"][2]
+
+
+def test_arms_against_the_body_are_left_unmarked_and_it_says_so():
+    note, figure = _primitive_figure("sides")
+    assert any("not marked" in n for n in note["notes"])
+    assert "hand_l" not in figure["landmarks"]
+    assert "chest" in figure["landmarks"]
+
+
+def test_longer_arms_on_a_t_pose_reach_further_out():
+    _, before = _primitive_figure("out")
+    _, after = _primitive_figure("out", [{"action": "sculpt_stroke", "params": {
+        "object": "Torso", "landmark": "hand_l", "brush": "grab", "direction": "along",
+        "distance": 0.8, "size": 2.4, "mirror": "X"}}])
+    assert after["dimensions"][0] > before["dimensions"][0] + 0.05
+    assert abs(after["dimensions"][2] - before["dimensions"][2]) < 0.02
