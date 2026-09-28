@@ -265,6 +265,12 @@ EVERY_ACTION = [
     ("add_camera", {"name": "Shot", "location": [0, -6, 1.5],
                     "target": "Cube", "lens": 85}),
     ("describe_scene", {}),
+
+    # Sculpting by hand. Sculpted for real in test_blender_sculpt.py.
+    ("sculpt_ready", {"object": "Head", "detail": 150, "smooth": True}),
+    ("sculpt_stroke", {"object": "Head", "brush": "draw", "points": [[0, -0.5, 1]],
+                       "radius": 0.08, "strength": 0.5, "falloff": "smooth",
+                       "mirror": "X", "spacing": 0.25, "front_only": True}),
 ]
 
 

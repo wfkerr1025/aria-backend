@@ -60,6 +60,11 @@ __all__ = ["Session", "answer_command", "picture_markdown", "plan", "summarize",
 DEFAULT_SESSION = "chat"
 RENDER_ACTIONS = ("render_preview", "render_image")
 
+# Steps whose notes say something worth keeping: measurements, and what
+# a brush actually did -- a stroke that moved nothing is a stroke that
+# missed, and the picture alone does not always show it.
+REPORTING_STEPS = ("measure_mesh", "measure_rig", "describe_scene", "sculpt_stroke")
+
 Work = Union[str, Sequence[Dict[str, Any]]]
 
 
@@ -256,7 +261,7 @@ class Session:
             "exported": [p for p in outcome.get("exported") or [] if p != str(self.scene)],
             "renders": outcome.get("renders") or [],
             "notes": [s for s in outcome.get("steps") or []
-                      if s.get("step") in ("measure_mesh", "measure_rig", "describe_scene")],
+                      if s.get("step") in REPORTING_STEPS or s.get("skipped")],
         }
         if "scene" in outcome:
             entry["scene"] = outcome["scene"]
@@ -407,6 +412,13 @@ def summarize(entry: dict) -> str:
                      + (f" (+{len(renders) - 1} single views)" if len(renders) > 1 else ""))
     if entry.get("scene"):
         lines.append(describe_text(entry["scene"]))
+    for note in entry.get("notes") or []:
+        if note.get("step") == "sculpt_stroke":
+            lines.append(f"Stroke ({note.get('brush')}) on {note.get('object')}: "
+                         f"{note.get('vertices_moved')} vertices moved, the most by "
+                         f"{note.get('largest_move')} m over {note.get('dabs')} dabs.")
+        elif note.get("skipped"):
+            lines.append(f"{note.get('step')}: {note['skipped']}.")
     lines.append(f"Scene: {entry.get('scene_file')}")
     return "\n".join(lines)
 
@@ -463,9 +475,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         description="Work on one Blender scene step by step, with a picture after every step.")
     parser.add_argument("--session", "-s", default=DEFAULT_SESSION, help="session name (default: chat)")
     parser.add_argument("--json", action="store_true", help="print the full result as JSON")
+    # --json is accepted after the command too ("run ... --json"), since
+    # that is where it gets typed; argparse would otherwise refuse it.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                        help="print the full result as JSON")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    run = sub.add_parser("run", help="run typed calls or JSON actions on the scene")
+    run = sub.add_parser("run", parents=[common], help="run typed calls or JSON actions on the scene")
     run.add_argument("work", nargs="?", help="calls; '-' or omitted reads stdin")
     run.add_argument("--file", "-f", help="read the calls from a file")
     run.add_argument("--look", default="material", choices=sorted(templates.PREVIEW_LOOKS))
@@ -474,17 +491,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     run.add_argument("--no-preview", action="store_true")
     run.add_argument("--timeout", type=int)
 
-    look = sub.add_parser("look", help="render the scene without changing it")
+    look = sub.add_parser("look", parents=[common], help="render the scene without changing it")
     look.add_argument("--look", default="material", choices=sorted(templates.PREVIEW_LOOKS))
     look.add_argument("--views")
     look.add_argument("--size", type=int, default=640)
     look.add_argument("--objects", help="comma-separated names to frame")
 
-    sub.add_parser("describe", help="list what is in the scene")
-    sub.add_parser("undo", help="step back to before the last change")
-    sub.add_parser("reset", help="start an empty scene (the old one is kept)")
-    sub.add_parser("history", help="every step so far")
-    actions = sub.add_parser("actions", help="list every action, or explain one")
+    sub.add_parser("describe", parents=[common], help="list what is in the scene")
+    sub.add_parser("undo", parents=[common], help="step back to before the last change")
+    sub.add_parser("reset", parents=[common], help="start an empty scene (the old one is kept)")
+    sub.add_parser("history", parents=[common], help="every step so far")
+    actions = sub.add_parser("actions", parents=[common], help="list every action, or explain one")
     actions.add_argument("name", nargs="?")
 
     args = parser.parse_args(argv)

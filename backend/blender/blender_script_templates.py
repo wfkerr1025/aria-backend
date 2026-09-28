@@ -3149,6 +3149,371 @@ def describe_scene(params: Dict[str, Any]) -> str:
             '_note("describe_scene", objects=len(_objects))')
 
 
+# ======================================================
+# Sculpting, by hand
+#
+# WHY NOT BLENDER'S OWN BRUSHES
+# Measured on 5.0.1 in --background (see sculpt_brush): a brush stroke
+# refuses without a window, the mesh filters crash Blender outright,
+# and the brush cannot even be chosen. So the brushes are here, as
+# arithmetic on the vertices -- which is all a sculpt brush ever was:
+# find the vertices inside a sphere, weight them by a falloff, move
+# them. Done on the mesh data with numpy it runs headless, it is exact,
+# and the same stroke gives the same result every time.
+#
+# WHAT IT NEEDS FROM THE MESH
+# Vertices to move. A brush on a 500-face sphere moves a handful of
+# points and makes facets, not form -- the same as in Blender, where a
+# sculptor subdivides or remeshes first. voxel_remesh (even density,
+# any shape) or apply_subdivision with apply=True before sculpting.
+# The brush works on the mesh itself, under any modifiers, so a live
+# Subdivision on top smooths what was sculpted rather than adding to it.
+# ======================================================
+
+SCULPT_STROKE_BRUSHES = frozenset({
+    "draw", "clay", "inflate", "crease", "pinch", "flatten", "fill",
+    "scrape", "smooth", "grab",
+})
+
+# How strongly a vertex is moved against how far it is from the brush
+# centre, 0 at the centre to 1 at the rim.
+SCULPT_FALLOFFS = frozenset({"smooth", "sphere", "linear", "sharp", "constant"})
+
+# Views a stroke can be placed on. Orthographic ones only: on those a
+# point in the picture is a straight line into the scene, so "40%
+# across, 30% down the front view" names one place on the surface.
+SCULPT_VIEWS = frozenset({"front", "back", "left", "right", "top", "bottom"})
+
+_SCULPT_KIT = '''
+import numpy as _np
+from mathutils.bvhtree import BVHTree as _BVHTree
+
+
+def _aria_falloff(t, kind):
+    t = _np.clip(t, 0.0, 1.0)
+    if kind == "sphere":
+        return _np.sqrt(1.0 - t * t)
+    if kind == "linear":
+        return 1.0 - t
+    if kind == "sharp":
+        return (1.0 - t) ** 2
+    if kind == "constant":
+        return _np.ones_like(t)
+    s = 1.0 - t                                  # smooth: ease in and out
+    return s * s * (3.0 - 2.0 * s)
+
+
+class _AriaSculpt:
+    """One mesh's vertices, held as arrays while a stroke works on them."""
+
+    def __init__(self, obj):
+        if obj.type != "MESH":
+            raise RuntimeError("%r is a %s -- only meshes can be sculpted" % (obj.name, obj.type))
+        if obj.data.shape_keys:
+            raise RuntimeError("%r has shape keys; sculpting the base under them would "
+                               "tear the keys away from it" % obj.name)
+        self.obj = obj
+        self.mesh = obj.data
+        count = len(self.mesh.vertices)
+        if count == 0:
+            raise RuntimeError("%r has no vertices" % obj.name)
+        self.co = _np.empty(count * 3, dtype=_np.float64)
+        self.mesh.vertices.foreach_get("co", self.co)
+        self.co = self.co.reshape(-1, 3)
+        self.start = self.co.copy()
+        edges = _np.empty(len(self.mesh.edges) * 2, dtype=_np.int64)
+        self.mesh.edges.foreach_get("vertices", edges)
+        self.edges = edges.reshape(-1, 2)
+        self.faces = [tuple(p.vertices) for p in self.mesh.polygons]
+        self.refresh_normals()
+
+    def refresh_normals(self):
+        self.write()
+        self.mesh.update()
+        normals = _np.empty(len(self.mesh.vertices) * 3, dtype=_np.float64)
+        self.mesh.vertex_normals.foreach_get("vector", normals)
+        self.normals = normals.reshape(-1, 3)
+
+    def write(self):
+        self.mesh.vertices.foreach_set("co", self.co.ravel())
+
+    def tree(self):
+        return _BVHTree.FromPolygons([tuple(v) for v in self.co], self.faces)
+
+    def neighbour_average(self):
+        total = _np.zeros_like(self.co)
+        count = _np.zeros(len(self.co))
+        a, b = self.edges[:, 0], self.edges[:, 1]
+        _np.add.at(total, a, self.co[b])
+        _np.add.at(total, b, self.co[a])
+        _np.add.at(count, a, 1.0)
+        _np.add.at(count, b, 1.0)
+        count[count == 0] = 1.0
+        return total / count[:, None]
+
+    def dab(self, centre, radius, strength, brush, falloff, front_only, offset=None):
+        """One touch of the brush. Returns how many vertices it moved."""
+        delta = self.co - centre
+        distance = _np.sqrt((delta * delta).sum(axis=1))
+        inside = _np.nonzero(distance < radius)[0]
+        if not len(inside):
+            return 0
+        weight = _aria_falloff(distance[inside] / radius, falloff)
+        normals = self.normals[inside]
+
+        # The area normal: which way "out" is here, averaged over the
+        # brush, so a bump grows off the surface and not off one vertex.
+        area = (normals * weight[:, None]).sum(axis=0)
+        length = _np.linalg.norm(area)
+        if length < 1e-12:
+            return 0
+        area = area / length
+        if front_only:
+            # The other side of a thin part -- the back of a lip, the
+            # far wall of a nostril -- faces away from the brush. A
+            # sculptor's brush never reaches it; neither does this one.
+            weight = weight * (normals @ area > 0.0)
+
+        points = self.co[inside]
+        depth = radius * 0.1 * strength      # one dab's full push
+        plane_point = (points * weight[:, None]).sum(axis=0) / max(weight.sum(), 1e-12)
+        height = (points - plane_point) @ area   # above (+) or below (-) the area plane
+
+        if brush == "draw":
+            move = area[None, :] * (weight * depth)[:, None]
+        elif brush == "inflate":
+            move = normals * (weight * depth)[:, None]
+        elif brush == "clay":
+            # Lay a layer on: push out like draw, but ease off where the
+            # surface already stands proud of the area plane, so dabs
+            # fill the low ground and build a soft, even layer. An
+            # earlier version lifted everything to a fixed plane, which
+            # measured as a flat plateau with a hard beaded rim -- a
+            # brow like a plank laid on the face.
+            reach = max(abs(depth) * 2.0, 1e-12)
+            ease = _np.clip(1.0 - (height * _np.sign(depth)) / reach, 0.0, 1.0)
+            move = area[None, :] * (weight * depth * ease)[:, None]
+        elif brush in ("flatten", "fill", "scrape"):
+            pull = -height
+            if brush == "fill":
+                pull = _np.clip(pull, 0.0, None)
+            elif brush == "scrape":
+                pull = _np.clip(pull, None, 0.0)
+            move = area[None, :] * (weight * pull * min(abs(strength), 1.0))[:, None]
+        elif brush == "pinch":
+            toward = centre - points
+            toward = toward - (toward @ area)[:, None] * area[None, :]
+            move = toward * (weight * 0.3 * strength)[:, None]
+        elif brush == "crease":
+            toward = centre - points
+            toward = toward - (toward @ area)[:, None] * area[None, :]
+            move = (toward * (weight * 0.3 * abs(strength))[:, None]
+                    - area[None, :] * (weight * depth)[:, None])
+        elif brush == "smooth":
+            average = self.neighbour_average()[inside]
+            move = (average - points) * (weight * min(abs(strength), 1.0))[:, None]
+        elif brush == "grab":
+            move = _np.asarray(offset)[None, :] * weight[:, None]
+        else:
+            raise RuntimeError("no brush called %r" % brush)
+
+        self.co[inside] = points + move
+        return int((_np.abs(move).sum(axis=1) > 1e-12).sum())
+
+
+def _aria_resample(points, spacing):
+    """Dabs along a path, `spacing` apart, the way a stroke lays them."""
+    if len(points) < 2 or spacing <= 0:
+        return [mathutils.Vector(p) for p in points]
+    dabs = [mathutils.Vector(points[0])]
+    carry = 0.0
+    for a, b in zip(points[:-1], points[1:]):
+        a, b = mathutils.Vector(a), mathutils.Vector(b)
+        length = (b - a).length
+        travelled = spacing - carry
+        while travelled <= length:
+            dabs.append(a.lerp(b, travelled / length))
+            travelled += spacing
+        carry = length - (travelled - spacing)
+    if (dabs[-1] - mathutils.Vector(points[-1])).length > spacing * 0.25:
+        dabs.append(mathutils.Vector(points[-1]))
+    return dabs
+
+
+def _aria_view_point(obj, framing, view, u, v):
+    """A point in an orthographic preview picture, as a place on the surface.
+
+    The camera is rebuilt exactly as render_preview built it -- same
+    framing, same fit -- so (u, v) read off that picture, 0-1 across
+    and 0-1 down, lands where the picture showed it.
+    """
+    direction = mathutils.Vector(__ARIA_VIEWS__[view]).normalized()
+    points, centre, radius = _aria_bounds(framing)
+    if abs(direction.z) > 0.999:
+        rotation = mathutils.Euler((0.0 if direction.z > 0 else _math.pi, 0.0, 0.0)).to_quaternion()
+    else:
+        rotation = (-direction).to_track_quat("-Z", "Y")
+    basis = rotation.to_matrix()
+    right, up = basis.col[0], basis.col[1]
+    across = max(max(abs((p - centre).dot(right)), abs((p - centre).dot(up))) for p in points)
+    scale = across * 2.0 * 1.12
+    origin = (centre + right * ((u - 0.5) * scale) + up * ((0.5 - v) * scale)
+              + direction * (radius * 3.0))
+    inverse = obj.matrix_world.inverted()
+    local_origin = inverse @ origin
+    local_direction = (inverse.to_3x3() @ -direction).normalized()
+    hit, location, normal, index = obj.ray_cast(local_origin, local_direction)
+    if not hit:
+        raise RuntimeError("the %s view at (%.3f, %.3f) is empty space -- there is no %r "
+                           "there to sculpt" % (view, u, v, obj.name))
+    return obj.matrix_world @ location
+'''.replace("__ARIA_VIEWS__", repr(PREVIEW_VIEWS))
+
+
+def sculpt_ready(params: Dict[str, Any]) -> str:
+    """Get a mesh ready to sculpt: rounded, then remeshed to an even density.
+
+    What a sculptor does before the first stroke, in one step. A
+    primitive is the wrong starting point as it stands -- a UV sphere's
+    512 flat faces survive a voxel remesh as 512 flat patches, which is
+    measured: the first sculpted head here was a pleated ball. So it is
+    rounded first (two applied Catmull-Clark levels), then rebuilt as an
+    even grid the brushes can move.
+
+    detail: voxels across the object's longest side -- 150 is a head
+    with room for a brow and a mouth; 300 takes wrinkles and costs four
+    times the faces. smooth=false keeps hard edges (a cube stays a cube,
+    at the price of any faceting it had).
+    """
+    detail = _num(params.get("detail"), 150.0)
+    smooth = "False" if params.get("smooth") is False else "True"
+    return (f'_target = _active(_obj({_text(params.get("object"))}))\n'
+            f'if _target.type != "MESH":\n'
+            f'    raise RuntimeError("%r is not a mesh" % _target.name)\n'
+            f'_before = len(_target.data.polygons)\n'
+            f'if {smooth} and _before < 20000:\n'
+            f'    _round = _target.modifiers.new(name="ARIA_Round", type="SUBSURF")\n'
+            f'    _round.levels = 2\n'
+            f'    _round.render_levels = 2\n'
+            f'    bpy.ops.object.modifier_move_to_index(modifier=_round.name, index=0)\n'
+            f'    bpy.ops.object.modifier_apply(modifier=_round.name)\n'
+            f'_corners = [mathutils.Vector(c) for c in _target.bound_box]\n'
+            f'_longest = max(max(c[i] for c in _corners) - min(c[i] for c in _corners) for i in range(3))\n'
+            f'_target.data.remesh_voxel_size = max(_longest / max({detail}, 1.0), 1e-5)\n'
+            f'_target.data.remesh_voxel_adaptivity = 0.0\n'
+            f'bpy.ops.object.voxel_remesh()\n'
+            f'bpy.ops.object.shade_smooth()\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("sculpt_ready", object=_target.name, faces_before=_before, '
+            f'faces=len(_target.data.polygons), voxel=round(_target.data.remesh_voxel_size, 5))')
+
+
+def _stroke_points(value: Any, view: Any) -> str:
+    """The stroke's path as a literal: 3D points, or 2D points on a view."""
+    try:
+        points = [list(point) for point in (value or [])]
+    except TypeError:
+        raise BadValue(f"{value!r} is not a list of points.") from None
+    if not points:
+        raise BadValue("a stroke needs at least one point.")
+    sizes = {len(point) for point in points}
+    if sizes == {3}:
+        return "[" + ", ".join(_vector(point) for point in points) + "]"
+    if sizes == {2}:
+        if not view:
+            raise BadValue("two-number points are places on a picture -- say which view "
+                           f"they are on ({', '.join(sorted(SCULPT_VIEWS))}).")
+        return "[" + ", ".join(f"({_num(p[0])}, {_num(p[1])})" for p in points) + "]"
+    raise BadValue("points are all [x, y, z] in the scene, or all [u, v] on a view.")
+
+
+def sculpt_stroke(params: Dict[str, Any]) -> str:
+    """Sculpt one stroke: a brush dragged along a path on a mesh's surface.
+
+    brush: draw (push out; negative strength pushes in), clay (lay on a
+    flat layer), inflate, crease (a sharp valley), pinch (pull toward
+    the line), flatten, fill (only raise the low), scrape (only cut the
+    high), smooth, grab (carry a region by `offset`).
+
+    points: the path. Either [x, y, z] in the scene -- snapped onto the
+    surface -- or [u, v] on an orthographic preview picture (0-1 across,
+    0-1 down) with `view` naming which: front, back, left, right, top,
+    bottom. `frame` must match what that preview framed: "scene" (its
+    default) or "object".
+
+    radius in metres, strength 0-1 (negative inverts), falloff smooth /
+    sphere / linear / sharp / constant -- keep grab on smooth: sphere's
+    hard rim leaves a visible shell line around what was pulled, spacing between dabs as a
+    fraction of the radius, mirror "X" to sculpt both sides of a figure
+    at once, front_only (default true) to leave the far side of thin
+    parts alone. Needs a dense mesh -- sculpt_ready first.
+    """
+    brush = _choice(params.get("brush"), SCULPT_STROKE_BRUSHES, "draw")
+    falloff = _choice(params.get("falloff"), SCULPT_FALLOFFS, "smooth")
+    view = params.get("view")
+    view_literal = _choice(view, SCULPT_VIEWS, "front") if view else "None"
+    points = _stroke_points(params.get("points"), view)
+    mirror = str(params.get("mirror") or "").strip().upper()
+    if mirror not in ("", "X", "Y", "Z"):
+        raise BadValue(f"{params.get('mirror')!r} is not a mirror axis. Use X, Y or Z.")
+    mirror_index = {"X": 0, "Y": 1, "Z": 2}.get(mirror, -1)
+    frame = str(params.get("frame") or "scene").strip().lower()
+    if frame not in ("scene", "object"):
+        raise BadValue(f"{params.get('frame')!r} is not a framing. Use scene or object.")
+    front_only = "False" if params.get("front_only") is False else "True"
+    strength = _num(params.get("strength"), 0.5)
+    if params.get("invert"):
+        strength = f"-({strength})"
+
+    return (_RENDER_KIT + _SCULPT_KIT +
+            f'_target = _obj({_text(params.get("object"))})\n'
+            f'_sculpt = _AriaSculpt(_target)\n'
+            f'_radius_world = {_num(params.get("radius"), 0.05)}\n'
+            f'if _radius_world <= 0:\n'
+            f'    raise RuntimeError("a brush needs a radius above zero")\n'
+            f'_scale = sum(abs(s) for s in _target.matrix_world.to_scale()) / 3.0\n'
+            f'_radius = _radius_world / max(_scale, 1e-9)\n'
+            f'_inverse = _target.matrix_world.inverted()\n'
+            f'_view = {view_literal}\n'
+            f'_raw = {points}\n'
+            f'if _view is not None:\n'
+            f'    _framing = [_target] if {frame!r} == "object" else _aria_targets([])\n'
+            f'    _world = [_aria_view_point(_target, _framing, _view, p[0], p[1]) for p in _raw]\n'
+            f'else:\n'
+            f'    _world = [mathutils.Vector(p) for p in _raw]\n'
+            f'_tree = _sculpt.tree()\n'
+            f'_path = []\n'
+            f'for _p in _world:\n'
+            f'    _near = _tree.find_nearest(_inverse @ _p)\n'
+            f'    _path.append(_near[0] if _near[0] is not None else _inverse @ _p)\n'
+            f'_dabs = _aria_resample([tuple(p) for p in _path], _radius * {_num(params.get("spacing"), 0.25)})\n'
+            f'_offset = _inverse.to_3x3() @ mathutils.Vector({_vector(params.get("offset"))})\n'
+            f'_moved = 0\n'
+            f'_mirror = {mirror_index}\n'
+            f'_brush = {brush}\n'
+            f'_centres = [(_d, _offset) for _d in _dabs]\n'
+            f'if _mirror >= 0:\n'
+            f'    _flip = lambda v: mathutils.Vector([-c if i == _mirror else c for i, c in enumerate(v)])\n'
+            f'    _centres += [(_flip(_d), _flip(_offset)) for _d in _dabs]\n'
+            f'if _brush == "grab":\n'
+            f'    # A grab carries the region once, from where it was taken;\n'
+            f'    # repeated along a path it would drag the same vertices twice.\n'
+            f'    _centres = [_centres[0]] + ([_centres[len(_dabs)]] if _mirror >= 0 else [])\n'
+            f'for _index, (_centre, _off) in enumerate(_centres):\n'
+            f'    _moved += _sculpt.dab(_np.array(_centre), _radius, {strength}, _brush, '
+            f'{falloff}, {front_only}, _np.array(_off))\n'
+            f'    if _index % 4 == 3:\n'
+            f'        _sculpt.refresh_normals()\n'
+            f'_sculpt.write()\n'
+            f'_sculpt.mesh.update()\n'
+            f'_shift = _np.sqrt(((_sculpt.co - _sculpt.start) ** 2).sum(axis=1))\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("sculpt_stroke", object=_target.name, brush=_brush, dabs=len(_centres), '
+            f'vertices_moved=int((_shift > 1e-9).sum()), '
+            f'largest_move=round(float(_shift.max()) * _scale, 5), '
+            f'modifiers=[m.type for m in _target.modifiers])')
+
+
 TEMPLATES = {
     "apply_transforms": apply_transforms,
     "remove_stray_meshes": remove_stray_meshes,
@@ -3236,6 +3601,8 @@ TEMPLATES = {
     "bake_animation": bake_animation,
     # sculpting
     "sculpt_brush": sculpt_brush,
+    "sculpt_stroke": sculpt_stroke,
+    "sculpt_ready": sculpt_ready,
     "enable_dyntopo": enable_dyntopo,
     "apply_multires": apply_multires,
     # export
