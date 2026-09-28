@@ -5501,6 +5501,311 @@ def run_python(params: Dict[str, Any]) -> str:
             f'_note("run_python", lines={len(code.splitlines())}, result=_back)')
 
 
+# ======================================================
+# Modelling: building shapes, not only reshaping them
+#
+# Everything above started from a primitive or a base mesh. These make
+# geometry: a mesh from points and faces, faces extruded and inset,
+# edges bevelled, loops cut, curves and text. All through bmesh and the
+# data API, which work without a window -- edit-mode operators want a
+# 3D viewport that --background does not have.
+#
+# Faces are chosen by description, not by index: "faces": {"normal":
+# "up"} is the top of a box whatever its vertex order, where "face 5"
+# is whatever the primitive happened to number fifth.
+# ======================================================
+
+FACE_DIRECTIONS = {
+    "up": (0.0, 0.0, 1.0), "down": (0.0, 0.0, -1.0), "front": (0.0, -1.0, 0.0),
+    "back": (0.0, 1.0, 0.0), "left": (1.0, 0.0, 0.0), "right": (-1.0, 0.0, 0.0),
+}
+CURVE_KINDS = frozenset({"poly", "smooth"})
+
+_MODEL_KIT = r'''
+import bmesh as _bm_mod
+import math as _mmath
+
+
+def _aria_pick_faces(bm, obj, spec):
+    """Faces matching a description: facing a direction, inside a box, or all."""
+    matrix = obj.matrix_world
+    turn = matrix.to_3x3().inverted().transposed()
+    chosen = []
+    for face in bm.faces:
+        if spec.get("normal") is not None:
+            facing = (turn @ face.normal).normalized()
+            if facing.dot(mathutils.Vector(spec["normal"])) < _mmath.cos(_mmath.radians(spec.get("tolerance", 30.0))):
+                continue
+        if spec.get("box") is not None:
+            centre = matrix @ face.calc_center_median()
+            low, high = spec["box"]
+            if not all(low[i] <= centre[i] <= high[i] for i in range(3)):
+                continue
+        chosen.append(face)
+    if not chosen:
+        raise RuntimeError("no faces of %r match %s" % (obj.name, spec))
+    return chosen
+
+
+def _aria_edit(obj):
+    if obj.type != "MESH":
+        raise RuntimeError("%r is a %s, not a mesh" % (obj.name, obj.type))
+    if obj.data.shape_keys:
+        raise RuntimeError("%r has shape keys; changing its topology would break them" % obj.name)
+    bm = _bm_mod.new()
+    bm.from_mesh(obj.data)
+    bm.faces.ensure_lookup_table()
+    return bm
+
+
+def _aria_done(obj, bm):
+    bm.normal_update()
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+'''
+
+
+def _face_spec(value: Any) -> str:
+    """A face description, checked, as a literal."""
+    spec = dict(value or {}) if not isinstance(value, str) else {"normal": value}
+    out: Dict[str, Any] = {}
+    if spec.get("normal") is not None:
+        direction = spec["normal"]
+        if isinstance(direction, str):
+            if direction.lower() not in FACE_DIRECTIONS:
+                raise BadValue(f"{direction!r} is not a direction. Use "
+                               f"{', '.join(FACE_DIRECTIONS)} or [x, y, z].")
+            direction = FACE_DIRECTIONS[direction.lower()]
+        out["normal"] = [float(v) for v in list(direction)[:3]]
+        out["tolerance"] = float(spec.get("tolerance", 30.0))
+    if spec.get("box") is not None:
+        try:
+            low, high = spec["box"]
+            out["box"] = [[float(v) for v in low][:3], [float(v) for v in high][:3]]
+        except (TypeError, ValueError):
+            raise BadValue("a face box is [[x, y, z], [x, y, z]] -- its two corners.") from None
+    if not out and not spec.get("all"):
+        raise BadValue('say which faces: {"normal": "up"}, {"box": [[...], [...]]} or {"all": true}.')
+    return repr(out)
+
+
+def create_mesh(params: Dict[str, Any]) -> str:
+    """A mesh from its points and faces -- any shape, exactly.
+
+    vertices: [[x, y, z], ...] in the object's own space; faces: lists of
+    vertex indices, each a polygon (3 or more, counter-clockwise seen
+    from outside). location places the object. The normals are made
+    consistent afterwards, so a face listed clockwise is not left inside
+    out.
+    """
+    try:
+        verts = [[float(c) for c in v][:3] for v in (params.get("vertices") or [])]
+        faces = [[int(i) for i in f] for f in (params.get("faces") or [])]
+    except (TypeError, ValueError):
+        raise BadValue("vertices are [x, y, z] numbers and faces are lists of vertex numbers.") from None
+    if len(verts) < 3 or any(len(v) != 3 for v in verts):
+        raise BadValue("a mesh needs at least three [x, y, z] vertices.")
+    if len(verts) > 200_000:
+        raise BadValue("more than 200,000 vertices -- import the model as a file instead.")
+    bad = [f for f in faces if len(f) < 3 or any(i < 0 or i >= len(verts) for i in f)]
+    if bad:
+        raise BadValue(f"face {bad[0]} names a vertex that is not there (there are {len(verts)}).")
+    return (_MODEL_KIT +
+            f'_name = {_named(params, "Mesh")}\n'
+            f'_mesh = bpy.data.meshes.new(_name)\n'
+            f'_mesh.from_pydata({verts!r}, [], {faces!r})\n'
+            f'_mesh.validate()\n'
+            f'_new = bpy.data.objects.new(_name, _mesh)\n'
+            f'bpy.context.scene.collection.objects.link(_new)\n'
+            f'_new.location = {_vector(params.get("location"))}\n'
+            f'_bm = _aria_edit(_new)\n'
+            f'_bm_mod.ops.recalc_face_normals(_bm, faces=_bm.faces)\n'
+            f'_aria_done(_new, _bm)\n'
+            f'_RESULT["created"].append(_new.name)\n'
+            f'_note("create_mesh", name=_new.name, vertices=len(_mesh.vertices), faces=len(_mesh.polygons))')
+
+
+def extrude_faces(params: Dict[str, Any]) -> str:
+    """Pull faces out into new geometry: the top of a box up into a tower.
+
+    faces: which ({"normal": "up"}, {"box": [[x,y,z],[x,y,z]]}, {"all":
+    true}; normal takes up/down/front/back/left/right or [x,y,z], within
+    `tolerance` degrees). distance in metres along the faces' own average
+    normal (negative pushes in), or along `direction` [x, y, z] if given.
+    Connected faces extrude as one region, as Blender's E does.
+    """
+    return (_MODEL_KIT +
+            f'_target = _obj({_text(params.get("object"))})\n'
+            f'_bm = _aria_edit(_target)\n'
+            f'_faces = _aria_pick_faces(_bm, _target, {_face_spec(params.get("faces"))})\n'
+            f'_normal = mathutils.Vector((0, 0, 0))\n'
+            f'for _f in _faces:\n'
+            f'    _normal += _f.normal * _f.calc_area()\n'
+            f'_normal = _normal.normalized()\n'
+            f'_given = {_vector(params.get("direction"), (0.0, 0.0, 0.0))}\n'
+            f'if any(_given):\n'
+            f'    _normal = (_target.matrix_world.to_3x3().inverted() @ mathutils.Vector(_given)).normalized()\n'
+            f'_out = _bm_mod.ops.extrude_face_region(_bm, geom=_faces)\n'
+            f'_moved = [e for e in _out["geom"] if isinstance(e, _bm_mod.types.BMVert)]\n'
+            f'_scale = sum(abs(s) for s in _target.matrix_world.to_scale()) / 3.0\n'
+            f'_bm_mod.ops.translate(_bm, verts=_moved, vec=_normal * ({_num(params.get("distance"), 0.1)} / max(_scale, 1e-9)))\n'
+            f'_bm_mod.ops.delete(_bm, geom=_faces, context="FACES")\n'
+            f'_aria_done(_target, _bm)\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("extrude_faces", object=_target.name, faces=len(_faces), '
+            f'faces_now=len(_target.data.polygons))')
+
+
+def inset_faces(params: Dict[str, Any]) -> str:
+    """Inset faces: a smaller face inside each region, with a border round it.
+
+    faces: as extrude_faces. thickness is the border's width in metres;
+    depth pushes the new inner face out (positive) or in -- an inset with
+    a negative depth is a panel, a window, a recess.
+    """
+    return (_MODEL_KIT +
+            f'_target = _obj({_text(params.get("object"))})\n'
+            f'_bm = _aria_edit(_target)\n'
+            f'_faces = _aria_pick_faces(_bm, _target, {_face_spec(params.get("faces"))})\n'
+            f'_scale = max(sum(abs(s) for s in _target.matrix_world.to_scale()) / 3.0, 1e-9)\n'
+            f'_bm_mod.ops.inset_region(_bm, faces=_faces, thickness={_num(params.get("thickness"), 0.05)} / _scale, '
+            f'depth={_num(params.get("depth"), 0.0)} / _scale, use_even_offset=True, '
+            f'use_boundary=True)\n'
+            f'_aria_done(_target, _bm)\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("inset_faces", object=_target.name, faces=len(_faces), '
+            f'faces_now=len(_target.data.polygons))')
+
+
+def bevel_edges(params: Dict[str, Any]) -> str:
+    """Round or chamfer edges -- the sharp ones, or all of them.
+
+    angle: edges whose faces meet sharper than this many degrees
+    (default 30; 0 bevels every edge). width in metres, segments (1 is a
+    chamfer, more is round), profile 0.5 round, 1 square.
+    """
+    return (_MODEL_KIT +
+            f'_target = _obj({_text(params.get("object"))})\n'
+            f'_bm = _aria_edit(_target)\n'
+            f'_limit = _mmath.radians({_num(params.get("angle"), 30.0)})\n'
+            f'_edges = [e for e in _bm.edges if len(e.link_faces) != 2 or e.calc_face_angle(0.0) >= _limit]\n'
+            f'if not _edges:\n'
+            f'    raise RuntimeError("no edges of %r are sharper than %s degrees" % (_target.name, '
+            f'{_num(params.get("angle"), 30.0)}))\n'
+            f'_scale = max(sum(abs(s) for s in _target.matrix_world.to_scale()) / 3.0, 1e-9)\n'
+            f'_bm_mod.ops.bevel(_bm, geom=_edges, offset={_num(params.get("width"), 0.02)} / _scale, '
+            f'segments={_int(params.get("segments"), 3, 1, 32)}, profile={_num(params.get("profile"), 0.5)}, '
+            f'affect="EDGES", clamp_overlap=True)\n'
+            f'_aria_done(_target, _bm)\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("bevel_edges", object=_target.name, edges=len(_edges), faces_now=len(_target.data.polygons))')
+
+
+def loop_cut(params: Dict[str, Any]) -> str:
+    """Evenly spaced cuts right round a mesh, across an axis.
+
+    axis X, Y or Z; count cuts spaced evenly through the object's extent
+    along it. What Ctrl+R does on a simple shape: more edges to bend,
+    bevel or extrude from, where they are wanted.
+    """
+    axis = _choice(params.get("axis"), AXES, "Z")
+    return (_MODEL_KIT +
+            f'_target = _obj({_text(params.get("object"))})\n'
+            f'_bm = _aria_edit(_target)\n'
+            f'_i = "XYZ".index({axis})\n'
+            f'_values = [v.co[_i] for v in _bm.verts]\n'
+            f'_lo, _hi = min(_values), max(_values)\n'
+            f'_count = {_int(params.get("count"), 1, 1, 64)}\n'
+            f'_normal = mathutils.Vector([1.0 if k == _i else 0.0 for k in range(3)])\n'
+            f'for _k in range(1, _count + 1):\n'
+            f'    _at = _lo + (_hi - _lo) * _k / (_count + 1)\n'
+            f'    _geom = list(_bm.verts) + list(_bm.edges) + list(_bm.faces)\n'
+            f'    _bm_mod.ops.bisect_plane(_bm, geom=_geom, plane_co=_normal * _at, plane_no=_normal)\n'
+            f'_aria_done(_target, _bm)\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("loop_cut", object=_target.name, axis={axis}, count=_count, '
+            f'faces_now=len(_target.data.polygons))')
+
+
+def add_curve(params: Dict[str, Any]) -> str:
+    """A curve through points -- a cable, a pipe, a handle, a vine.
+
+    points: [[x, y, z], ...]; kind "smooth" (through them, rounded) or
+    "poly" (straight between). thickness gives it a round tube of that
+    radius in metres (0: a bare line); closed joins the ends into a loop.
+    convert_to_mesh makes it a mesh when it has to be one -- for export,
+    or to sculpt.
+    """
+    points = params.get("points") or []
+    try:
+        pts = [[float(c) for c in p][:3] for p in points]
+    except (TypeError, ValueError):
+        raise BadValue("points are [x, y, z] numbers.") from None
+    if len(pts) < 2 or any(len(p) != 3 for p in pts):
+        raise BadValue("a curve needs at least two [x, y, z] points.")
+    kind = str(params.get("kind") or "smooth").lower()
+    if kind not in CURVE_KINDS:
+        raise BadValue(f"{params.get('kind')!r} is not a curve kind. Use smooth or poly.")
+    return (f'_name = {_named(params, "Curve")}\n'
+            f'_data = bpy.data.curves.new(_name, type="CURVE")\n'
+            f'_data.dimensions = "3D"\n'
+            f'_spline = _data.splines.new({"NURBS" if kind == "smooth" else "POLY"!r})\n'
+            f'_pts = {pts!r}\n'
+            f'_spline.points.add(len(_pts) - 1)\n'
+            f'for _p, _xyz in zip(_spline.points, _pts):\n'
+            f'    _p.co = (_xyz[0], _xyz[1], _xyz[2], 1.0)\n'
+            f'_spline.use_cyclic_u = {bool(params.get("closed"))}\n'
+            f'if _spline.type == "NURBS":\n'
+            f'    _spline.order_u = min(4, len(_pts))\n'
+            f'    _spline.use_endpoint_u = not _spline.use_cyclic_u\n'
+            f'_data.resolution_u = {_int(params.get("resolution"), 12, 1, 64)}\n'
+            f'_data.bevel_depth = {_num(params.get("thickness"), 0.0)}\n'
+            f'_data.bevel_resolution = 4\n'
+            f'_data.use_fill_caps = True\n'
+            f'_new = bpy.data.objects.new(_name, _data)\n'
+            f'bpy.context.scene.collection.objects.link(_new)\n'
+            f'_RESULT["created"].append(_new.name)\n'
+            f'_note("add_curve", name=_new.name, points=len(_pts), kind={kind!r})')
+
+
+def add_text(params: Dict[str, Any]) -> str:
+    """3D lettering: a sign, a label, a logo.
+
+    text, size (letter height, metres), extrude (depth, metres), location.
+    Standing up facing the front view (-Y) by default; standing=false lays
+    it flat. align left, center or right. convert_to_mesh for export.
+    """
+    align = _choice(str(params.get("align") or "center").upper(), frozenset({"LEFT", "CENTER", "RIGHT"}), "CENTER")
+    body = str(params.get("text") or "")
+    if not body.strip():
+        raise BadValue("add_text needs some text.")
+    return (f'_name = {_named(params, "Text")}\n'
+            f'_data = bpy.data.curves.new(_name, type="FONT")\n'
+            f'_data.body = {body!r}\n'
+            f'_data.size = {_num(params.get("size"), 0.5)}\n'
+            f'_data.extrude = {_num(params.get("extrude"), 0.05)}\n'
+            f'_data.align_x = {align}\n'
+            f'_new = bpy.data.objects.new(_name, _data)\n'
+            f'bpy.context.scene.collection.objects.link(_new)\n'
+            f'_new.location = {_vector(params.get("location"))}\n'
+            + ('' if params.get("standing") is False else
+               'import math as _tm\n_new.rotation_euler = (_tm.radians(90.0), 0.0, 0.0)\n') +
+            f'_RESULT["created"].append(_new.name)\n'
+            f'_note("add_text", name=_new.name, text={body[:40]!r})')
+
+
+def convert_to_mesh(params: Dict[str, Any]) -> str:
+    """Turn a curve or text into a mesh -- for export, sculpting or editing."""
+    return (f'_target = _active(_obj({_text(params.get("object"))}))\n'
+            f'_was = _target.type\n'
+            f'if _was != "MESH":\n'
+            f'    bpy.ops.object.convert(target="MESH")\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("convert_to_mesh", object=_target.name, was=_was, '
+            f'faces=len(_target.data.polygons) if _target.type == "MESH" else 0)')
+
+
 TEMPLATES = {
     "apply_transforms": apply_transforms,
     "remove_stray_meshes": remove_stray_meshes,
@@ -5605,6 +5910,15 @@ TEMPLATES = {
     "add_clip": add_clip,
     "play_clip": play_clip,
     "run_python": run_python,
+    # building shapes
+    "create_mesh": create_mesh,
+    "extrude_faces": extrude_faces,
+    "inset_faces": inset_faces,
+    "bevel_edges": bevel_edges,
+    "loop_cut": loop_cut,
+    "add_curve": add_curve,
+    "add_text": add_text,
+    "convert_to_mesh": convert_to_mesh,
     "enable_dyntopo": enable_dyntopo,
     "apply_multires": apply_multires,
     # export
