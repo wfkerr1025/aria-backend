@@ -5005,6 +5005,190 @@ def set_landmark(params: Dict[str, Any]) -> str:
             f'at=[round(v, 4) for v in _target.matrix_world @ _at])')
 
 
+# ======================================================
+# Rigging from landmarks
+#
+# A skeleton is joints, and joints are where the landmarks already say
+# the body bends -- only inside it, not on its skin. Each joint is the
+# middle of the limb's cross-section at its landmark: the elbow joint is
+# the centre of the arm at the elbow, not the point of the elbow.
+# ======================================================
+
+# Unity's Humanoid names, so Unity maps the rig by itself on import.
+# (bone, parent, connected)
+HUMANOID_BONES = (
+    ("Hips", None, False), ("Spine", "Hips", True), ("Chest", "Spine", True),
+    ("Neck", "Chest", True), ("Head", "Neck", True),
+    ("LeftShoulder", "Chest", False), ("LeftUpperArm", "LeftShoulder", True),
+    ("LeftLowerArm", "LeftUpperArm", True), ("LeftHand", "LeftLowerArm", True),
+    ("RightShoulder", "Chest", False), ("RightUpperArm", "RightShoulder", True),
+    ("RightLowerArm", "RightUpperArm", True), ("RightHand", "RightLowerArm", True),
+    ("LeftUpperLeg", "Hips", False), ("LeftLowerLeg", "LeftUpperLeg", True),
+    ("LeftFoot", "LeftLowerLeg", True),
+    ("RightUpperLeg", "Hips", False), ("RightLowerLeg", "RightUpperLeg", True),
+    ("RightFoot", "RightLowerLeg", True),
+)
+
+_RIG_KIT = r'''
+def _aria_section_centre(world, point, axis, reach):
+    """The middle of the body's cross-section through `point`, across `axis`.
+
+    Vertices within a thin slab square to the limb, and within `reach`
+    of the landmark sideways -- so the other leg, or the torso beside an
+    arm, is not averaged in.
+    """
+    point, axis = _np.array(point, dtype=float), _np.array(axis, dtype=float)
+    axis = axis / max(_np.linalg.norm(axis), 1e-12)
+    rel = world - point
+    along = rel @ axis
+    across = _np.linalg.norm(rel - _np.outer(along, axis), axis=1)
+    for grow in (1.0, 1.6, 2.5):
+        near = (_np.abs(along) < reach * 0.25 * grow) & (across < reach * 2.0 * grow)
+        if near.sum() >= 6:
+            return world[near].mean(axis=0)
+    return point
+
+
+def _aria_build_rig(obj, name):
+    """Joints from the landmarks, bones between them, named for Unity."""
+    marks = _aria_landmarks_read(obj)
+    need = ["hip_l", "hip_r", "waist_l", "chest", "neck", "crown", "knee_l", "ankle_l",
+            "foot_l", "knee_r", "ankle_r", "foot_r"]
+    missing = [m for m in need if m not in marks]
+    if missing:
+        raise RuntimeError("%r is missing body landmarks (%s) -- find_landmarks(kind='body') "
+                           "first" % (obj.name, ", ".join(missing)))
+    L = lambda n: _aria_landmark(obj, n)
+    co = _np.empty(len(obj.data.vertices) * 3)
+    obj.data.vertices.foreach_get("co", co)
+    m = _np.array(obj.matrix_world)
+    world = co.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3]
+    lo, hi = world.min(axis=0), world.max(axis=0)
+    H = hi[2] - lo[2]
+    cx = float((L("hip_l")["point"].x + L("hip_r")["point"].x) / 2.0)
+    up = (0.0, 0.0, 1.0)
+
+    def torso_centre(z, half):
+        sel = (_np.abs(world[:, 2] - z) < H * 0.012) & (_np.abs(world[:, 0] - cx) < half)
+        return world[sel].mean(axis=0) if sel.sum() >= 6 else _np.array([cx, 0.0, z])
+
+    hip_half = abs(L("hip_l")["point"].x - cx)
+    waist_half = abs(L("waist_l")["point"].x - cx) * 1.2
+    hips = torso_centre((L("hip_l")["point"].z + L("hip_r")["point"].z) / 2.0, hip_half)
+    spine = torso_centre(L("waist_l")["point"].z, waist_half)
+    chest = torso_centre(L("chest")["point"].z, waist_half * 1.2)
+    neck = torso_centre(L("neck")["point"].z, H * 0.05)
+    crown = L("crown")["point"]
+    head_top = _np.array([neck[0], neck[1], crown.z])
+    head = neck + (head_top - neck) * 0.25
+    joints = {"Hips": (hips, spine), "Spine": (spine, chest), "Chest": (chest, neck),
+              "Neck": (neck, head), "Head": (head, head_top)}
+
+    for side, word, sign in (("l", "Left", 1.0), ("r", "Right", -1.0)):
+        # Legs: straight down.
+        knee = _aria_section_centre(world, L("knee_" + side)["point"], up, L("knee_" + side)["radius"] * 2)
+        ankle = _aria_section_centre(world, L("ankle_" + side)["point"], up, L("ankle_" + side)["radius"] * 2.5)
+        top = _np.array([knee[0], knee[1], hips[2] - H * 0.01])
+        toe = _np.array(L("foot_" + side)["point"])
+        toe = _np.array([toe[0], toe[1] * 0.6 + ankle[1] * 0.4, lo[2] + H * 0.015])
+        joints[word + "UpperLeg"] = (top, knee)
+        joints[word + "LowerLeg"] = (knee, ankle)
+        joints[word + "Foot"] = (ankle, toe)
+
+        # Arms: along each arm's own line, if the arms were marked.
+        if ("elbow_" + side) in marks and ("wrist_" + side) in marks and ("upper_arm_" + side) in marks:
+            elbow_mark = L("elbow_" + side)
+            axis = _np.array(elbow_mark.get("axis") or (0.0, 0.0, -1.0))
+            upper = _aria_section_centre(world, L("upper_arm_" + side)["point"], axis,
+                                         L("upper_arm_" + side)["radius"] * 1.5)
+            elbow = _aria_section_centre(world, elbow_mark["point"], axis, elbow_mark["radius"] * 1.8)
+            wrist = _aria_section_centre(world, L("wrist_" + side)["point"], axis,
+                                         L("wrist_" + side)["radius"] * 2.5)
+            # The shoulder joint: back up the line from the elbow as far as
+            # the upper-arm mark sits from it again (0.22 and 0.48 along).
+            shoulder = elbow + (upper - elbow) * (0.48 / 0.26)
+            hand_end = wrist + (wrist - elbow) * 0.45
+            clavicle = _np.array([cx + sign * H * 0.02, chest[1], shoulder[2] - H * 0.01])
+            joints[word + "Shoulder"] = (clavicle, shoulder)
+            joints[word + "UpperArm"] = (shoulder, elbow)
+            joints[word + "LowerArm"] = (elbow, wrist)
+            joints[word + "Hand"] = (wrist, hand_end)
+
+    data = bpy.data.armatures.new(name)
+    rig = bpy.data.objects.new(name, data)
+    bpy.context.scene.collection.objects.link(rig)
+    _active(rig)
+    bpy.ops.object.mode_set(mode="EDIT")
+    made = []
+    for bone, parent, connected in __HUMANOID_BONES__:
+        if bone not in joints:
+            continue
+        head_at, tail_at = joints[bone]
+        if _np.linalg.norm(_np.array(tail_at) - _np.array(head_at)) < H * 0.005:
+            tail_at = _np.array(head_at) + _np.array([0.0, 0.0, H * 0.02])
+        eb = data.edit_bones.new(bone)
+        eb.head = [float(v) for v in head_at]
+        eb.tail = [float(v) for v in tail_at]
+        if parent and parent in data.edit_bones:
+            eb.parent = data.edit_bones[parent]
+            eb.use_connect = bool(connected and (eb.parent.tail - eb.head).length < H * 0.002)
+        made.append(bone)
+    # Rolls so each bone's X axis points the same way in the world --
+    # the axis a bend turns about -- rather than wherever it fell.
+    for eb in data.edit_bones:
+        eb.select = True
+    bpy.ops.armature.calculate_roll(type="GLOBAL_POS_Z")
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return rig, made
+'''.replace("__HUMANOID_BONES__", repr(HUMANOID_BONES))
+
+
+def auto_rig(params: Dict[str, Any]) -> str:
+    """Give a body a skeleton, from its landmarks, and bind it with weights.
+
+    Needs find_landmarks(kind="body") first. The joints sit inside the
+    body at each landmark's cross-section; the bones between them carry
+    Unity's Humanoid names (Hips, Spine, Chest, Neck, Head, LeftShoulder,
+    LeftUpperArm, LeftLowerArm, LeftHand, LeftUpperLeg, LeftLowerLeg,
+    LeftFoot, and the Right ones), so Unity sets the rig up as a
+    Humanoid by itself. A body marked without arms gets a rig without
+    them, and says so.
+
+    The mesh is bound with automatic weights; how many vertices ended up
+    with none -- the ones that would stay behind when it moves -- is
+    reported. name: the armature (default "<object>_Rig").
+    """
+    return (_RENDER_KIT + _SCULPT_KIT + _RIG_KIT +
+            f'_target = _obj({_text(params.get("object"))})\n'
+            f'if _target.type != "MESH":\n'
+            f'    raise RuntimeError("%r is a %s -- only a mesh can be rigged" % (_target.name, _target.type))\n'
+            f'if _target.data.shape_keys:\n'
+            f'    pass  # shape keys ride along with automatic weights; nothing to undo\n'
+            f'_rig_name = {_text(params.get("name"))} or (_target.name + "_Rig")\n'
+            f'_old = bpy.data.objects.get(_rig_name)\n'
+            f'if _old is not None:\n'
+            f'    bpy.data.objects.remove(_old, do_unlink=True)\n'
+            f'for _m in [m for m in _target.modifiers if m.type == "ARMATURE"]:\n'
+            f'    _target.modifiers.remove(_m)\n'
+            f'_rig, _bones = _aria_build_rig(_target, _rig_name)\n'
+            f'for _g in [g for g in _target.vertex_groups if g.name in _bones]:\n'
+            f'    _target.vertex_groups.remove(_g)\n'
+            f'bpy.ops.object.mode_set(mode="OBJECT")\n'
+            f'for _o in bpy.context.selected_objects:\n'
+            f'    _o.select_set(False)\n'
+            f'_target.select_set(True)\n'
+            f'_rig.select_set(True)\n'
+            f'bpy.context.view_layer.objects.active = _rig\n'
+            f'bpy.ops.object.parent_set(type="ARMATURE_AUTO")\n'
+            f'_names = set(_bones)\n'
+            f'_unweighted = sum(1 for _v in _target.data.vertices if not any('
+            f'g.weight > 1e-4 and _target.vertex_groups[g.group].name in _names for g in _v.groups))\n'
+            f'_RESULT["created"].append(_rig.name)\n'
+            f'_note("auto_rig", object=_target.name, armature=_rig.name, bones=_bones, '
+            f'arms=any(b.endswith("UpperArm") for b in _bones), '
+            f'vertices=len(_target.data.vertices), unweighted=_unweighted)')
+
+
 TEMPLATES = {
     "apply_transforms": apply_transforms,
     "remove_stray_meshes": remove_stray_meshes,
@@ -5105,6 +5289,7 @@ TEMPLATES = {
     "apply_modifiers": apply_modifiers,
     "find_landmarks": find_landmarks,
     "set_landmark": set_landmark,
+    "auto_rig": auto_rig,
     "enable_dyntopo": enable_dyntopo,
     "apply_multires": apply_multires,
     # export

@@ -153,6 +153,9 @@ def egg(tmp_path_factory):
 
 
 def _ball(tmp_path):
+    # Checked per test, not only in the module-wide egg fixture: a test's
+    # own settings isolation can hide a Blender the module found.
+    _blender_or_skip()
     session = bs.Session("ball", root=tmp_path)
     made = session.run("ClearScene()\nAddSphere('Head', radius=0.5, location=[0,0,1])\n"
                        "SculptReady('Head', detail=70)", preview=None)

@@ -67,7 +67,7 @@ READ_ONLY_ACTIONS = frozenset(RENDER_ACTIONS) | {"describe_scene", "measure_mesh
 # a brush actually did -- a stroke that moved nothing is a stroke that
 # missed, and the picture alone does not always show it.
 REPORTING_STEPS = ("measure_mesh", "measure_rig", "describe_scene", "sculpt_stroke",
-                   "fit_to_reference", "mirror_shape_key", "transfer_weights", "find_landmarks")
+                   "fit_to_reference", "mirror_shape_key", "transfer_weights", "find_landmarks", "auto_rig")
 
 Work = Union[str, Sequence[Dict[str, Any]]]
 
@@ -245,7 +245,9 @@ class Session:
                 "look": preview, "views": list(views or []), "size": size,
                 "skip_empty": True}})
 
-        before = self.scene.stat().st_mtime if self.scene.is_file() else None
+        stamp = lambda: ((self.scene.stat().st_mtime_ns, self.scene.stat().st_size)
+                         if self.scene.is_file() else None)
+        before = stamp()
         snapshot = None if looks_only else self._snapshot(step)
         self.folder.mkdir(parents=True, exist_ok=True)
 
@@ -256,8 +258,13 @@ class Session:
             # undoable here -- the loss that guard exists for cannot happen.
             allow_clearing_saved_file=True)
 
-        after = self.scene.stat().st_mtime if self.scene.is_file() else None
-        if snapshot is not None and after == before:
+        # A step that succeeded saved the scene, so its version is kept.
+        # Only a failed one is checked for whether it got as far as the
+        # save -- and by exact time and size, not the timestamp alone:
+        # two saves inside one timestamp tick looked like "no change" and
+        # the version that undo needed was thrown away (seen as a test
+        # that failed only when the whole suite ran fast).
+        if snapshot is not None and not result.get("success") and stamp() == before:
             snapshot.unlink(missing_ok=True)     # nothing changed; nothing to undo to
 
         outcome = result.get("result") or {}
@@ -571,6 +578,38 @@ def _answer_set_key(said: str, session: "Session") -> Optional[dict]:
     return None
 
 
+_RIG = re.compile(r"\b(?:rig(?:s|ged|ging)?|(?:add|give|make)\b.{0,20}\b(?:skeleton|armature|bones))\b",
+                  re.I)
+
+
+def _answer_rig(said: str, session: "Session") -> dict:
+    """"Rig him in Blender" -- body landmarks if needed, then a Unity Humanoid skeleton."""
+    target, entry, problem = _pick_model(said, session, "rig", "rig the {}")
+    if problem:
+        return problem
+    actions: List[dict] = []
+    have = set(entry.get("landmarks") or [])
+    if not {"hip_l", "knee_l", "neck", "crown"} <= have:
+        actions.append({"action": "find_landmarks", "params": {"object": target, "kind": "body"}})
+    actions.append({"action": "auto_rig", "params": {"object": target}})
+    outcome = session.run(actions, preview="clay", views=["front", "right", "three_quarter"])
+    if outcome.get("success"):
+        rig = next((n for n in outcome.get("notes") or [] if n.get("step") == "auto_rig"), {})
+        unweighted = rig.get("unweighted") or 0
+        lines = [f"Rigged {target}: a {len(rig.get('bones') or [])}-bone skeleton called "
+                 f"{rig.get('armature')}, with Unity's Humanoid bone names, so Unity sets it up "
+                 f"as a Humanoid on import."]
+        if not rig.get("arms", True):
+            lines.append("It has no arm bones: the arms could not be told apart from the body "
+                         "(held against the sides?).")
+        if unweighted:
+            lines.append(f"{unweighted} vertices got no weight and will not move with it.")
+        lines.append(picture_markdown(outcome.get("renders") or []))
+        lines.append("Say \"undo in Blender\" to take it off.")
+        outcome["text"] = "\n\n".join(lines)
+    return outcome
+
+
 def _answer_match(said: str, session: "Session") -> dict:
     """"Match it to D:\\Refs\\front.png and D:\\Refs\\side.png in Blender"."""
     pictures = _PICTURE.findall(said)
@@ -623,6 +662,8 @@ def answer_command(text: str, session: Optional["Session"] = None, *,
         return {"ran": True, **session.reset()}
     if changes_allowed and _MATCH.search(said) and _PICTURE.search(said):
         return {"ran": True, **_answer_match(said, session)}
+    if changes_allowed and _RIG.search(said):
+        return {"ran": True, **_answer_rig(said, session)}
     if changes_allowed:
         answered = _answer_set_key(said, session) if _SET_KEY.search(said) else None
         if answered is not None:
@@ -683,6 +724,13 @@ def summarize(entry: dict) -> str:
             lines.append(f"Stroke ({note.get('brush')}) on {note.get('object')}: "
                          f"{note.get('vertices_moved')} vertices moved, the most by "
                          f"{note.get('largest_move')} m over {note.get('dabs')} dabs.")
+        elif note.get("step") == "auto_rig":
+            unweighted = note.get("unweighted") or 0
+            lines.append(f"Rigged {note.get('object')} with {note.get('armature')}: "
+                         f"{len(note.get('bones') or [])} bones, named for Unity's Humanoid"
+                         + ("" if note.get("arms") else " (no arms -- they were not marked)")
+                         + (f". {unweighted} of {note.get('vertices')} vertices got no weight and "
+                            f"will not move with it." if unweighted else ". Every vertex is weighted."))
         elif note.get("step") == "find_landmarks":
             placed = note.get("placed") or []
             lines.append(f"Marked {len(placed)} landmarks on {note.get('object')}"
