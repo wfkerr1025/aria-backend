@@ -913,7 +913,17 @@ def export_fbx(params: Dict[str, Any]) -> str:
             f'apply_unit_scale=True, bake_space_transform=False, '
             f'add_leaf_bones=False, path_mode="COPY", embed_textures=True)\n'
             f'_RESULT["exported"].append(_path)\n'
-            f'_note("export_fbx", path=_path)')
+            # The texture maps behind the exported materials, by the label
+            # make_game_ready gives them (Color, AO, Normal): an FBX cannot
+            # carry "colour times AO", so whoever imports it rebuilds the
+            # material from these.
+            f'_maps = {{}}\n'
+            f'for _o in (bpy.context.selected_objects if _use_selection else bpy.context.scene.objects):\n'
+            f'    for _m in (getattr(_o.data, "materials", None) or []):\n'
+            f'        for _n in (_m.node_tree.nodes if _m and _m.node_tree else []):\n'
+            f'            if _n.type == "TEX_IMAGE" and _n.image and _n.image.filepath:\n'
+            f'                _maps.setdefault(_n.label or _n.name, bpy.path.abspath(_n.image.filepath))\n'
+            f'_note("export_fbx", path=_path, maps=_maps)')
 
 
 def export_glb(params: Dict[str, Any]) -> str:
@@ -1802,6 +1812,290 @@ def quad_remesh(params: Dict[str, Any]) -> str:
             f'use_preserve_sharp=False, use_preserve_boundary=False, '
             f'use_mesh_symmetry={"True" if params.get("symmetry") else "False"})\n'
             f'_note("quad_remesh", object=_target.name, faces=len(_target.data.polygons))')
+
+
+_GAME_READY_KIT = r'''
+import os as _gr_os
+import time as _gr_time
+
+
+def _gr_copy(source, name):
+    """A new object holding `source` as it looks, modifiers applied."""
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    mesh = bpy.data.meshes.new_from_object(source.evaluated_get(depsgraph))
+    mesh.name = name
+    copy = bpy.data.objects.new(name, mesh)
+    copy.matrix_world = source.matrix_world.copy()
+    for collection in source.users_collection:
+        collection.objects.link(copy)
+    return copy
+
+
+def _gr_faces(obj):
+    """Triangles: what a game draws, and what decimate's ratio counts."""
+    return sum(len(p.vertices) - 2 for p in obj.data.polygons)
+
+
+def _gr_retopo(obj, faces):
+    """QuadriFlow to `faces`; decimate when it cannot (open or tangled meshes)."""
+    before = _gr_faces(obj)
+    if before <= faces * 2.3:
+        return "kept", before
+    _active(obj)
+    try:
+        bpy.ops.object.quadriflow_remesh(target_faces=max(4, int(faces) // 2), use_preserve_sharp=False,
+                                         use_preserve_boundary=False, use_mesh_symmetry=False)
+    except Exception:
+        pass
+    after = _gr_faces(obj)
+    if after and after < before * 0.8:
+        return "quadriflow", after
+    mod = obj.modifiers.new("ARIA_Decimate", "DECIMATE")
+    mod.ratio = max(0.001, min(1.0, float(faces) / float(before)))
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+    return "decimate", _gr_faces(obj)
+
+
+def _gr_gap(high, low):
+    """The furthest the sculpt's surface lies from the light copy's, in metres."""
+    from mathutils.bvhtree import BVHTree
+
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    tree = BVHTree.FromObject(low, depsgraph)
+    to_low = low.matrix_world.inverted() @ high.matrix_world
+    verts = high.data.vertices
+    step = max(1, len(verts) // 20000)
+    gap = 0.0
+    for index in range(0, len(verts), step):
+        found = tree.find_nearest(to_low @ verts[index].co)
+        if found[0] is not None:
+            gap = max(gap, found[3])
+    return gap
+
+
+def _gr_image(name, size, data):
+    old = bpy.data.images.get(name)
+    if old is not None:
+        bpy.data.images.remove(old)
+    image = bpy.data.images.new(name, size, size, alpha=False, float_buffer=False)
+    image.colorspace_settings.name = "Non-Color" if data else "sRGB"
+    image.generated_color = (0.5, 0.5, 1.0, 1.0) if data else (1.0, 1.0, 1.0, 1.0)
+    return image
+
+
+def _gr_has_colour(obj):
+    """Whether the sculpt has colour worth baking: a texture, or a non-grey base."""
+    for mat in obj.data.materials:
+        if mat is None or not mat.node_tree:
+            continue
+        for node in mat.node_tree.nodes:
+            if node.type == "TEX_IMAGE" and node.image is not None:
+                return True
+            if node.type == "BSDF_PRINCIPLED":
+                c = node.inputs["Base Color"].default_value
+                if node.inputs["Base Color"].is_linked or max(c[0], c[1], c[2]) - min(c[0], c[1], c[2]) > 0.05:
+                    return True
+    return False
+
+
+def _gr_bake(high, low, kind, image, extrusion, samples):
+    tree = low.data.materials[0].node_tree
+    target = tree.nodes.get("ARIA_BakeTarget") or tree.nodes.new("ShaderNodeTexImage")
+    target.name = "ARIA_BakeTarget"
+    target.image = image
+    for node in tree.nodes:
+        node.select = False
+    target.select = True
+    tree.nodes.active = target
+    for other in bpy.context.selected_objects:
+        other.select_set(False)
+    high.hide_set(False)
+    high.select_set(True)
+    low.select_set(True)
+    bpy.context.view_layer.objects.active = low
+    scene = bpy.context.scene
+    scene.cycles.samples = samples
+    bake = scene.render.bake
+    bake.use_selected_to_active = True
+    bake.cage_extrusion = extrusion
+    bake.max_ray_distance = extrusion * 2.5
+    bake.margin = 8
+    if kind == "DIFFUSE":
+        bake.use_pass_direct = False
+        bake.use_pass_indirect = False
+        bake.use_pass_color = True
+        bpy.ops.object.bake(type="DIFFUSE", pass_filter={"COLOR"})
+    elif kind == "NORMAL":
+        bpy.ops.object.bake(type="NORMAL", normal_space="TANGENT")
+    else:
+        bpy.ops.object.bake(type=kind)
+    tree.nodes.remove(target)
+
+
+def _gr_material(name, maps):
+    """Principled BSDF fed by the baked maps: colour x AO, and the normal map."""
+    mat = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+    tree = mat.node_tree
+    for node in list(tree.nodes):
+        if node.type not in ("BSDF_PRINCIPLED", "OUTPUT_MATERIAL"):
+            tree.nodes.remove(node)
+    bsdf = next(n for n in tree.nodes if n.type == "BSDF_PRINCIPLED")
+    bsdf.inputs["Roughness"].default_value = 0.6
+
+    def texture(image, x, y, label):
+        node = tree.nodes.new("ShaderNodeTexImage")
+        node.image = image
+        node.label = node.name = label
+        node.location = (x, y)
+        return node
+
+    colour = texture(maps["color"], -900, 300, "Color") if "color" in maps else None
+    if "ao" in maps:
+        ao = texture(maps["ao"], -900, 0, "AO")
+        mix = tree.nodes.new("ShaderNodeMix")
+        mix.data_type = "RGBA"
+        mix.blend_type = "MULTIPLY"
+        mix.inputs["Factor"].default_value = 1.0
+        mix.location = (-500, 200)
+        if colour is not None:
+            tree.links.new(colour.outputs["Color"], mix.inputs["A"])
+        else:
+            mix.inputs["A"].default_value = (0.8, 0.8, 0.8, 1.0)
+        tree.links.new(ao.outputs["Color"], mix.inputs["B"])
+        tree.links.new(mix.outputs["Result"], bsdf.inputs["Base Color"])
+    elif colour is not None:
+        tree.links.new(colour.outputs["Color"], bsdf.inputs["Base Color"])
+    if "normal" in maps:
+        normal = texture(maps["normal"], -900, -300, "Normal")
+        bump = tree.nodes.new("ShaderNodeNormalMap")
+        bump.location = (-500, -300)
+        tree.links.new(normal.outputs["Color"], bump.inputs["Color"])
+        tree.links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    return mat
+
+
+def _gr_run(name, faces, size, lods, folder, samples):
+    start = _gr_time.time()
+    high = _obj(name)
+    if high.type != "MESH":
+        raise RuntimeError("%r is not a mesh" % name)
+    if high.find_armature() is not None or any(m.type == "ARMATURE" and m.object for m in high.modifiers):
+        raise RuntimeError("%r is already rigged -- make it game-ready before rigging, then rig "
+                           "the light version" % name)
+    stem = name[:-len("_Sculpt")] if name.endswith("_Sculpt") else name
+    high_faces = _gr_faces(high)
+    for old in [o for o in bpy.data.objects if o.name.startswith(stem + "_LOD") or o.name == stem + "_Game"]:
+        bpy.data.objects.remove(old, do_unlink=True)
+
+    low = _gr_copy(high, stem + "_LOD0")
+    method, low_faces = _gr_retopo(low, faces)
+    _active(low)
+    bpy.ops.object.shade_smooth()
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.uv.smart_project(angle_limit=1.15, island_margin=0.01)
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    low.data.materials.clear()
+    bake_mat = bpy.data.materials.new(stem + "_Bake")
+    low.data.materials.append(bake_mat)
+
+    was = bpy.context.scene.render.engine
+    bpy.context.scene.render.engine = "CYCLES"
+    # Rays leave the light mesh this far out and look back in. A fixed 2% of
+    # the size missed a rock whose bumps stood out further, and the normal
+    # map filled with black patches -- so it is measured: how far the
+    # sculpt strays from the light copy, plus a margin.
+    extrusion = _gr_gap(high, low) * 1.25 + max(high.dimensions) * 0.005
+    maps, files = {}, {}
+    _gr_os.makedirs(folder, exist_ok=True)
+    try:
+        jobs = [("normal", "NORMAL", True, 1), ("ao", "AO", True, samples)]
+        if _gr_has_colour(high):
+            jobs.insert(0, ("color", "DIFFUSE", False, 1))
+        for key, kind, data, count in jobs:
+            image = _gr_image("%s_%s" % (stem, key), size, data)
+            _gr_bake(high, low, kind, image, extrusion, count)
+            path = _gr_os.path.join(folder, "%s_%s.png" % (stem, key))
+            image.filepath_raw = path
+            image.file_format = "PNG"
+            image.save()
+            maps[key], files[key] = image, path
+    finally:
+        bpy.context.scene.render.engine = was
+
+    low.data.materials.clear()
+    low.data.materials.append(_gr_material(stem + "_Game", maps))
+    bpy.data.materials.remove(bake_mat)
+
+    root = bpy.data.objects.get(stem + "_Game") or bpy.data.objects.new(stem + "_Game", None)
+    if root.name not in bpy.context.scene.collection.all_objects:
+        bpy.context.scene.collection.objects.link(root)
+    root.matrix_world = high.matrix_world.copy()
+    lod_faces = [low_faces]
+    made = [low]
+    for level, ratio in enumerate(lods, 1):
+        lod = _gr_copy(low, "%s_LOD%d" % (stem, level))
+        lod.data.materials.clear()
+        lod.data.materials.append(low.data.materials[0])
+        mod = lod.modifiers.new("ARIA_Decimate", "DECIMATE")
+        mod.ratio = float(ratio)
+        _active(lod)
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+        bpy.ops.object.shade_smooth()
+        lod_faces.append(_gr_faces(lod))
+        made.append(lod)
+    for index, part in enumerate(made):
+        part.parent = root
+        part.matrix_parent_inverse = root.matrix_world.inverted()
+        part.hide_set(index > 0)          # LOD0 shows; the rest are Unity's, not the viewport's
+        part.hide_render = index > 0
+
+    # The sculpt stays, out of the way: hidden, never rendered or exported
+    # by a plain export, and still there to go back to.
+    if not high.name.endswith("_Sculpt"):
+        high.name = stem + "_Sculpt"
+    high.hide_set(True)
+    high.hide_render = True
+    _active(low)
+    return {"object": stem + "_Game", "sculpt": high.name, "sculpt_faces": high_faces,
+            "method": method, "faces": lod_faces, "maps": files,
+            "lods": [m.name for m in made], "reach": round(extrusion, 4), "seconds": round(_gr_time.time() - start, 1)}
+'''
+
+
+def make_game_ready(params: Dict[str, Any]) -> str:
+    """A dense sculpt made into something a game can draw -- in one step.
+
+    A light copy (QuadriFlow to `faces` TRIANGLES -- half as many quads --
+    decimate when QuadriFlow cannot cope), unwrapped, with the sculpt's detail baked into it as a normal
+    map and ambient occlusion -- and its colour, when it has any -- as
+    PNGs in `folder`. A material that uses them. LODs beside it:
+    <Name>_LOD0 is the light copy, _LOD1.. are it decimated by `lods`
+    ratios, all under an empty <Name>_Game -- names Unity turns into an
+    LOD Group on its own.
+
+    The sculpt is renamed <Name>_Sculpt and hidden, never deleted. A
+    second run replaces the game version, from the sculpt.
+
+    Before rigging, not after: the light copy is what gets the skeleton.
+    """
+    lods = params.get("lods")
+    if lods is None:
+        lods = [0.5, 0.25]
+    try:
+        ratios = [max(0.01, min(1.0, float(r))) for r in lods]
+    except (TypeError, ValueError):
+        raise BadValue(f"lods must be ratios like [0.5, 0.25], not {lods!r}")
+    return (_GAME_READY_KIT +
+            f'_gr = _gr_run({_text(params.get("object"))}, '
+            f'{_int(params.get("faces"), 8000, 50, 500000)}, '
+            f'{_int(params.get("size"), 2048, 64, 8192)}, {ratios!r}, '
+            f'_gr_os.path.abspath({_text(params.get("folder") or "")} or bpy.path.abspath("//textures") '
+            f'or _gr_os.path.join(_gr_os.getcwd(), "textures")), '
+            f'{_int(params.get("samples"), 32, 1, 1024)})\n'
+            f'_RESULT["created"].extend(_gr["lods"] + [_gr["object"]])\n'
+            f'_note("make_game_ready", **_gr)')
 
 
 def voxel_remesh(params: Dict[str, Any]) -> str:
@@ -4982,6 +5276,49 @@ def _aria_find_body(world, nr):
     "BODY_SIZES", repr(BODY_LANDMARK_SIZES))
 
 
+def copy_landmarks(params: Dict[str, Any]) -> str:
+    """Put one model's landmarks on another that has the same shape.
+
+    For a game-ready copy: its few thousand vertices are too coarse for
+    find_landmarks to read a body's slices (measured: crotch 0.60 m
+    instead of 0.85, chest below waist, no arms), while the sculpt it
+    was made from marks cleanly. Each mark lands on the target's nearest
+    vertex to where it sits on the source, axis and size carried over.
+    """
+    return (_RENDER_KIT + _SCULPT_KIT +
+            f'from mathutils.bvhtree import BVHTree as _BVH\n'
+            f'_src = _obj({_text(params.get("source"))})\n'
+            f'_dst = _obj({_text(params.get("target"))})\n'
+            f'_marks = _aria_landmarks_read(_src)\n'
+            f'if not _marks:\n'
+            f'    raise RuntimeError("%r has no landmarks to copy -- find_landmarks it first" % _src.name)\n'
+            f'_deps = bpy.context.evaluated_depsgraph_get()\n'
+            f'_tree = _BVH.FromObject(_dst, _deps)\n'
+            f'_inv = _dst.matrix_world.inverted()\n'
+            f'_scale = max(sum(abs(s) for s in _dst.matrix_world.to_scale()) / 3.0, 1e-9)\n'
+            f'_verts = _dst.data.vertices\n'
+            f'_out = _aria_landmarks_read(_dst)\n'
+            f'for _name in sorted(_marks):\n'
+            f'    _found = _aria_landmark(_src, _name)\n'
+            f'    _radius = _found["radius"]\n'
+            f'    _local = _inv @ _found["point"]\n'
+            f'    _hit = _tree.find_nearest(_local)\n'
+            f'    if _hit[0] is None:\n'
+            f'        continue\n'
+            f'    _face = _dst.data.polygons[_hit[2]]\n'
+            f'    _vi = min(_face.vertices, key=lambda i: (_verts[i].co - _local).length)\n'
+            f'    _mark = {{"at": list(_verts[_vi].co), "normal": list(_verts[_vi].normal), '
+            f'"radius": float(_radius / _scale), "source": "copy_landmarks", "vertex": int(_vi), '
+            f'"count": len(_verts)}}\n'
+            f'    if "axis" in _marks[_name]:\n'
+            f'        _axis = _inv.to_3x3() @ (_src.matrix_world.to_3x3() @ mathutils.Vector(_marks[_name]["axis"]))\n'
+            f'        _mark["axis"] = list(_axis.normalized())\n'
+            f'    _out[_name] = _mark\n'
+            f'_aria_landmarks_write(_dst, _out)\n'
+            f'_RESULT["modified"].append(_dst.name)\n'
+            f'_note("copy_landmarks", source=_src.name, target=_dst.name, copied=len(_marks))')
+
+
 def find_landmarks(params: Dict[str, Any]) -> str:
     """Mark a model's features by its shape, so strokes can aim at them by name.
 
@@ -5409,7 +5746,10 @@ def auto_rig(params: Dict[str, Any]) -> str:
             f'    raise RuntimeError("%r is a %s -- only a mesh can be rigged" % (_target.name, _target.type))\n'
             f'if _target.data.shape_keys:\n'
             f'    pass  # shape keys ride along with automatic weights; nothing to undo\n'
-            f'_rig_name = {_text(params.get("name"))} or (_target.name + "_Rig")\n'
+            # Named after the model, not its LOD: Unity's importer treats any
+            # node called *_LOD0* as a level of detail, and a skeleton called
+            # Body_LOD0_Rig broke the Humanoid ("Transform not found").
+            f'_rig_name = {_text(params.get("name"))} or (_target.name.rsplit("_LOD", 1)[0] + "_Rig")\n'
             f'_old = bpy.data.objects.get(_rig_name)\n'
             f'if _old is not None:\n'
             f'    bpy.data.objects.remove(_old, do_unlink=True)\n'
@@ -6056,6 +6396,8 @@ TEMPLATES = {
     "bake_texture": bake_texture,
     "set_shader_node": set_shader_node,
     "quad_remesh": quad_remesh,
+    "make_game_ready": make_game_ready,
+    "copy_landmarks": copy_landmarks,
     "voxel_remesh": voxel_remesh,
     "stamp_detail": stamp_detail,
     "edge_wear": edge_wear,

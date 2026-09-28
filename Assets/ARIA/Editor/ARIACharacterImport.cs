@@ -46,6 +46,16 @@ namespace ARIA.Characters
         // Other clips to picture on this character (Mixamo and the like), as
         // asset paths -- how retargeting is checked by eye.
         public string[] preview_clips = new string[0];
+        // false: a prop -- no skeleton, no avatar, no controller.
+        public bool rigged = true;
+        public TextureSlot[] textures = new TextureSlot[0];
+    }
+
+    [Serializable]
+    public class TextureSlot
+    {
+        public string role;    // color | normal | occlusion
+        public string path;    // Assets/...
     }
 
     [Serializable]
@@ -57,6 +67,7 @@ namespace ARIA.Characters
         public string picture;
         // Where the left foot is (forward, m) in each pictured frame: proof the frames differ.
         public float[] leftFootZ = new float[0];
+        public float[] meshFootZ = new float[0];   // the same for the skinned mesh as drawn
     }
 
     [Serializable]
@@ -74,9 +85,14 @@ namespace ARIA.Characters
         public string[] missingBones = new string[0];
         public List<ClipReport> clips = new List<ClipReport>();
         public List<string> materials = new List<string>();    // "name: shader"
+        public List<string> renderers = new List<string>();    // "name: Skinned (n bones)" or "name: Mesh"
         public List<string> warnings = new List<string>();
         public string error;
         public string builtAt;
+        public bool rigged = true;
+        public string material;
+        public string[] lods = new string[0];
+        public string picture;     // a prop's four views
     }
 
     public class ARIACharacterImporter : AssetPostprocessor
@@ -122,9 +138,16 @@ namespace ARIA.Characters
 
         void OnPreprocessModel()
         {
-            if (ReadSidecar(assetPath) == null)
+            var sidecar = ReadSidecar(assetPath);
+            if (sidecar == null)
                 return;
             var importer = (ModelImporter)assetImporter;
+            if (!sidecar.rigged)
+            {
+                importer.animationType = ModelImporterAnimationType.None;
+                importer.importAnimation = false;
+                return;
+            }
             importer.animationType = ModelImporterAnimationType.Human;
             importer.avatarSetup = ModelImporterAvatarSetup.CreateFromThisModel;
             importer.importAnimation = true;
@@ -134,7 +157,7 @@ namespace ARIA.Characters
         void OnPreprocessAnimation()
         {
             var sidecar = ReadSidecar(assetPath);
-            if (sidecar == null)
+            if (sidecar == null || !sidecar.rigged)
                 return;
             var importer = (ModelImporter)assetImporter;
             var loops = new HashSet<string>((sidecar.loop ?? new string[0]).Select(l => l.ToLowerInvariant()));
@@ -192,6 +215,15 @@ namespace ARIA.Characters
                 string model = sidecar.Replace('\\', '/');
                 model = model.Substring(0, model.Length - SidecarSuffix.Length) + ".fbx";
                 if (!File.Exists(model))
+                    continue;
+                // Only what changed since it was last built: a project with ten
+                // characters should not rebuild and re-picture all ten for one.
+                string name = Path.GetFileNameWithoutExtension(model);
+                var sidecarData = ReadSidecar(model);
+                if (sidecarData != null) name = sidecarData.name;
+                string report = Path.Combine(ReportFolder(), name + ".json");
+                if (File.Exists(report) && File.GetLastWriteTimeUtc(report) > File.GetLastWriteTimeUtc(model)
+                    && File.GetLastWriteTimeUtc(report) > File.GetLastWriteTimeUtc(sidecar))
                     continue;
                 // The sidecar may have arrived after the model was imported
                 // without it: import again, now that it is there.
@@ -252,25 +284,32 @@ namespace ARIA.Characters
             var model = AssetDatabase.LoadAssetAtPath<GameObject>(modelPath);
             if (importer == null || model == null)
                 throw new InvalidOperationException(modelPath + " has not imported as a model");
+            report.rigged = sidecar.rigged;
             report.humanoid = importer.animationType == ModelImporterAnimationType.Human;
+            string folder = Path.GetDirectoryName(modelPath).Replace('\\', '/');
 
             var assets = AssetDatabase.LoadAllAssetsAtPath(modelPath);
-            var avatar = assets.OfType<Avatar>().FirstOrDefault();
-            report.avatarValid = avatar != null && avatar.isValid;
-            report.avatarHuman = avatar != null && avatar.isHuman;
-            // HumanTrait names ("LeftUpperArm", or "Left Upper Arm" in places): compared without spaces.
-            var description = avatar != null ? avatar.humanDescription : importer.humanDescription;
-            var mapped = new HashSet<string>((description.human ?? new HumanBone[0]).Select(h => h.humanName.Replace(" ", "")));
-            report.humanBones = mapped.Count;
-            report.missingBones = RequiredBones.Where(b => !mapped.Contains(b)).ToArray();
-            if (!report.avatarHuman)
-                report.warnings.Add("the avatar is not a valid Humanoid -- clips from other characters will not play on it");
-
-            var clips = assets.OfType<AnimationClip>().Where(c => !c.name.StartsWith("__preview__")).ToList();
-            string folder = Path.GetDirectoryName(modelPath).Replace('\\', '/');
-            string controllerPath = folder + "/" + sidecar.name + ".controller";
-            var controller = BuildController(controllerPath, clips, sidecar, report);
-            report.controller = controllerPath;
+            Avatar avatar = null;
+            AnimatorController controller = null;
+            var clips = new List<AnimationClip>();
+            if (sidecar.rigged)
+            {
+                avatar = assets.OfType<Avatar>().FirstOrDefault();
+                report.avatarValid = avatar != null && avatar.isValid;
+                report.avatarHuman = avatar != null && avatar.isHuman;
+                // HumanTrait names ("LeftUpperArm", or "Left Upper Arm" in places): compared without spaces.
+                var description = avatar != null ? avatar.humanDescription : importer.humanDescription;
+                var mapped = new HashSet<string>((description.human ?? new HumanBone[0]).Select(h => h.humanName.Replace(" ", "")));
+                report.humanBones = mapped.Count;
+                report.missingBones = RequiredBones.Where(b => !mapped.Contains(b)).ToArray();
+                if (!report.avatarHuman)
+                    report.warnings.Add("the avatar is not a valid Humanoid -- clips from other characters will not play on it");
+                clips = assets.OfType<AnimationClip>().Where(c => !c.name.StartsWith("__preview__")).ToList();
+                string controllerPath = folder + "/" + sidecar.name + ".controller";
+                controller = BuildController(controllerPath, clips, sidecar, report);
+                report.controller = controllerPath;
+            }
+            var material = BuildMaterial(folder, sidecar, report);
 
             string prefabPath = folder + "/" + sidecar.name + ".prefab";
             Scene stage = EditorSceneManager.NewPreviewScene();
@@ -278,19 +317,38 @@ namespace ARIA.Characters
             {
                 var instance = (GameObject)PrefabUtility.InstantiatePrefab(model, stage);
                 instance.name = sidecar.name;
-                var animator = instance.GetComponent<Animator>() ?? instance.AddComponent<Animator>();
-                animator.runtimeAnimatorController = controller;
-                animator.avatar = avatar;
-                animator.applyRootMotion = false;
+                Animator animator = null;
+                if (sidecar.rigged)
+                {
+                    animator = instance.GetComponent<Animator>() ?? instance.AddComponent<Animator>();
+                    animator.runtimeAnimatorController = controller;
+                    animator.avatar = avatar;
+                    animator.applyRootMotion = false;
+                }
+                if (material != null)
+                    foreach (var r in instance.GetComponentsInChildren<Renderer>(true))
+                        r.sharedMaterials = Enumerable.Repeat(material, Math.Max(1, r.sharedMaterials.Length)).ToArray();
+                var group = instance.GetComponentInChildren<LODGroup>();
+                if (group != null)
+                    report.lods = group.GetLODs().Select((l, i) => "LOD" + i + " " + string.Join("+",
+                        l.renderers.Where(r => r != null).Select(r => r.name)) + " down to " +
+                        Mathf.RoundToInt(l.screenRelativeTransitionHeight * 100) + "% of the screen").ToArray();
                 PrefabUtility.SaveAsPrefabAsset(instance, prefabPath);
                 report.prefab = prefabPath;
-                foreach (var material in instance.GetComponentsInChildren<Renderer>()
+                foreach (var r in instance.GetComponentsInChildren<Renderer>(true))
+                {
+                    var skinned = r as SkinnedMeshRenderer;
+                    report.renderers.Add(r.name + ": " + (skinned != null
+                        ? "Skinned (" + skinned.bones.Count(b => b != null) + " bones, root " + (skinned.rootBone ? skinned.rootBone.name : "none") + ")"
+                        : "Mesh"));
+                }
+                foreach (var used in instance.GetComponentsInChildren<Renderer>()
                              .SelectMany(r => r.sharedMaterials).Where(m => m != null).Distinct())
                 {
-                    string shader = material.shader != null ? material.shader.name : "none";
-                    report.materials.Add(material.name + ": " + shader);
-                    if (shader.StartsWith("Hidden/InternalErrorShader") || !material.shader.isSupported)
-                        report.warnings.Add(material.name + " has a shader this project cannot draw (" + shader
+                    string shader = used.shader != null ? used.shader.name : "none";
+                    report.materials.Add(used.name + ": " + shader);
+                    if (shader.StartsWith("Hidden/InternalErrorShader") || !used.shader.isSupported)
+                        report.warnings.Add(used.name + " has a shader this project cannot draw (" + shader
                                             + ") -- it shows magenta");
                 }
 
@@ -299,7 +357,11 @@ namespace ARIA.Characters
                     var settings = AnimationUtility.GetAnimationClipSettings(clip);
                     report.clips.Add(new ClipReport { name = clip.name, loop = settings.loopTime, length = clip.length });
                 }
-                if (render)
+                if (render && !sidecar.rigged)
+                {
+                    report.picture = Picture(stage, instance, null, null, sidecar.name, null);
+                }
+                else if (render)
                 {
                     var pictured = new List<AnimationClip>(clips);
                     foreach (string extra in sidecar.preview_clips ?? new string[0])
@@ -322,6 +384,72 @@ namespace ARIA.Characters
                 EditorSceneManager.ClosePreviewScene(stage);
             }
             AssetDatabase.SaveAssets();
+        }
+
+        // A material from the baked maps -- URP Lit when the project draws with
+        // URP, Standard otherwise. Kept at the same path, so its GUID survives.
+        static Material BuildMaterial(string folder, CharacterSidecar sidecar, CharacterReport report)
+        {
+            var maps = new Dictionary<string, Texture2D>();
+            foreach (var slot in sidecar.textures ?? new TextureSlot[0])
+                if (slot != null && !string.IsNullOrEmpty(slot.path) && !string.IsNullOrEmpty(slot.role))
+                    maps[slot.role] = AssetDatabase.LoadAssetAtPath<Texture2D>(slot.path);
+            if (maps.Count == 0)
+                return null;
+            bool urp = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline != null;
+            var shader = Shader.Find(urp ? "Universal Render Pipeline/Lit" : "Standard");
+            string path = folder + "/" + sidecar.name + ".mat";
+            var material = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (material == null)
+            {
+                material = new Material(shader);
+                AssetDatabase.CreateAsset(material, path);
+            }
+            material.shader = shader;
+            Texture2D map;
+            if (maps.TryGetValue("color", out map) && map != null)
+                material.SetTexture(urp ? "_BaseMap" : "_MainTex", map);
+            if (maps.TryGetValue("normal", out map) && map != null)
+            {
+                material.SetTexture("_BumpMap", map);
+                material.EnableKeyword("_NORMALMAP");
+            }
+            if (maps.TryGetValue("occlusion", out map) && map != null)
+            {
+                material.SetTexture("_OcclusionMap", map);
+                material.EnableKeyword("_OCCLUSIONMAP");
+            }
+            material.SetFloat(urp ? "_Smoothness" : "_Glossiness", 0.35f);
+            foreach (var missing in maps.Where(m => m.Value == null))
+                report.warnings.Add("the " + missing.Key + " map did not import");
+            EditorUtility.SetDirty(material);
+            report.material = path;
+            return material;
+        }
+
+        // The maps the sidecars beside this texture say it is: a normal map
+        // must import as one, and AO holds data, not colour.
+        void OnPreprocessTexture()
+        {
+            string folder = Path.GetDirectoryName(assetPath);
+            if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
+                return;
+            foreach (string file in Directory.GetFiles(folder, "*" + SidecarSuffix))
+            {
+                CharacterSidecar sidecar;
+                try { sidecar = JsonUtility.FromJson<CharacterSidecar>(File.ReadAllText(file)); }
+                catch (Exception) { continue; }
+                var slot = (sidecar.textures ?? new TextureSlot[0]).FirstOrDefault(t => t != null && string.Equals(
+                    t.path, assetPath.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase));
+                if (slot == null)
+                    continue;
+                var importer = (TextureImporter)assetImporter;
+                if (slot.role == "normal")
+                    importer.textureType = TextureImporterType.NormalMap;
+                else if (slot.role == "occlusion")
+                    importer.sRGBTexture = false;
+                return;
+            }
         }
 
         static AnimatorController BuildController(string path, List<AnimationClip> clips, CharacterSidecar sidecar,
@@ -381,7 +509,7 @@ namespace ARIA.Characters
             var bounds = new Bounds(instance.transform.position, Vector3.zero);
             foreach (var r in instance.GetComponentsInChildren<Renderer>())
                 bounds.Encapsulate(r.bounds);
-            float height = Mathf.Max(bounds.size.y, 0.5f);
+            float height = Mathf.Max(Mathf.Max(bounds.size.x, bounds.size.y), Mathf.Max(bounds.size.z, 0.05f));
 
             var cameraObject = new GameObject("ARIA Preview Camera");
             SceneManager.MoveGameObjectToScene(cameraObject, stage);
@@ -404,24 +532,65 @@ namespace ARIA.Characters
 
             // The editor's own sampler. A PlayableGraph set to a time and
             // evaluated drew the same stride in every frame (measured).
+            // The full-detail mesh in every picture, whatever size it comes out.
+            // (ForceLOD was not enough: a lighter LOD, not re-skinned per sampled
+            // frame, drew one pose four times -- measured, while LOD0's baked
+            // mesh walked.) The prefab is saved already; this is the preview copy.
+            foreach (var group in instance.GetComponentsInChildren<LODGroup>())
+            {
+                var levels = group.GetLODs();
+                for (int level = 1; level < levels.Length; level++)
+                    foreach (var r in levels[level].renderers)
+                        if (r != null) r.enabled = false;
+                group.enabled = false;
+            }
+            // Skinning is otherwise refreshed on the editor's schedule, not per
+            // render: a game-ready character drew one pose in all four frames
+            // while its baked mesh walked (measured).
+            foreach (var skin in instance.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                skin.forceMatrixRecalculationPerRender = true;
             var feet = new List<float>();
-            bool wasAnimating = AnimationMode.InAnimationMode();
+            var meshFeet = new List<float>();
+            bool wasAnimating = AnimationMode.InAnimationMode() || clip == null;
             if (!wasAnimating)
                 AnimationMode.StartAnimationMode();
             try
             {
                 for (int i = 0; i < 4; i++)
                 {
-                    AnimationMode.BeginSampling();
-                    AnimationMode.SampleAnimationClip(instance, clip, clip.length * i / 4f);
-                    AnimationMode.EndSampling();
-                    var foot = animator.isHuman ? animator.GetBoneTransform(HumanBodyBones.LeftFoot) : null;
-                    if (foot != null)
-                        feet.Add(Mathf.Round(foot.position.z * 100f) / 100f);
-                    // From the character's side for the first frames and its front
-                    // for the last: a walk reads from the side, a wave from the front.
+                    Vector3 from;
+                    var t = instance.transform;
+                    if (clip != null)
+                    {
+                        AnimationMode.BeginSampling();
+                        AnimationMode.SampleAnimationClip(instance, clip, clip.length * i / 4f);
+                        AnimationMode.EndSampling();
+                        var foot = animator != null && animator.isHuman ? animator.GetBoneTransform(HumanBodyBones.LeftFoot) : null;
+                        if (foot != null)
+                            feet.Add(Mathf.Round(foot.position.z * 100f) / 100f);
+                        // The drawn mesh, not the bone: the lowest left-side vertex of the
+                        // first skinned mesh, after skinning.
+                        var skin = instance.GetComponentInChildren<SkinnedMeshRenderer>();
+                        if (skin != null && entry != null)
+                        {
+                            var baked = new Mesh();
+                            skin.BakeMesh(baked, true);
+                            var low = baked.vertices.Select(v => skin.transform.TransformPoint(v))
+                                .Where(v => v.x > instance.transform.position.x).OrderBy(v => v.y).FirstOrDefault();
+                            meshFeet.Add(Mathf.Round(low.z * 100f) / 100f);
+                            UnityEngine.Object.DestroyImmediate(baked);
+                        }
+                        // From the character's side for the first frames and its front
+                        // for the last: a walk reads from the side, a wave from the front.
+                        from = i < 3 ? (t.right + t.forward * 0.6f).normalized : t.forward;
+                    }
+                    else
+                    {
+                        // A prop: front, side, back, three-quarter from above.
+                        from = i == 0 ? t.forward : i == 1 ? t.right : i == 2 ? -t.forward
+                             : (t.forward + t.right + t.up * 0.8f).normalized;
+                    }
                     var centre = bounds.center;
-                    Vector3 from = i < 3 ? (instance.transform.right + instance.transform.forward * 0.6f).normalized : instance.transform.forward;
                     cameraObject.transform.position = centre + from * (height * 3f);
                     cameraObject.transform.LookAt(centre);
                     camera.Render();
@@ -438,13 +607,17 @@ namespace ARIA.Characters
                 UnityEngine.Object.DestroyImmediate(target);
             }
             sheet.Apply();
-            string path = Path.Combine(ReportFolder(), name + "_" + clip.name.Replace('|', '_').Replace(' ', '_') + ".png");
+            string path = Path.Combine(ReportFolder(), name + "_" + (clip != null ? clip.name.Replace('|', '_').Replace(' ', '_') : "views") + ".png");
             Directory.CreateDirectory(ReportFolder());
             File.WriteAllBytes(path, sheet.EncodeToPNG());
             UnityEngine.Object.DestroyImmediate(sheet);
             UnityEngine.Object.DestroyImmediate(cameraObject);
             UnityEngine.Object.DestroyImmediate(lightObject);
-            entry.leftFootZ = feet.ToArray();
+            if (entry != null)
+            {
+                entry.leftFootZ = feet.ToArray();
+                entry.meshFootZ = meshFeet.ToArray();
+            }
             return path;
         }
     }

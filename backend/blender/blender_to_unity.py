@@ -49,6 +49,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 IMPORTER = REPO_ROOT / "Assets" / "ARIA" / "Editor" / "ARIACharacterImport.cs"
 IMPORTER_IN_PROJECT = Path("Assets", "ARIA", "Editor", "ARIACharacterImport.cs")
 CHARACTERS = "Assets/ARIA/Characters"
+PROPS = "Assets/ARIA/Props"
 IMPORT_METHOD = "ARIA.Characters.ARIACharacterImporter.ImportPending"
 LOOPING = ("Walk", "Idle")
 BATCH_TIMEOUT = 900       # a project's first import can take minutes
@@ -149,8 +150,32 @@ def pick_rig(scene: dict, wanted: Optional[str] = None) -> tuple:
     children = [m["name"] for m in meshes if m.get("parent") == rig["name"]]
     if not children:
         return None, f"{rig['name']} moves no mesh -- nothing would arrive in Unity but bones"
-    base = children[0] if len(children) == 1 else rig["name"]
-    return rig["name"], re.sub(r"_Rig$", "", base)
+    lods = sorted(c for c in children if re.search(r"_LOD\d+$", c))
+    base = (lods[0] if lods else children[0]) if len(children) == 1 or lods else rig["name"]
+    return rig["name"], re.sub(r"_Rig$|_LOD\d+$", "", base)
+
+
+def pick_prop(scene: dict, wanted: Optional[str] = None) -> tuple:
+    """A game-ready model with no skeleton: its <Name>_Game group -- or (None, reason)."""
+    objects = (scene or {}).get("objects") or []
+    games = [o for o in objects if o["name"].endswith("_Game")
+             and any(m.get("parent") == o["name"] for m in objects)]
+    if wanted:
+        stem = re.sub(r"_Game$|_LOD\d+$|_Sculpt$", "", wanted)
+        games = [o for o in games if o["name"].lower() == f"{stem}_game".lower()] or games
+    if not games:
+        return None, ("nothing in the scene is game-ready or rigged -- say \"make it game ready\" "
+                      "or \"rig him\" first")
+    if len(games) > 1 and not wanted:
+        return None, ("more than one game-ready model (" + ", ".join(g["name"] for g in games)
+                      + ") -- say which")
+    return games[0]["name"], games[0]["name"][:-len("_Game")]
+
+
+def has_something_to_send(scene: dict) -> bool:
+    """A skeleton, or a game-ready model -- what "send it to Unity" means here."""
+    objects = (scene or {}).get("objects") or []
+    return any(o.get("type") == "ARMATURE" for o in objects) or pick_prop(scene)[0] is not None
 
 
 # ======================================================
@@ -235,31 +260,48 @@ def send(session, *, project: Optional[Path] = None, rig: Optional[str] = None,
     scene = session.describe()
     if not scene.get("success"):
         return {"success": False, "text": scene.get("text", "Could not read the Blender scene.")}
-    armature, named = pick_rig(scene.get("scene") or {}, rig)
-    if armature is None:
+    found = scene.get("scene") or {}
+    rigged = any(o.get("type") == "ARMATURE" for o in found.get("objects") or [])
+    root, named = pick_rig(found, rig) if rigged else pick_prop(found, rig)
+    if root is None:
         return {"success": False, "text": f"I did not send anything: {named}."}
     name = _clean_name(name or named)
 
-    folder = Path(project) / CHARACTERS / name
+    folder = Path(project) / (CHARACTERS if rigged else PROPS) / name
     folder.mkdir(parents=True, exist_ok=True)
     fbx = folder / f"{name}.fbx"
     since = time.time()
     # The sidecar first: an editor that imports the FBX the moment it lands
     # must already find it, or the model imports as Generic.
-    (folder / f"{name}.aria.json").write_text(json.dumps({
-        "name": name, "loop": list(loop), "idle": "Idle", "walk": "Walk",
-        "preview_clips": list(preview_clips)}, indent=2), encoding="utf-8")
+    sidecar = {"name": name, "rigged": rigged, "loop": list(loop), "idle": "Idle", "walk": "Walk",
+               "preview_clips": list(preview_clips)}
+    sidecar_path = folder / f"{name}.aria.json"
+    sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
     exported = session.run([{"action": "export_fbx", "params": {
-        "objects": [armature], "path": str(fbx)}}], preview=None)
+        "objects": [root], "path": str(fbx)}}], preview=None)
     if not exported.get("success"):
         return {"success": False, "text": "The export failed, so nothing reached Unity: "
                                           + str(exported.get("error"))}
+    # Baked maps travel beside the model; Unity's side builds the material
+    # from them (an FBX cannot say "colour times AO").
+    maps = next((n.get("maps") or {} for n in exported.get("notes") or []
+                 if n.get("step") == "export_fbx"), {})
+    textures = {}
+    for label, source in maps.items():
+        role = {"color": "color", "ao": "occlusion", "normal": "normal"}.get(label.lower())
+        if role and Path(source).is_file():
+            target = folder / f"{name}_{label.lower()}{Path(source).suffix}"
+            shutil.copy2(source, target)
+            textures[role] = f"{CHARACTERS if rigged else PROPS}/{name}/{target.name}"
+    if textures:
+        sidecar["textures"] = [{"role": r, "path": p} for r, p in textures.items()]
+        sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
     changed = install_importer(project)
 
     opened = project_is_open(project)
     outcome = (_open_import(project, name, since, wait) if opened
                else _batch_import(project, name, since))
-    relative = f"{CHARACTERS}/{name}"
+    relative = f"{CHARACTERS if rigged else PROPS}/{name}"
     result: Dict[str, Any] = {"success": True, "project": str(project), "name": name,
                               "fbx": str(fbx), "folder": relative, "imported": outcome["done"],
                               "installed_importer": changed}
@@ -269,7 +311,8 @@ def send(session, *, project: Optional[Path] = None, rig: Optional[str] = None,
         return result
     report = outcome["report"]
     result["report"] = report
-    result["pictures"] = [c["picture"] for c in report.get("clips") or [] if c.get("picture")]
+    result["pictures"] = ([report["picture"]] if report.get("picture") else []) + [
+        c["picture"] for c in report.get("clips") or [] if c.get("picture")]
     result["success"] = not report.get("error")
     result["text"] = describe(report, project)
     return result
@@ -281,15 +324,22 @@ def describe(report: dict, project: Path) -> str:
         return f"Unity imported {report.get('name')} but could not set it up: {report['error']}"
     clips = report.get("clips") or []
     own = [c for c in clips if c.get("name") in {"Walk", "Idle", "Wave", "Nod", "Jump"} or c.get("loop")]
-    lines = [f"{report['name']} is in {Path(project).name}: prefab {report.get('prefab')}, "
-             f"controller {report.get('controller')}."]
-    if report.get("avatarHuman"):
+    rigged = report.get("rigged", True)
+    lines = [f"{report['name']} is in {Path(project).name}: prefab {report.get('prefab')}"
+             + (f", controller {report.get('controller')}." if rigged else ".")]
+    if not rigged:
+        pass
+    elif report.get("avatarHuman"):
         lines.append(f"Unity made it a Humanoid ({report.get('humanBones')} bones mapped), so "
                      f"clips from other Humanoids -- Mixamo's included -- play on it.")
     else:
         missing = ", ".join(report.get("missingBones") or [])
         lines.append("It is NOT a valid Humanoid" + (f" (missing {missing})" if missing else "")
                      + ", so only its own clips will play on it.")
+    if report.get("lods"):
+        lines.append(f"LOD Group: {len(report['lods'])} levels (" + ", ".join(report["lods"]) + ").")
+    if report.get("material"):
+        lines.append(f"Material {report['material']} built from the baked maps.")
     if clips:
         lines.append("Clips: " + ", ".join(f"{c['name']} ({c['length']:.1f} s"
                                            + (", loops" if c.get("loop") else "") + ")"
@@ -305,7 +355,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     from backend.blender import blender_session
 
     parser = argparse.ArgumentParser(prog="python -m backend.blender.blender_to_unity",
-                                     description="Send a rigged character from Blender into Unity.")
+                                     description="Send a rigged character or a game-ready model from Blender into Unity.")
     parser.add_argument("--session", "-s", default=blender_session.DEFAULT_SESSION)
     parser.add_argument("--live", action="store_true", help="from the open Blender (ARIA Live)")
     parser.add_argument("--project", help="Unity project folder (default: the Unity plugin's)")

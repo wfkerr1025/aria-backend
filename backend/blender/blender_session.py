@@ -67,7 +67,8 @@ READ_ONLY_ACTIONS = frozenset(RENDER_ACTIONS) | {"describe_scene", "measure_mesh
 # a brush actually did -- a stroke that moved nothing is a stroke that
 # missed, and the picture alone does not always show it.
 REPORTING_STEPS = ("measure_mesh", "measure_rig", "describe_scene", "sculpt_stroke",
-                   "fit_to_reference", "mirror_shape_key", "transfer_weights", "find_landmarks", "auto_rig", "add_clip")
+                   "fit_to_reference", "mirror_shape_key", "transfer_weights", "find_landmarks", "auto_rig", "add_clip",
+                   "make_game_ready", "export_fbx")
 
 Work = Union[str, Sequence[Dict[str, Any]]]
 
@@ -270,6 +271,9 @@ class Session:
         """Pictures asked for without somewhere to put them go to renders/."""
         self.renders.mkdir(parents=True, exist_ok=True)
         for index, entry in enumerate(actions, 1):
+            # Baked maps live with the scene that uses them.
+            if entry["action"] == "make_game_ready" and not entry["params"].get("folder"):
+                entry["params"]["folder"] = str(self.folder / "textures")
             if entry["action"] in RENDER_ACTIONS and not (entry["params"].get("path") or "").strip():
                 entry["params"]["path"] = str(
                     self.renders / f"step_{step:04d}_{index:02d}_{entry['action']}.png")
@@ -602,9 +606,21 @@ def _pick_model(said: str, session: "Session", verb: str, example: str):
         return None, None, {"success": False,
                             "text": f"There is nothing in the Blender scene to {verb} yet."}
     named = [m for m in entries if re.search(r"\b" + re.escape(m) + r"\b", said, re.I)]
-    if len(named) == 1 or len(entries) == 1:
-        name = (named or list(entries))[0]
-        return name, entries[name], None
+    # A game-ready model is one thing to a person: LOD0 stands for its
+    # lighter LODs and for the sculpt kept behind it.
+    def family(name: str) -> str:
+        return re.sub(r"_LOD\d+$|_Sculpt$", "", name)
+    lod0 = {family(m) for m in entries if m.endswith("_LOD0")}
+    candidates = [m for m in entries if not (family(m) in lod0 and not m.endswith("_LOD0"))]
+    if len(named) == 1 or len(candidates) == 1:
+        name = (named or candidates)[0]
+        entry = dict(entries[name])
+        entry["lod_siblings"] = sorted(m for m in entries if m != name and re.search(r"_LOD\d+$", m)
+                                       and family(m) == family(name))
+        sculpt = family(name) + "_Sculpt"
+        entry["sculpt"] = sculpt if sculpt in entries and sculpt != name else None
+        return name, entry, None
+    entries = {m: entries[m] for m in candidates}
     first = sorted(entries)[0]
     return None, None, {"success": False, "text": (
         f"Which one should I {verb}? The scene has " + ", ".join(sorted(entries))
@@ -716,6 +732,24 @@ _RIG = re.compile(r"\b(?:rig(?:s|ged|ging)?|(?:add|give|make)\b.{0,20}\b(?:skele
                   re.I)
 
 
+def _body_marks(target: str, entry: dict) -> List[dict]:
+    """Body landmarks for rigging: found on the kept sculpt when there is one.
+
+    A game-ready copy is too coarse to read (see copy_landmarks), and the
+    sculpt it came from is right there, the same shape.
+    """
+    if entry.get("sculpt"):
+        return [{"action": "find_landmarks", "params": {"object": entry["sculpt"], "kind": "body"}},
+                {"action": "copy_landmarks", "params": {"source": entry["sculpt"], "target": target}}]
+    return [{"action": "find_landmarks", "params": {"object": target, "kind": "body"}}]
+
+
+def _lod_weights(target: str, entry: dict) -> List[dict]:
+    """The lighter LODs follow the skeleton LOD0 was given: its weights, copied."""
+    return [{"action": "transfer_weights", "params": {"source": target, "target": lod}}
+            for lod in entry.get("lod_siblings") or []]
+
+
 def _answer_rig(said: str, session: "Session") -> dict:
     """"Rig him in Blender" -- body landmarks if needed, then a Unity Humanoid skeleton."""
     target, entry, problem = _pick_model(said, session, "rig", "rig the {}")
@@ -724,8 +758,9 @@ def _answer_rig(said: str, session: "Session") -> dict:
     actions: List[dict] = []
     have = set(entry.get("landmarks") or [])
     if not {"hip_l", "knee_l", "neck", "crown"} <= have:
-        actions.append({"action": "find_landmarks", "params": {"object": target, "kind": "body"}})
+        actions += _body_marks(target, entry)
     actions.append({"action": "auto_rig", "params": {"object": target}})
+    actions += _lod_weights(target, entry)
     outcome = session.run(actions, preview="clay", views=["front", "right", "three_quarter"])
     if outcome.get("success"):
         rig = next((n for n in outcome.get("notes") or [] if n.get("step") == "auto_rig"), {})
@@ -767,14 +802,18 @@ def _answer_clip(said: str, clip: str, session: "Session") -> dict:
     target, entry, problem = _pick_model(said, session, "animate", "make the {} walk")
     if problem:
         return problem
-    rig = entry.get("parent")
+    # Rigged means moved by a skeleton, not merely parented: a game-ready
+    # LOD0's parent is its <Name>_Game group.
+    skinned = any(str(m).startswith("ARMATURE:") for m in entry.get("modifiers") or [])
+    rig = entry.get("parent") if skinned else None
     actions: List[dict] = []
     rigged_now = False
     if not rig:
         if not {"hip_l", "knee_l", "neck", "crown"} <= set(entry.get("landmarks") or []):
-            actions.append({"action": "find_landmarks", "params": {"object": target, "kind": "body"}})
+            actions += _body_marks(target, entry)
         actions.append({"action": "auto_rig", "params": {"object": target}})
-        rig, rigged_now = f"{target}_Rig", True
+        actions += _lod_weights(target, entry)
+        rig, rigged_now = target.rsplit("_LOD", 1)[0] + "_Rig", True
     speed = 0.6 if re.search(r"\bslow(?:ly)?\b", said, re.I) else (
         1.6 if re.search(r"\b(?:fast|quick(?:ly)?|brisk(?:ly)?)\b", said, re.I) else 1.0)
     actions.append({"action": "add_clip", "params": {"armature": rig, "clip": clip, "speed": speed}})
@@ -826,6 +865,36 @@ def _answer_match(said: str, session: "Session") -> dict:
     return outcome
 
 
+_GAME_READY = re.compile(r"\bgame[\s-]?ready\b|\bready for (?:a |the )?games?\b|\bretopolog\w*\b"
+                         r"|\blow[\s-]?poly (?:version|copy)\b", re.I)
+_TRIANGLES = re.compile(r"\b(\d[\d,]*)\s*(?:k\b)?\s*(?:tri(?:angle)?s?|faces|polys?|polygons)\b", re.I)
+
+
+def _answer_game_ready(said: str, session: "Session") -> dict:
+    """"Make it game ready in Blender" -- light copy, baked maps, LODs, a picture."""
+    target, entry, problem = _pick_model(said, session, "make game-ready", "make the {} game ready")
+    if problem:
+        return problem
+    # Again means again from the sculpt, never a copy of a copy.
+    source = re.sub(r"_LOD\d+$", "", target) + "_Sculpt" if re.search(r"_LOD\d+$", target) else target
+    params: Dict[str, Any] = {"object": source}
+    count = _TRIANGLES.search(said)
+    if count:
+        number = int(count.group(1).replace(",", ""))
+        params["faces"] = number * 1000 if re.search(r"\d\s*k\b", count.group(0), re.I) else number
+    if re.search(r"\b(?:no|without) (?:any )?LODs?\b", said, re.I):
+        params["lods"] = []
+    outcome = session.run([{"action": "make_game_ready", "params": params}], preview="material",
+                          views=["front", "three_quarter"])
+    if outcome.get("success"):
+        note = next((n for n in outcome.get("notes") or [] if n.get("step") == "make_game_ready"), {})
+        outcome["text"] = "\n\n".join([
+            game_ready_text(note), picture_markdown(outcome.get("renders") or []),
+            f"Say \"send it to Unity\" to take it into the game, or \"rig him {session.where}\" first "
+            f"if it is a character (the LODs follow the rig).", session.undo_hint])
+    return outcome
+
+
 def answer_send(said: str, session: "Session") -> Optional[dict]:
     """"Send him to Unity" -- the rig and its meshes, set up as a Humanoid there.
 
@@ -836,7 +905,7 @@ def answer_send(said: str, session: "Session") -> Optional[dict]:
 
     scene = session.describe()
     objects = (scene.get("scene") or {}).get("objects") or []
-    if not any(o.get("type") == "ARMATURE" for o in objects):
+    if not blender_to_unity.has_something_to_send(scene.get("scene") or {}):
         return None
     project = blender_to_unity.project_named(said)
     names = {o["name"].lower(): o["name"] for o in objects}
@@ -876,6 +945,8 @@ def answer_command(text: str, session: Optional["Session"] = None, *,
         return {"ran": True, **session.undo()}
     if changes_allowed and _RESET.search(said):
         return {"ran": True, **session.reset()}
+    if changes_allowed and _GAME_READY.search(said):
+        return {"ran": True, **_answer_game_ready(said, session)}
     if changes_allowed and SEND_TO_UNITY.search(said):
         sent = answer_send(said, session)
         if sent is not None:
@@ -978,10 +1049,29 @@ def summarize(entry: dict) -> str:
                          + (f". {unweighted} of {note.get('vertices')} vertices got no weight and "
                             f"will stay behind when the body moves." if unweighted else
                             ". Every vertex is weighted."))
+        elif note.get("step") == "make_game_ready":
+            lines.append(game_ready_text(note))
         elif note.get("skipped"):
             lines.append(f"{note.get('step')}: {note['skipped']}.")
     lines.append(f"Scene: {entry.get('scene_file')}")
     return "\n".join(lines)
+
+
+def game_ready_text(note: dict) -> str:
+    """What make_game_ready made, in a sentence or three."""
+    faces = note.get("faces") or []
+    maps = note.get("maps") or {}
+    how = {"quadriflow": "retopologised to even quads", "decimate": "decimated (QuadriFlow could "
+           "not cope with this mesh)", "kept": "already light enough, so kept as it was"}
+    return (f"Game-ready {note.get('object')}: the {note.get('sculpt_faces', 0):,}-triangle sculpt "
+            f"{how.get(note.get('method'), note.get('method'))} to {faces[0] if faces else 0:,} triangles, "
+            f"unwrapped, with its detail baked into "
+            + ", ".join({"color": "colour", "ao": "ambient occlusion", "normal": "a normal map"}.get(k, k)
+                        for k in maps)
+            + f" ({', '.join(Path(p).name for p in maps.values())}). LODs: "
+            + ", ".join(f"{name} {count:,}" for name, count in zip(note.get("lods") or [], faces))
+            + f" triangles. The sculpt is kept, hidden, as {note.get('sculpt')}. "
+            f"({note.get('seconds')} s)")
 
 
 def typed_call(step: dict) -> str:

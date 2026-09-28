@@ -233,6 +233,8 @@ EVERY_ACTION = [
                       "samples": 16, "margin": 8}),
     ("set_shader_node", {"material": "Skin", "input": "Roughness", "value": 0.9}),
     ("quad_remesh", {"object": "Head", "faces": 4000}),
+    ("make_game_ready", {"object": "Head", "faces": 3000, "lods": [0.5, 0.25]}),
+    ("copy_landmarks", {"source": "Head_Sculpt", "target": "Head_LOD0"}),
     ("voxel_remesh", {"object": "Head", "size": 0.02, "adaptivity": 0.0}),
     ("stamp_detail", {"object": "Head", "texture": "CLOUDS", "scale": 0.25,
                       "strength": 0.05, "coords": "LOCAL", "apply": True}),

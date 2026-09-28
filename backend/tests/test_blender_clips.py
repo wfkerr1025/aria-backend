@@ -72,7 +72,7 @@ def test_an_unrigged_body_is_rigged_before_it_walks(body):
 
 def test_a_rigged_body_just_gets_the_clip(body):
     runs, entry = body
-    entry["parent"] = "Body_Rig"
+    entry["parent"], entry["modifiers"] = "Body_Rig", ["ARMATURE:Armature"]
     bs.answer_command("make him wave in Blender")
     assert [a["action"] for a in runs[0]] == ["add_clip", "render_preview"]
 
@@ -86,7 +86,7 @@ def test_a_rigged_body_just_gets_the_clip(body):
 ])
 def test_clip_words(body, said, clip, speed):
     runs, entry = body
-    entry["parent"] = "Body_Rig"
+    entry["parent"], entry["modifiers"] = "Body_Rig", ["ARMATURE:Armature"]
     bs.answer_command(said)
     assert runs[0][0]["params"]["clip"] == clip
     assert runs[0][0]["params"]["speed"] == speed
@@ -96,7 +96,7 @@ def test_clip_words(body, said, clip, speed):
                                   "the wavy hair in Blender", "make the nose bigger in Blender"])
 def test_other_sentences_do_not_animate(body, said):
     runs, entry = body
-    entry["parent"] = "Body_Rig"
+    entry["parent"], entry["modifiers"] = "Body_Rig", ["ARMATURE:Armature"]
     bs.answer_command(said)
     assert not any(a["action"] == "add_clip" for run in runs for a in run)
 
