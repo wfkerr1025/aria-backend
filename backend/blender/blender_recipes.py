@@ -1419,7 +1419,7 @@ def proportions_actions(name: str, prefix: Optional[str] = None,
         where = f"{name} proportions/{part.get('name')}"
         clean = {key: resolve(part.get(key), marks, where) for key in _BOX_KEYS
                  if part.get(key) is not None}
-        clean.update({key: part[key] for key in ("name", "soft", "scale") if key in part})
+        clean.update({key: part[key] for key in ("name", "soft", "scale", "taper") if key in part})
         pivot = part.get("pivot", "center")
         clean["pivot"] = _point(pivot, marks, where + " pivot") if isinstance(pivot, list) else pivot
         parts.append(clean)
@@ -1444,7 +1444,7 @@ def proportions_actions(name: str, prefix: Optional[str] = None,
             where = f"{name} proportions/fill/{part.get('name')}"
             clean = {key: resolve(part.get(key), marks, where) for key in _BOX_KEYS
                      if part.get(key) is not None}
-            clean.update({key: part[key] for key in ("name", "soft", "scale") if key in part})
+            clean.update({key: part[key] for key in ("name", "soft", "scale", "taper") if key in part})
             pivot = part.get("pivot", "center")
             clean["pivot"] = _point(pivot, marks, where + " pivot") if isinstance(pivot, list) else pivot
             filled.append(clean)

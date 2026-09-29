@@ -4690,8 +4690,14 @@ def _reshape_parts(parts: Any) -> list:
             if pivot not in _RESHAPE_PIVOTS:
                 raise BadValue(f"pivot {pivot!r} is not one of "
                                f"{', '.join(sorted(_RESHAPE_PIVOTS))} or an [x, y, z]")
+        # `taper` [bottom, top]: the x scale runs smoothly from the box's
+        # bottom to its top instead of being one number -- a face that
+        # narrows to its chin. Bands of fixed scales left ridges.
+        taper = part.get("taper")
+        if taper is not None:
+            taper = [float(_num(t, 1.0)) for t in (list(taper) + [1.0, 1.0])[:2]]
         clean.append({"box": box, "soft": max(0.0, float(_num(part.get("soft"), 0.02))),
-                      "scale": scale, "pivot": pivot,
+                      "scale": scale, "pivot": pivot, "taper": taper,
                       "name": str(part.get("name") or f"part {len(clean) + 1}")})
     return clean
 
@@ -4807,7 +4813,13 @@ def reshape_body(params: Dict[str, Any]) -> str:
             f'        else:\n'
             f'            _piv = _fixed\n'
             f'        _d = _p - _piv\n'
-            f'        _to = _piv + mathutils.Vector((_d.x * _sx, _d.y * _sy, _d.z * _sz))\n'
+            f'        _kx = _sx\n'
+            f'        if _part["taper"] is not None:\n'
+            f'            _lo_z, _hi_z = _part["box"][2], _part["box"][5]\n'
+            f'            _f = 0.5 if _lo_z is None or _hi_z is None else (_p.z - _lo_z) / ((_hi_z - _lo_z) or 1e-9)\n'
+            f'            _f = max(0.0, min(1.0, _f))\n'
+            f'            _kx = _part["taper"][0] + (_part["taper"][1] - _part["taper"][0]) * _f\n'
+            f'        _to = _piv + mathutils.Vector((_d.x * _kx, _d.y * _sy, _d.z * _sz))\n'
             f'        _co[_i] = _p.lerp(_to, _ws[_i])\n'
             f'    _report.append({{"part": _part["name"], "vertices": len(_touched), "core": len(_core)}})\n'
             f'def _remap(z):\n'
