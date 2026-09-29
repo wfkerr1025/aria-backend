@@ -590,6 +590,7 @@ def actions(name: str, *, prefix: Optional[str] = None,
     # The base first: blanks are placed around a body, so the body has
     # to be standing there before they are.
     steps.extend(base_actions(name, prefix=head))
+    steps.extend(proportions_actions(name, prefix=head))
 
     for item in recipe.get("objects", []):
         steps.extend(_one_object(item, head, marks))
@@ -733,6 +734,15 @@ def rig_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]
     head = prefix or prefix_for(name)
     arm = spec.get("name") or f"{head}_Rig"
     marks = _marks_for(recipe)
+
+    # A reshaped body has moved away from its base's landmark table, so
+    # bones placed by those landmarks would sit where the OLD body was.
+    # auto_rig measures the body that is actually there instead.
+    if spec.get("auto_rig"):
+        body = spec.get("object") or (recipe.get("base") or {}).get("as") or f"{head}_Base"
+        options = spec["auto_rig"] if isinstance(spec["auto_rig"], dict) else {}
+        return [{"action": "find_landmarks", "params": {"object": body, "kind": "body"}},
+                {"action": "auto_rig", "params": {"object": body, "name": arm, **options}}]
 
     steps: List[Dict[str, Any]] = [
         {"action": "create_armature",
@@ -944,10 +954,61 @@ def base_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]
 
     if spec.get("height"):
         steps.append({"action": "scale_to_height",
-                      "params": {"object": called, "height": spec["height"]}})
+                      "params": {"height": spec["height"]}})
         steps.append({"action": "apply_transforms", "params": {}})
         steps.append({"action": "origin_to_floor", "params": {}})
 
+    return steps
+
+
+_BOX_KEYS = ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")
+
+
+def proportions_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Reshape the base into a style: longer legs, slimmer limbs, a smaller head.
+
+    A style is mostly proportions, so a recipe can take a base body and
+    re-proportion it rather than needing a new mesh for every look.
+    `parts` are boxes on the body AS THE BASE ARRIVES (landmarks mean
+    the base's own heights), `heights` remaps altitude afterwards, and
+    `height` rescales the result to the size the character should be.
+    See reshape_body for what each pivot does.
+
+    Garment recipes still measure the ORIGINAL base: landmarks are not
+    re-measured after a reshape, so clothes cut for base_stylized_body
+    will not fit an anime body without their own bounds.
+    """
+    recipe = load(name)
+    spec = recipe.get("proportions")
+    base = recipe.get("base") or {}
+    if not spec or not base:
+        return []
+
+    marks = _marks_for(recipe)
+    called = base.get("as") or f"{prefix or prefix_for(name)}_Base"
+
+    parts = []
+    for part in spec.get("parts", []):
+        where = f"{name} proportions/{part.get('name')}"
+        clean = {key: resolve(part.get(key), marks, where) for key in _BOX_KEYS
+                 if part.get(key) is not None}
+        clean.update({key: part[key] for key in ("name", "soft", "scale") if key in part})
+        pivot = part.get("pivot", "center")
+        clean["pivot"] = _point(pivot, marks, where + " pivot") if isinstance(pivot, list) else pivot
+        parts.append(clean)
+
+    heights = [[resolve(old, marks, f"{name} heights"), new]
+               for old, new in spec.get("heights", [])]
+
+    steps: List[Dict[str, Any]] = [
+        {"action": "reshape_body",
+         "params": {"object": called, "parts": parts, "heights": heights}}]
+    if spec.get("height"):
+        steps.append({"action": "scale_to_height", "params": {"height": spec["height"]}})
+        steps.append({"action": "apply_transforms", "params": {}})
+        steps.append({"action": "origin_to_floor", "params": {}})
+    if spec.get("smooth", True):
+        steps.append({"action": "smooth_shade", "params": {"object": called}})
     return steps
 
 

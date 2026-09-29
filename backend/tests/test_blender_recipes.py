@@ -538,3 +538,33 @@ def test_a_creature_limb_is_attached_to_the_body_it_belongs_to():
     arm = marks["Humanoid_ArmLeft"]
 
     assert abs(arm[0]) < torso_half + 0.07, "the arm floats off the shoulder"
+
+
+def test_an_anime_body_is_reshaped_after_it_arrives_and_rigged_by_measurement():
+    """The reshape runs on the base as it arrives; the rig measures the result.
+
+    Fixed landmark bones would sit where the unreshaped body was, so the
+    anime bodies are rigged by auto_rig, after find_landmarks.
+    """
+    for name in ("anime_female_body", "anime_male_body"):
+        order = [step["action"] for step in recipes.actions(name, rig=True)]
+        assert order.index("origin_to_floor") < order.index("reshape_body")
+        assert order.index("reshape_body") < order.index("find_landmarks") < order.index("auto_rig")
+        assert "create_armature" not in order
+
+
+def test_proportions_resolve_landmark_names_to_heights():
+    steps = recipes.proportions_actions("anime_female_body")
+    reshape = steps[0]["params"]
+    marks = recipes._flatten(recipes.landmarks("GEO-body_female_stylized"))
+    legs = next(p for p in reshape["parts"] if p["name"] == "leg R")
+    assert legs["z_max"] == marks["crotch"]
+    assert [marks["crotch"], 0.82] in reshape["heights"]
+    assert all(isinstance(old, float) or old == 0 for old, _ in reshape["heights"])
+
+
+def test_reshape_body_refuses_a_pivot_it_does_not_know():
+    with pytest.raises(templates.BadValue):
+        templates.reshape_body({"object": "Body", "parts": [{"pivot": "__import__('os')"}]})
+    with pytest.raises(templates.BadValue):
+        templates.reshape_body({"object": "Body", "heights": [[0, 0]]})

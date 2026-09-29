@@ -1,0 +1,236 @@
+{
+  "name": "anime_male_body",
+  "version": "1.0",
+  "description": "A stylised ANIME male base: Blender Studio's CC0 stylised male, re-proportioned by reshape_body -- longer legs, a longer neck, leaner arms and legs, a narrower waist, smaller hands and feet, head 95%, nose flattened, ears 75%, jaw narrowed. About 7.5 heads tall at 1.8 m. Rigged by auto_rig (Unity Humanoid names). Clothing recipes still cut from the ORIGINAL bases and will not fit.",
+  "units": "meters",
+  "base": {
+    "library": "human_base_meshes",
+    "object": "GEO-body_male_stylized",
+    "as": "AnimeMale",
+    "height": 1.8,
+    "keep": true
+  },
+  "proportions": {
+    "height": 1.8,
+    "smooth": true,
+    "parts": [
+      {
+        "name": "nose",
+        "x_min": -0.025,
+        "x_max": 0.025,
+        "y_max": -0.124,
+        "z_min": 1.575,
+        "z_max": 1.62,
+        "soft": 0.008,
+        "scale": [
+          0.8,
+          0.55,
+          0.85
+        ],
+        "pivot": [
+          0,
+          -0.121,
+          1.595
+        ]
+      },
+      {
+        "name": "ear R",
+        "x_min": 0.11,
+        "z_min": 1.56,
+        "z_max": 1.68,
+        "soft": 0.01,
+        "scale": 0.75,
+        "pivot": [
+          0.112,
+          0.04,
+          1.62
+        ]
+      },
+      {
+        "name": "ear L",
+        "x_max": -0.11,
+        "z_min": 1.56,
+        "z_max": 1.68,
+        "soft": 0.01,
+        "scale": 0.75,
+        "pivot": [
+          -0.112,
+          0.04,
+          1.62
+        ]
+      },
+      {
+        "name": "jaw",
+        "x_min": -0.1,
+        "x_max": 0.1,
+        "y_max": 0.03,
+        "z_min": 1.49,
+        "z_max": 1.56,
+        "soft": 0.03,
+        "scale": [
+          0.9,
+          0.97,
+          1
+        ],
+        "pivot": "slice"
+      },
+      {
+        "name": "head",
+        "z_min": "neck+0.01",
+        "soft": 0.03,
+        "scale": 0.95,
+        "pivot": "bottom"
+      },
+      {
+        "name": "arm R",
+        "x_min": 0.2,
+        "z_min": 0.92,
+        "z_max": "armpit+0.02",
+        "soft": 0.03,
+        "scale": [
+          0.85,
+          0.85,
+          1
+        ],
+        "pivot": "slice"
+      },
+      {
+        "name": "arm L",
+        "x_max": -0.2,
+        "z_min": 0.92,
+        "z_max": "armpit+0.02",
+        "soft": 0.03,
+        "scale": [
+          0.85,
+          0.85,
+          1
+        ],
+        "pivot": "slice"
+      },
+      {
+        "name": "hand R",
+        "x_min": 0.3,
+        "z_max": "wrist+0.01",
+        "soft": 0.02,
+        "scale": 0.88,
+        "pivot": "top"
+      },
+      {
+        "name": "hand L",
+        "x_max": -0.3,
+        "z_max": "wrist+0.01",
+        "soft": 0.02,
+        "scale": 0.88,
+        "pivot": "top"
+      },
+      {
+        "name": "leg R",
+        "x_min": 0.0,
+        "z_min": 0.17,
+        "z_max": "crotch",
+        "soft": 0.06,
+        "scale": [
+          0.9,
+          0.9,
+          1
+        ],
+        "pivot": "slice"
+      },
+      {
+        "name": "leg L",
+        "x_max": 0.0,
+        "z_min": 0.17,
+        "z_max": "crotch",
+        "soft": 0.06,
+        "scale": [
+          0.9,
+          0.9,
+          1
+        ],
+        "pivot": "slice"
+      },
+      {
+        "name": "foot R",
+        "x_min": 0.0,
+        "z_max": 0.16,
+        "soft": 0.02,
+        "scale": 0.9,
+        "pivot": "top"
+      },
+      {
+        "name": "foot L",
+        "x_max": 0.0,
+        "z_max": 0.16,
+        "soft": 0.02,
+        "scale": 0.9,
+        "pivot": "top"
+      },
+      {
+        "name": "waist",
+        "x_min": -0.15,
+        "x_max": 0.15,
+        "z_min": 0.95,
+        "z_max": 1.1,
+        "soft": 0.05,
+        "scale": [
+          0.9,
+          0.94,
+          1
+        ],
+        "pivot": "slice"
+      }
+    ],
+    "heights": [
+      [
+        0,
+        0
+      ],
+      [
+        "ankle",
+        0.16
+      ],
+      [
+        "knee",
+        0.57
+      ],
+      [
+        "crotch",
+        0.86
+      ],
+      [
+        "waist",
+        1.19
+      ],
+      [
+        "armpit",
+        1.35
+      ],
+      [
+        "neck",
+        1.6
+      ],
+      [
+        1.785,
+        1.89
+      ]
+    ]
+  },
+  "armature": {
+    "name": "AnimeMale_Rig",
+    "auto_rig": {
+      "keep_off_arms": false,
+      "cut_bridges": false,
+      "tie_strands": false
+    }
+  },
+  "cleanup": {
+    "apply_transforms": false,
+    "merge_by_distance": false,
+    "origin_to_geometry": false
+  },
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/anime_male_body.fbx",
+    "apply_scale": true
+  }
+}

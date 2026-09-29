@@ -4313,6 +4313,176 @@ def inflate(params: Dict[str, Any]) -> str:
             f'distance={_num(params.get("distance"), 0.012)})')
 
 
+_RESHAPE_PIVOTS = frozenset({"slice", "top", "bottom", "center"})
+
+
+def _reshape_parts(parts: Any) -> list:
+    """The caller's parts, rebuilt from numbers and allowlisted words.
+
+    Nothing of the caller's reaches the script as text: every bound is
+    float()ed, every pivot word checked, and the list is repr()ed from
+    this clean copy.
+    """
+    clean = []
+    for part in parts or []:
+        if not isinstance(part, dict):
+            raise BadValue(f"a reshape part must be a dict, not {part!r}")
+        box = []
+        for key in ("x_min", "y_min", "z_min", "x_max", "y_max", "z_max"):
+            value = part.get(key)
+            box.append(None if value is None or str(value).strip() == ""
+                       else float(_num(value)))
+        scale = part.get("scale", 1.0)
+        if isinstance(scale, (list, tuple)):
+            scale = [float(_num(s, 1.0)) for s in (list(scale) + [1.0, 1.0, 1.0])[:3]]
+        else:
+            scale = [float(_num(scale, 1.0))] * 3
+        pivot = part.get("pivot", "center")
+        if isinstance(pivot, (list, tuple)):
+            pivot = [float(_num(p)) for p in (list(pivot) + [0.0, 0.0, 0.0])[:3]]
+        else:
+            pivot = str(pivot or "center").strip().lower()
+            if pivot not in _RESHAPE_PIVOTS:
+                raise BadValue(f"pivot {pivot!r} is not one of "
+                               f"{', '.join(sorted(_RESHAPE_PIVOTS))} or an [x, y, z]")
+        clean.append({"box": box, "soft": max(0.0, float(_num(part.get("soft"), 0.02))),
+                      "scale": scale, "pivot": pivot,
+                      "name": str(part.get("name") or f"part {len(clean) + 1}")})
+    return clean
+
+
+def reshape_body(params: Dict[str, Any]) -> str:
+    """Change a figure's proportions: slimmer limbs, longer legs, a smaller head.
+
+    WHY A BODY NEEDS ITS OWN RESHAPE. A base body arrives with one set
+    of proportions, and a style is mostly proportions: anime is long
+    legs, a long neck, slim limbs and small hands and feet on the SAME
+    anatomy. A lattice cannot say "the arms, but thinner" -- an arm in
+    an A-pose is a diagonal through the lattice, and squeezing x pulls
+    both arms toward the spine rather than thinning either. So each
+    part is a world box (landmark-placed by a recipe), scaled about a
+    pivot that belongs to the part itself:
+
+      slice  -- about the part's own centre line, height by height. A
+                limb gets thinner and stays where it was: a leg thinned
+                about the body's centre would walk its knees together.
+      top    -- about the top middle of the part: a hand shrinks toward
+                its wrist, a foot toward its ankle, and stays attached.
+      bottom -- about the bottom middle: a head shrinks onto its neck.
+      center -- about the part's middle.
+      [x, y, z] -- a point, for a nose or a chin.
+
+    `soft` fades each box over that many metres, which is what keeps a
+    thinned arm from ending in a step at the shoulder.
+
+    `heights` then remaps height as [[old, new], ...], straight lines
+    between the pairs and the end slopes carried on past them. That is
+    how legs get longer: the crotch moves up, everything above it rides
+    up with it, and the knee and ankle are spread in between. Remapping
+    height -- not moving parts -- is what keeps the mesh whole: a vertex
+    never changes its neighbours, it only changes altitude.
+
+    Parts are applied first, in the body's own heights, so a recipe's
+    landmarks still mean what they say; the height remap comes last.
+    """
+    parts = _reshape_parts(params.get("parts"))
+    pairs = []
+    for pair in params.get("heights") or []:
+        try:
+            old, new = pair
+        except (TypeError, ValueError):
+            raise BadValue(f"a height pair is [old, new], not {pair!r}") from None
+        pairs.append((float(_num(old)), float(_num(new))))
+    pairs.sort()
+    if len(pairs) == 1:
+        raise BadValue("heights needs at least two [old, new] pairs "
+                       "(one pair cannot say how to stretch)")
+
+    return (f'_target = _active(_obj({_text(params.get("object"))}))\n'
+            f'_parts = {parts!r}\n'
+            f'_pairs = {pairs!r}\n'
+            f'_M = _target.matrix_world.copy()\n'
+            f'_Mi = _M.inverted()\n'
+            f'_co = [_M.__matmul__(_v.co) for _v in _target.data.vertices]\n'
+            f'def _box_weight(p, box, soft):\n'
+            f'    w = 1.0\n'
+            f'    for axis in range(3):\n'
+            f'        lo, hi, value = box[axis], box[axis + 3], p[axis]\n'
+            f'        if lo is not None:\n'
+            f'            if value < lo - soft: return 0.0\n'
+            f'            if soft > 0 and value < lo: w = min(w, (value - (lo - soft)) / soft)\n'
+            f'        if hi is not None:\n'
+            f'            if value > hi + soft: return 0.0\n'
+            f'            if soft > 0 and value > hi: w = min(w, ((hi + soft) - value) / soft)\n'
+            f'    w = max(0.0, min(1.0, w))\n'
+            f'    return w * w * (3.0 - 2.0 * w)\n'
+            f'_report = []\n'
+            f'for _part in _parts:\n'
+            f'    _ws = [_box_weight(_p, _part["box"], _part["soft"]) for _p in _co]\n'
+            f'    _core = [_i for _i, _w in enumerate(_ws) if _w >= 0.999]\n'
+            f'    _touched = [_i for _i, _w in enumerate(_ws) if _w > 0.0]\n'
+            f'    if not _core:\n'
+            f'        raise RuntimeError("reshape part %r has no vertices fully inside its box -- '
+            f'check its bounds against the body" % _part["name"])\n'
+            f'    _sx, _sy, _sz = _part["scale"]\n'
+            f'    _pv = _part["pivot"]\n'
+            f'    if _pv == "slice":\n'
+            f'        _bins = {{}}\n'
+            f'        for _i in _core:\n'
+            f'            _b = int(round(_co[_i].z / 0.01))\n'
+            f'            _acc = _bins.setdefault(_b, [0.0, 0.0, 0])\n'
+            f'            _acc[0] += _co[_i].x; _acc[1] += _co[_i].y; _acc[2] += 1\n'
+            f'        _keys = sorted(_bins)\n'
+            f'        _mid = {{}}\n'
+            f'        for _b in _keys:\n'
+            f'            _near = [_bins[_k] for _k in range(_b - 2, _b + 3) if _k in _bins]\n'
+            f'            _n = sum(_a[2] for _a in _near)\n'
+            f'            _mid[_b] = (sum(_a[0] for _a in _near) / _n, sum(_a[1] for _a in _near) / _n)\n'
+            f'        def _centre(z, _mid=_mid, _keys=_keys):\n'
+            f'            _b = int(round(z / 0.01))\n'
+            f'            _b = min(max(_b, _keys[0]), _keys[-1])\n'
+            f'            while _b not in _mid: _b += 1\n'
+            f'            return _mid[_b]\n'
+            f'    else:\n'
+            f'        _cx = sum(_co[_i].x for _i in _core) / len(_core)\n'
+            f'        _cy = sum(_co[_i].y for _i in _core) / len(_core)\n'
+            f'        _zs = [_co[_i].z for _i in _core]\n'
+            f'        if isinstance(_pv, list):\n'
+            f'            _fixed = mathutils.Vector(_pv)\n'
+            f'        else:\n'
+            f'            _pz = {{"top": max(_zs), "bottom": min(_zs), "center": sum(_zs) / len(_zs)}}[_pv]\n'
+            f'            _fixed = mathutils.Vector((_cx, _cy, _pz))\n'
+            f'    for _i in _touched:\n'
+            f'        _p = _co[_i]\n'
+            f'        if _pv == "slice":\n'
+            f'            _c = _centre(_p.z)\n'
+            f'            _piv = mathutils.Vector((_c[0], _c[1], _p.z))\n'
+            f'        else:\n'
+            f'            _piv = _fixed\n'
+            f'        _d = _p - _piv\n'
+            f'        _to = _piv + mathutils.Vector((_d.x * _sx, _d.y * _sy, _d.z * _sz))\n'
+            f'        _co[_i] = _p.lerp(_to, _ws[_i])\n'
+            f'    _report.append({{"part": _part["name"], "vertices": len(_touched), "core": len(_core)}})\n'
+            f'def _remap(z):\n'
+            f'    if len(_pairs) < 2: return z\n'
+            f'    for _k in range(len(_pairs) - 1):\n'
+            f'        (_a, _fa), (_b, _fb) = _pairs[_k], _pairs[_k + 1]\n'
+            f'        if z <= _b or _k == len(_pairs) - 2:\n'
+            f'            return _fa + (z - _a) * (_fb - _fa) / ((_b - _a) or 1e-9)\n'
+            f'for _i, _p in enumerate(_co):\n'
+            f'    _p.z = _remap(_p.z)\n'
+            f'    _target.data.vertices[_i].co = _Mi.__matmul__(_p)\n'
+            # Stored custom normals describe the OLD surface. Left on,
+            # the reshaped body shades in stripes along every row the
+            # reshape bent, so they go and the mesh shades from itself.
+            f'if _target.data.has_custom_normals:\n'
+            f'    bpy.ops.mesh.customdata_custom_splitnormals_clear()\n'
+            f'_target.data.update()\n'
+            f'_RESULT["modified"].append(_target.name)\n'
+            f'_note("reshape_body", object=_target.name, parts=_report, '
+            f'heights=len(_pairs), height=round(max(_p.z for _p in _co) - min(_p.z for _p in _co), 4))')
+
+
 # ======================================================
 # Seeing the work
 #
@@ -7857,6 +8027,7 @@ TEMPLATES = {
     "delete_object": delete_object,
     "relax_surface": relax_surface,
     "inflate": inflate,
+    "reshape_body": reshape_body,
     "vertex_group_by_region": vertex_group_by_region,
     "apply_mask": apply_mask,
     "add_geometry_nodes": add_geometry_nodes,

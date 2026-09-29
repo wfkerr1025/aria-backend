@@ -1,0 +1,276 @@
+{
+  "name": "anime_female_body",
+  "version": "1.0",
+  "description": "A stylised ANIME female base: Blender Studio's CC0 stylised female, re-proportioned by reshape_body -- legs lengthened to about half her height, neck longer, arms and legs slimmer about their own centre lines, waist and hips narrowed, hands and feet smaller, head 90%, and the face taken toward anime (nose flattened and shortened, ears 72%, jaw narrowed). About 6.6 heads tall at 1.62 m. The big eyes and small mouth belong in the texture or a toon shader, not the mesh. Rigged by auto_rig (Unity Humanoid names), because the fixed landmark bones of base_stylized_body would sit where the unreshaped body was. Clothing recipes still cut from the ORIGINAL bases and will not fit.",
+  "units": "meters",
+  "base": {
+    "library": "human_base_meshes",
+    "object": "GEO-body_female_stylized",
+    "as": "AnimeFemale",
+    "height": 1.62,
+    "keep": true
+  },
+  "proportions": {
+    "height": 1.62,
+    "smooth": true,
+    "parts": [
+      {
+        "name": "nose",
+        "x_min": -0.022,
+        "x_max": 0.022,
+        "y_max": -0.1072,
+        "z_min": 1.413,
+        "z_max": 1.448,
+        "soft": 0.008,
+        "scale": [
+          0.8,
+          0.5,
+          0.85
+        ],
+        "pivot": [
+          0.0,
+          -0.1052,
+          1.426
+        ]
+      },
+      {
+        "name": "ear R",
+        "x_min": 0.1182,
+        "z_min": 1.408,
+        "z_max": 1.5082,
+        "soft": 0.01,
+        "scale": 0.72,
+        "pivot": [
+          0.1182,
+          0.0642,
+          1.448
+        ]
+      },
+      {
+        "name": "ear L",
+        "x_max": -0.1182,
+        "z_min": 1.408,
+        "z_max": 1.5082,
+        "soft": 0.01,
+        "scale": 0.72,
+        "pivot": [
+          -0.1182,
+          0.0642,
+          1.448
+        ]
+      },
+      {
+        "name": "jaw",
+        "x_min": -0.1002,
+        "x_max": 0.1002,
+        "y_max": 0.0642,
+        "z_min": 1.3478,
+        "z_max": 1.408,
+        "soft": 0.03,
+        "scale": [
+          0.86,
+          0.97,
+          1
+        ],
+        "pivot": "slice"
+      },
+      {
+        "name": "head",
+        "z_min": "neck+0.01",
+        "soft": 0.03,
+        "scale": 0.9,
+        "pivot": "bottom"
+      },
+      {
+        "name": "hand R",
+        "x_min": 0.2505,
+        "z_max": "wrist+0.01",
+        "soft": 0.02,
+        "scale": 0.85,
+        "pivot": "top"
+      },
+      {
+        "name": "hand L",
+        "x_max": -0.2505,
+        "z_max": "wrist+0.01",
+        "soft": 0.02,
+        "scale": 0.85,
+        "pivot": "top"
+      },
+      {
+        "name": "leg R",
+        "x_min": 0.0,
+        "z_min": 0.1506,
+        "z_max": "crotch",
+        "soft": 0.1,
+        "scale": [
+          0.88,
+          0.88,
+          1
+        ],
+        "pivot": "slice"
+      },
+      {
+        "name": "leg L",
+        "x_max": 0.0,
+        "z_min": 0.1506,
+        "z_max": "crotch",
+        "soft": 0.1,
+        "scale": [
+          0.88,
+          0.88,
+          1
+        ],
+        "pivot": "slice"
+      },
+      {
+        "name": "foot R",
+        "x_min": 0.0,
+        "z_max": 0.1405,
+        "soft": 0.02,
+        "scale": 0.88,
+        "pivot": "top"
+      },
+      {
+        "name": "foot L",
+        "x_max": 0.0,
+        "z_max": 0.1405,
+        "soft": 0.02,
+        "scale": 0.88,
+        "pivot": "top"
+      },
+      {
+        "name": "hips",
+        "x_min": -0.2004,
+        "x_max": 0.2004,
+        "z_min": 0.7066,
+        "z_max": 0.907,
+        "soft": 0.05,
+        "scale": [
+          0.92,
+          0.97,
+          1
+        ],
+        "pivot": "slice"
+      },
+      {
+        "name": "waist",
+        "x_min": -0.1403,
+        "x_max": 0.1403,
+        "z_min": 0.927,
+        "z_max": 1.0773,
+        "soft": 0.06,
+        "scale": [
+          0.9,
+          0.95,
+          1
+        ],
+        "pivot": "slice"
+      },
+      {
+        "name": "upper arm R",
+        "x_min": 0.1703,
+        "z_min": 0.927,
+        "z_max": 1.1775,
+        "soft": 0.03,
+        "scale": [
+          0.82,
+          0.82,
+          1
+        ],
+        "pivot": "slice"
+      },
+      {
+        "name": "forearm R",
+        "x_min": 0.2304,
+        "z_min": 0.8669,
+        "z_max": 0.9571,
+        "soft": 0.03,
+        "scale": [
+          0.84,
+          0.84,
+          1
+        ],
+        "pivot": "slice"
+      },
+      {
+        "name": "upper arm L",
+        "x_max": -0.1703,
+        "z_min": 0.927,
+        "z_max": 1.1775,
+        "soft": 0.03,
+        "scale": [
+          0.82,
+          0.82,
+          1
+        ],
+        "pivot": "slice"
+      },
+      {
+        "name": "forearm L",
+        "x_max": -0.2304,
+        "z_min": 0.8669,
+        "z_max": 0.9571,
+        "soft": 0.03,
+        "scale": [
+          0.84,
+          0.84,
+          1
+        ],
+        "pivot": "slice"
+      }
+    ],
+    "heights": [
+      [
+        0,
+        0
+      ],
+      [
+        "ankle",
+        0.14
+      ],
+      [
+        "knee",
+        0.55
+      ],
+      [
+        "crotch",
+        0.82
+      ],
+      [
+        "waist",
+        1.13
+      ],
+      [
+        "armpit",
+        1.25
+      ],
+      [
+        "neck",
+        1.45
+      ],
+      [
+        1.5925,
+        1.7075
+      ]
+    ]
+  },
+  "armature": {
+    "name": "AnimeFemale_Rig",
+    "auto_rig": {
+      "keep_off_arms": false,
+      "cut_bridges": false,
+      "tie_strands": false
+    }
+  },
+  "cleanup": {
+    "apply_transforms": false,
+    "merge_by_distance": false,
+    "origin_to_geometry": false
+  },
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/anime_female_body.fbx",
+    "apply_scale": true
+  }
+}
