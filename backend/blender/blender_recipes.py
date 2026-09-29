@@ -1292,10 +1292,12 @@ def garment_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, A
                                      "location": _point(cut.get("at"), marks, where + " at")}})
             steps.append({"action": "scale",
                           "params": {"object": cutter, "x": radii[0], "y": radii[1], "z": radii[2]}})
+            # "keep": true keeps what is INSIDE the oval instead -- how a
+            # lapel is trimmed to a band along the coat's opening.
             steps.append({"action": "apply_boolean",
                           "params": {"object": worn, "target": cutter,
-                                     "operation": "DIFFERENCE", "apply": True,
-                                     "self_intersection": True}})
+                                     "operation": "INTERSECT" if cut.get("keep") else "DIFFERENCE",
+                                     "apply": True, "self_intersection": True}})
             steps.append({"action": "delete_object", "params": {"object": cutter}})
 
         if item.get("smooth", True):

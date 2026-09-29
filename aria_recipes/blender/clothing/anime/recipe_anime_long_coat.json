@@ -1,6 +1,6 @@
 {
   "name": "anime_long_coat",
-  "version": "0.1",
+  "version": "0.2",
   "description": "Jin-Woo's long coat for the anime male body. Two parts: the top (torso and sleeves to the wrist) cut from the body and sitting outside the shirt, with the front carved open in a V; and the tails, a generated drape (flared, open at the front) from the hips to mid-shin, because a cut cannot give cloth that hangs below the hips. Collar, lapels, cuffs and the torn lining come later.",
   "units": "meters",
   "base": {
@@ -15,13 +15,13 @@
       "regions": [
         {
           "z_min": "hip+0.02",
-          "z_max": "neck-0.02",
+          "z_max": "neck-0.05",
           "x_min": -0.2,
           "x_max": 0.2
         },
         {
           "z_min": "wrist+0.02",
-          "z_max": "neck-0.02",
+          "z_max": "neck-0.05",
           "x_min": "-reach_x",
           "x_max": "reach_x"
         }
@@ -44,6 +44,53 @@
             0.11,
             0.12,
             0.75
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lapels",
+      "from": "Coat_Body",
+      "regions": [
+        {
+          "z_min": "waist",
+          "z_max": "neck-0.03",
+          "x_min": -0.2,
+          "x_max": 0.2,
+          "y_max": 0.0
+        }
+      ],
+      "soft": 0.006,
+      "offset": 0.062,
+      "thickness": 0.008,
+      "relax": {
+        "factor": 0.85,
+        "iterations": 24
+      },
+      "cuts": [
+        {
+          "at": [
+            0,
+            -0.15,
+            "hip"
+          ],
+          "size": [
+            0.11,
+            0.12,
+            0.75
+          ]
+        },
+        {
+          "keep": true,
+          "at": [
+            0,
+            -0.15,
+            "neck-0.05"
+          ],
+          "size": [
+            0.19,
+            0.2,
+            0.33
           ]
         }
       ]
@@ -89,6 +136,43 @@
           0.32,
           0.23,
           0.26
+        ]
+      ]
+    },
+    {
+      "id": "collar",
+      "rows": 10,
+      "columns": 40,
+      "thickness": 0.01,
+      "opening": [
+        50,
+        35
+      ],
+      "centre_y": 0.005,
+      "profile": [
+        [
+          "neck+0.09",
+          0.138,
+          0.13,
+          0.142
+        ],
+        [
+          "neck+0.03",
+          0.12,
+          0.115,
+          0.125
+        ],
+        [
+          "neck-0.03",
+          0.118,
+          0.112,
+          0.125
+        ],
+        [
+          "neck-0.07",
+          0.14,
+          0.13,
+          0.14
         ]
       ]
     }
