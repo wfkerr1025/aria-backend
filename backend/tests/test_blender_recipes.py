@@ -602,5 +602,19 @@ def test_an_outfit_puts_every_piece_on_the_bodys_one_skeleton():
     targets = {p["target"] for p in moved}
     assert {"AnimeTshirt_Tshirt", "AnimeLongCoat_Coat", "AnimeLongCoat_Tails"} <= targets
     assert not any("_Cut" in target for target in targets)     # cutters are gone
-    assert steps[-1] == {"action": "add_clip",
-                         "params": {"armature": "AnimeMale_Rig", "clip": "walk"}}
+    assert {"action": "add_clip",
+            "params": {"armature": "AnimeMale_Rig", "clip": "walk"}} in steps
+
+
+def test_coat_tails_are_baked_as_cloth_after_the_clips_on_their_own_bones():
+    """Tails weighted to the legs bend like trousers; a cloth drape gets its
+    own bones, re-weighted after transfer_weights, simulated through the clips."""
+    steps = recipes.outfit_actions("anime_male_body", ["anime_long_coat"], clips=["walk"])
+    order = [step["action"] for step in steps]
+    bake = steps[order.index("bake_drape")]["params"]
+    assert order.index("add_clip") < order.index("bake_drape")
+    assert max(i for i, a in enumerate(order) if a == "transfer_weights") < order.index("bake_drape")
+    assert bake["drape"] == "AnimeLongCoat_Tails"
+    assert bake["also"] == ["AnimeLongCoat_Lining"]
+    tails = next(d for d in recipes.load("anime_long_coat")["drapes"] if d["id"] == "tails")
+    assert (bake["rows"], bake["columns"]) == (tails["rows"], tails["columns"])

@@ -736,6 +736,25 @@ def outfit_actions(body: str, pieces: Iterable[str], *, rig: bool = True,
                                      "armature": armature}})
     for clip in clips:
         steps.append({"action": "add_clip", "params": {"armature": armature, "clip": clip}})
+
+    # Drapes that ask for `cloth` get their own bones and are simulated
+    # through the clips (bake_drape) -- after the clips exist, and
+    # replacing the leg weights transfer_weights gave them above.
+    for piece in pieces:
+        head = prefix_for(piece)
+        for drape in load(piece).get("drapes", []):
+            cloth = drape.get("cloth")
+            if not cloth:
+                continue
+            steps.append({"action": "bake_drape", "params": {
+                "armature": armature,
+                "drape": _name(head, drape.get("id"), "Drape"),
+                "also": [_name(head, other, "Drape") for other in cloth.get("also", [])],
+                "rows": drape.get("rows", 24), "columns": drape.get("columns", 48),
+                "chains": cloth.get("chains", 12), "segments": cloth.get("segments", 6),
+                "pin": cloth.get("pin", 0.1),
+                "prefix": cloth.get("prefix") or f"{head}{_pascal(drape.get('id') or 'Drape')}",
+                "parent": cloth.get("parent", "Hips")}})
     return steps
 
 

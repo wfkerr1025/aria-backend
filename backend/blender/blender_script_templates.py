@@ -1363,6 +1363,311 @@ def bake_cloth(params: Dict[str, Any]) -> str:
             f'_note("bake_cloth", armature=_rig.name, clips=_baked)').splitlines()) + "\n")
 
 
+# ======================================================
+# Cloth for drapes: coat tails that swing, baked into bones for Unity
+#
+# The cape's bake (above) is built for one shape -- a flat grid on the
+# back, bones under the Chest. A drape is a skirt wrapped round the
+# body, open at the front, hanging from the hips. Same method: simulate
+# Blender's cloth through each clip, then key a small skeleton inside
+# the cloth to follow it, because Unity cannot run Blender's cloth.
+# The drape's first (rows+1)*(columns+1) vertices ARE its generated
+# grid, in order (solidify keeps the originals first -- measured), so
+# the simulation runs on that grid and every listed drape (the tails
+# and the lining inside them) rides the same bones.
+# ======================================================
+
+_DRAPE_KIT = r'''
+import math as _dm
+from mathutils import Vector as _DV, Matrix as _DMx
+from mathutils.kdtree import KDTree as _DKD
+
+
+def _dr_fcurves(action):
+    for layer in getattr(action, "layers", []):
+        for strip in layer.strips:
+            for bag in getattr(strip, "channelbags", []):
+                for fc in bag.fcurves:
+                    yield fc
+
+
+def _dr_layout(rows, cols, chains, segs):
+    chain_cols = [round(k * cols / (chains - 1)) for k in range(chains)]
+    seg_rows = [round(k * rows / segs) for k in range(segs + 1)]
+    return chain_cols, seg_rows
+
+
+def _dr_grid(obj, rows, cols):
+    n = (rows + 1) * (cols + 1)
+    if len(obj.data.vertices) < n:
+        raise RuntimeError("%r has %d vertices -- not a %dx%d drape grid" % (
+            obj.name, len(obj.data.vertices), rows, cols))
+    return [obj.matrix_world @ obj.data.vertices[i].co for i in range(n)]
+
+
+def _dr_bones(rig, grid, rows, cols, chains, segs, prefix, parent):
+    """Chains of bones down the drape, under `parent` (the Hips)."""
+    if parent not in rig.data.bones:
+        raise RuntimeError("the skeleton has no %s bone to hang the drape from" % parent)
+    chain_cols, seg_rows = _dr_layout(rows, cols, chains, segs)
+    _active(rig)
+    bpy.ops.object.mode_set(mode="EDIT")
+    eb = rig.data.edit_bones
+    for old in [b for b in eb if b.name.startswith(prefix + "_")]:
+        eb.remove(old)
+    inv = rig.matrix_world.inverted()
+    for k, c in enumerate(chain_cols):
+        up = eb[parent]
+        for g in range(segs):
+            bone = eb.new("%s_%d_%d" % (prefix, k, g))
+            bone.head = inv @ _DV(grid[seg_rows[g] * (cols + 1) + c])
+            bone.tail = inv @ _DV(grid[seg_rows[g + 1] * (cols + 1) + c])
+            bone.parent = up
+            bone.use_connect = g > 0
+            bone.use_deform = True
+            up = bone
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return chain_cols, seg_rows
+
+
+def _dr_grid_weights(r, c, rows, cols, chain_cols, segs):
+    """Blended between the two nearest chains and the two nearest segments."""
+    p = r / rows * segs - 0.5
+    g0 = max(0, min(segs - 1, int(_dm.floor(p))))
+    fr = max(0.0, min(1.0, p - g0))
+    downs = ((g0, 1.0 - fr), (min(segs - 1, g0 + 1), fr))
+    last = len(chain_cols) - 1
+    k = max(0, min(last - 1, next((i for i in range(last) if c <= chain_cols[i + 1]), 0)))
+    span = max(1, chain_cols[k + 1] - chain_cols[k])
+    f = (c - chain_cols[k]) / span
+    out = {}
+    for chain, w in ((k, 1.0 - f), (k + 1, f)):
+        for g, wd in downs:
+            if w * wd > 1e-4:
+                out[(chain, g)] = out.get((chain, g), 0.0) + w * wd
+    return out
+
+
+def _dr_weigh(obj, rig, grid, rows, cols, chain_cols, segs, prefix):
+    """Every vertex of `obj` onto the drape bones, by its nearest grid point."""
+    tree = _DKD(len(grid))
+    for i, p in enumerate(grid):
+        tree.insert(p, i)
+    tree.balance()
+    for g in list(obj.vertex_groups):
+        obj.vertex_groups.remove(g)
+    groups = {}
+    for v in obj.data.vertices:
+        _, i, _ = tree.find(obj.matrix_world @ v.co)
+        r, c = divmod(i, cols + 1)
+        for (chain, g), w in _dr_grid_weights(r, c, rows, cols, chain_cols, segs).items():
+            name = "%s_%d_%d" % (prefix, chain, g)
+            group = groups.get(name) or obj.vertex_groups.new(name=name)
+            groups[name] = group
+            group.add([v.index], w, "ADD")
+    for m in [m for m in obj.modifiers if m.type == "ARMATURE"]:
+        obj.modifiers.remove(m)
+    mod = obj.modifiers.new("Armature", "ARMATURE")
+    mod.object = rig
+    if obj.parent != rig:
+        keep = obj.matrix_world.copy()
+        obj.parent = rig
+        obj.matrix_world = keep
+
+
+_DR_ARM_BONES = ("UpperArm", "LowerArm", "Hand")
+
+
+def _dr_collider(rig):
+    """The body minus its arms: the legs push the tails, the arms do not."""
+    bodies = [o for o in bpy.data.objects if o.type == "MESH" and o.parent == rig
+              and any(g.name == "Hips" for g in o.vertex_groups)]
+    if not bodies:
+        return None
+    body = max(bodies, key=lambda o: len(o.data.vertices))
+    proxy = body.copy()
+    proxy.data = body.data.copy()
+    proxy.name = body.name + "_ARIA_DrapeCollider"
+    bpy.context.scene.collection.objects.link(proxy)
+    names = {g.index: g.name for g in proxy.vertex_groups}
+    arm = [v.index for v in proxy.data.vertices
+           if (lambda best: best is not None and any(p in names.get(best.group, "") for p in _DR_ARM_BONES))(
+               max(v.groups, key=lambda e: e.weight, default=None))]
+    if arm:
+        import bmesh as _dbm
+        bm = _dbm.new()
+        bm.from_mesh(proxy.data)
+        bm.verts.ensure_lookup_table()
+        _dbm.ops.delete(bm, geom=[bm.verts[i] for i in arm], context="VERTS")
+        bm.to_mesh(proxy.data)
+        bm.free()
+    proxy.modifiers.new("ARIA_Collision", "COLLISION")
+    proxy.collision.thickness_outer = 0.015
+    proxy.hide_render = True
+    return proxy
+
+
+def _dr_simulate(rig, grid, rows, cols, chains, segs, prefix, parent, pin, action, collider):
+    """Cloth on the drape grid through `action`; key the drape bones to it.
+
+    Loops run twice and keep the second cycle; a one-shot clip settles
+    on its first pose then plays once -- as the cape does."""
+    scene = bpy.context.scene
+    chain_cols, seg_rows = _dr_layout(rows, cols, chains, segs)
+    start, end = (int(round(f)) for f in action.frame_range)
+    span = max(1, end - start)
+    ad = rig.animation_data or rig.animation_data_create()
+    was = ad.action
+    ad.action = action
+    for layer in getattr(action, "layers", []):
+        for strip in layer.strips:
+            for bag in getattr(strip, "channelbags", []):
+                for fc in [fc for fc in bag.fcurves if fc.data_path.startswith('pose.bones["%s_' % prefix)]:
+                    bag.fcurves.remove(fc)
+    for pb in rig.pose.bones:
+        if pb.name.startswith(prefix + "_"):
+            pb.matrix_basis = _DMx.Identity(4)
+    scene.frame_set(start)
+    # The simulated cloth: the bare grid, riding the parent bone, its top pinned.
+    faces = [(r * (cols + 1) + c, r * (cols + 1) + c + 1, (r + 1) * (cols + 1) + c + 1, (r + 1) * (cols + 1) + c)
+             for r in range(rows) for c in range(cols)]
+    mesh = bpy.data.meshes.new("ARIA_DrapeSim")
+    inv = rig.matrix_world.inverted()
+    mesh.from_pydata([tuple(p) for p in grid], [], faces)
+    sim = bpy.data.objects.new("ARIA_DrapeSim", mesh)
+    scene.collection.objects.link(sim)
+    ride = sim.vertex_groups.new(name=parent)
+    ride.add(list(range(len(grid))), 1.0, "REPLACE")
+    top = max(p.z for p in grid)
+    pinned = sim.vertex_groups.new(name="ARIA_Pin")
+    pinned.add([i for i, p in enumerate(grid) if p.z >= top - pin], 1.0, "REPLACE")
+    hold = sim.modifiers.new("ARIA_Hold", "ARMATURE")
+    hold.object = rig
+    cloth = sim.modifiers.new("ARIA_Cloth", "CLOTH")
+    st = cloth.settings
+    st.quality = 6
+    st.mass = 0.6
+    st.air_damping = 1.5
+    st.tension_stiffness = 15.0
+    st.compression_stiffness = 15.0
+    st.bending_stiffness = 6.0
+    st.vertex_group_mass = "ARIA_Pin"
+    cloth.collision_settings.use_collision = collider is not None
+    cloth.collision_settings.distance_min = 0.012
+    cyclic = bool(getattr(action, "use_cyclic", True))
+    loops = []
+    for fc in _dr_fcurves(action):
+        if cyclic and not fc.data_path.startswith('pose.bones["%s_' % prefix):
+            loops.append(fc.modifiers.new("CYCLES"))
+    first = start if cyclic else start - span
+    last = start + 2 * span if cyclic else end
+    keep = start + span if cyclic else start
+    shift = span if cyclic else 0
+    cloth.point_cache.frame_start = first
+    cloth.point_cache.frame_end = last
+    positions = {}
+    try:
+        for f in range(first, last + 1):
+            scene.frame_set(f)
+            if f >= keep:
+                ev = sim.evaluated_get(bpy.context.evaluated_depsgraph_get())
+                positions[f - shift] = [sim.matrix_world @ ev.data.vertices[i].co.copy()
+                                        for i in range(len(grid))]
+    finally:
+        for fc in _dr_fcurves(action):
+            for mod in list(fc.modifiers):
+                if mod in loops:
+                    fc.modifiers.remove(mod)
+        bpy.data.objects.remove(sim, do_unlink=True)
+        bpy.data.meshes.remove(mesh)
+
+    def _along(pts, k, g):
+        c = chain_cols[k]
+        total = _DV((0.0, 0.0, 0.0))
+        for dc, w in ((-1, 0.25), (0, 0.5), (1, 0.25)):
+            cc = max(0, min(cols, c + dc))
+            total += w * (inv @ pts[seg_rows[g + 1] * (cols + 1) + cc] - inv @ pts[seg_rows[g] * (cols + 1) + cc])
+        return total
+    frames = [f for f in range(start, end + 1) if f in positions]
+    raw = {f: {(k, g): _along(positions[f], k, g) for k in range(chains) for g in range(segs)} for f in frames}
+    wants = {}
+    for i, f in enumerate(frames):
+        a, b = raw[frames[max(0, i - 1)]], raw[frames[min(len(frames) - 1, i + 1)]]
+        wants[f] = {key: 0.25 * a[key] + 0.5 * raw[f][key] + 0.25 * b[key] for key in raw[f]}
+    _active(rig)
+    bpy.ops.object.mode_set(mode="POSE")
+    keyed = 0
+    for f in frames:
+        scene.frame_set(f)
+        for k in range(chains):
+            for g in range(segs):
+                pb = rig.pose.bones["%s_%d_%d" % (prefix, k, g)]
+                bpy.context.view_layer.update()
+                want = wants[f][(k, g)]
+                now = pb.tail - pb.head
+                if want.length < 1e-6 or now.length < 1e-6:
+                    continue
+                turn = now.normalized().rotation_difference(want.normalized())
+                pb.matrix = (_DMx.Translation(pb.head) @ turn.to_matrix().to_4x4()
+                             @ _DMx.Translation(-pb.head) @ pb.matrix)
+                bpy.context.view_layer.update()
+                pb.rotation_mode = "QUATERNION"
+                pb.keyframe_insert("rotation_quaternion", frame=f)
+                keyed += 1
+    bpy.ops.object.mode_set(mode="OBJECT")
+    ad.action = was
+    scene.frame_set(start)
+    return keyed
+'''
+
+
+def bake_drape(params: Dict[str, Any]) -> str:
+    """Make a drape swing: its own bones, cloth simulated through every clip.
+
+    `drape`: the generated drape to simulate (a coat's tails), `rows` and
+    `columns` the grid it was generated with; `also`: other drapes that
+    ride the same bones (the lining inside the tails). The drape bones --
+    `chains` round the drape, `segments` down it, named `prefix`_k_g --
+    hang from `parent` (Hips); each vertex of every listed drape is
+    re-weighted onto them by its nearest grid point, replacing the leg
+    weights it had (with those, a coat's tails bend like trouser legs).
+    The top `pin` metres of the grid stay fixed to the hips; the rest is
+    cloth, pushed by the body with its arms left out. `clips`: the
+    actions to bake (default: every clip on the rig except Pose).
+    """
+    rows = _int(params.get("rows"), 24, 2, 400)
+    cols = _int(params.get("columns"), 48, 4, 400)
+    chains = _int(params.get("chains"), 12, 2, 64)
+    segs = _int(params.get("segments"), 6, 1, 32)
+    clips = params.get("clips")
+    return (_DRAPE_KIT +
+            f'_rig = _obj({_text(params.get("armature"))})\n'
+            f'_drape = _obj({_text(params.get("drape"))})\n'
+            f'_riders = [_drape] + [_obj(n) for n in {_names(params.get("also"))}]\n'
+            f'_prefix = {_text(params.get("prefix") or "Drape")}\n'
+            f'_parent = {_text(params.get("parent") or "Hips")}\n'
+            f'_grid = _dr_grid(_drape, {rows}, {cols})\n'
+            f'_cc, _sr = _dr_bones(_rig, _grid, {rows}, {cols}, {chains}, {segs}, _prefix, _parent)\n'
+            f'for _o in _riders:\n'
+            f'    _dr_weigh(_o, _rig, _grid, {rows}, {cols}, _cc, {segs}, _prefix)\n'
+            f'_names_ = {_names(clips) if clips else "None"}\n'
+            f'_actions = [bpy.data.actions[n] for n in _names_] if _names_ else [a for a in bpy.data.actions '
+            f'if not a.name.startswith(("Pose", "!")) and any(fc.data_path.startswith("pose.bones") '
+            f'for fc in _dr_fcurves(a))]\n'
+            f'_collider = _dr_collider(_rig)\n'
+            f'try:\n'
+            f'    _baked = {{a.name: _dr_simulate(_rig, _grid, {rows}, {cols}, {chains}, {segs}, _prefix, '
+            f'_parent, {_num(params.get("pin"), 0.1)}, a, _collider) for a in _actions}}\n'
+            f'finally:\n'
+            f'    if _collider is not None:\n'
+            f'        _cm_ = _collider.data\n'
+            f'        bpy.data.objects.remove(_collider, do_unlink=True)\n'
+            f'        bpy.data.meshes.remove(_cm_)\n'
+            f'_RESULT["modified"].append(_rig.name)\n'
+            f'_note("bake_drape", armature=_rig.name, drape=_drape.name, bones={chains} * {segs}, '
+            f'riders=[o.name for o in _riders], clips=_baked)\n')
+
+
 def flatten_hierarchy(params: Dict[str, Any]) -> str:
     """Lift every mesh out of the empties a generator wrapped it in.
 
@@ -8013,6 +8318,7 @@ TEMPLATES = {
     "turntable": turntable,
     "add_cape": add_cape,
     "bake_cloth": bake_cloth,
+    "bake_drape": bake_drape,
     "copy_landmarks": copy_landmarks,
     "voxel_remesh": voxel_remesh,
     "stamp_detail": stamp_detail,
