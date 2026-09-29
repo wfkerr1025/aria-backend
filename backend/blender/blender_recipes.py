@@ -323,6 +323,8 @@ def resolve(value: Any, marks: Dict[str, Any], where: str = "") -> Any:
 def _marks_for(recipe: Dict[str, Any]) -> Dict[str, Any]:
     """The landmark table for whatever base this recipe stands on."""
     base = recipe.get("base") or {}
+    if base.get("recipe"):
+        return landmarks(str(base["recipe"]))
     return landmarks(base.get("object", "")) if base else {}
 
 
@@ -483,9 +485,14 @@ def part_names(name: str, prefix: Optional[str] = None) -> List[str]:
     """
     recipe = load(name)
     head = prefix or prefix_for(name)
-    return ([_name(head, item.get("id")) for item in recipe.get("objects", [])]
-            + [_name(head, item.get("id"), "Garment")
-               for item in recipe.get("garments", [])])
+    garments: List[str] = []
+    for item in recipe.get("garments", []):
+        worn = _name(head, item.get("id"), "Garment")
+        garments.append(worn)
+        # A neckline cutter is made and deleted inside the build; it is
+        # still a mesh the build created, in this order.
+        garments += [f"{worn}_Cut{n}" for n in range(1, len(item.get("cuts", [])) + 1)]
+    return [_name(head, item.get("id")) for item in recipe.get("objects", [])] + garments
 
 
 def _one_object(item: Dict[str, Any], head: str,
@@ -741,6 +748,12 @@ def rig_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]
     if spec.get("auto_rig"):
         body = spec.get("object") or (recipe.get("base") or {}).get("as") or f"{head}_Base"
         options = spec["auto_rig"] if isinstance(spec["auto_rig"], dict) else {}
+        # Only the options this build's auto_rig reads: a recipe written
+        # for a newer rig (keep_off_arms, cut_bridges...) must not stop an
+        # older one from rigging at all.
+        from backend.blender import blender_script_templates as _templates
+        known = set(_templates.parameters("auto_rig"))
+        options = {key: value for key, value in options.items() if key in known}
         return [{"action": "find_landmarks", "params": {"object": body, "kind": "body"}},
                 {"action": "auto_rig", "params": {"object": body, "name": arm, **options}}]
 
@@ -927,7 +940,8 @@ def _library_blend(library: str) -> str:
         f"no base library called {library!r}. There is: {', '.join(str(k) for k in known) or 'nothing'}")
 
 
-def base_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+def base_actions(name: str, prefix: Optional[str] = None,
+                 called: Optional[str] = None) -> List[Dict[str, Any]]:
     """Bring in the recipe's base mesh, sized and stood on the floor.
 
     A recipe with no `base` gets nothing, which is right for a rock or
@@ -939,8 +953,19 @@ def base_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]
     if not spec:
         return []
 
+    called = called or spec.get("as") or f"{prefix or prefix_for(name)}_Base"
+
+    # A body another recipe makes -- the anime figures are a base
+    # reshaped by `proportions` -- is built by that recipe's own steps,
+    # then renamed to what this recipe calls it. Its landmarks are filed
+    # under the recipe's name (measure_base_landmarks RECIPE_BODIES).
+    if spec.get("recipe"):
+        maker = str(spec["recipe"])
+        # Built under THIS recipe's name, so it cannot collide with the
+        # body itself when both are in one scene (build_many).
+        return base_actions(maker, called=called) + proportions_actions(maker, called=called)
+
     blend = spec.get("blend") or _library_blend(str(spec.get("library", "")))
-    called = spec.get("as") or f"{prefix or prefix_for(name)}_Base"
 
     steps: List[Dict[str, Any]] = [
         {"action": "append_from_blend",
@@ -954,9 +979,9 @@ def base_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]
 
     if spec.get("height"):
         steps.append({"action": "scale_to_height",
-                      "params": {"height": spec["height"]}})
+                      "params": {"object": called, "height": spec["height"]}})
         steps.append({"action": "apply_transforms", "params": {}})
-        steps.append({"action": "origin_to_floor", "params": {}})
+        steps.append({"action": "origin_to_floor", "params": {"object": called}})
 
     return steps
 
@@ -964,7 +989,8 @@ def base_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]
 _BOX_KEYS = ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")
 
 
-def proportions_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+def proportions_actions(name: str, prefix: Optional[str] = None,
+                        called: Optional[str] = None) -> List[Dict[str, Any]]:
     """Reshape the base into a style: longer legs, slimmer limbs, a smaller head.
 
     A style is mostly proportions, so a recipe can take a base body and
@@ -985,7 +1011,7 @@ def proportions_actions(name: str, prefix: Optional[str] = None) -> List[Dict[st
         return []
 
     marks = _marks_for(recipe)
-    called = base.get("as") or f"{prefix or prefix_for(name)}_Base"
+    called = called or base.get("as") or f"{prefix or prefix_for(name)}_Base"
 
     parts = []
     for part in spec.get("parts", []):
@@ -1004,9 +1030,10 @@ def proportions_actions(name: str, prefix: Optional[str] = None) -> List[Dict[st
         {"action": "reshape_body",
          "params": {"object": called, "parts": parts, "heights": heights}}]
     if spec.get("height"):
-        steps.append({"action": "scale_to_height", "params": {"height": spec["height"]}})
+        steps.append({"action": "scale_to_height",
+                      "params": {"object": called, "height": spec["height"]}})
         steps.append({"action": "apply_transforms", "params": {}})
-        steps.append({"action": "origin_to_floor", "params": {}})
+        steps.append({"action": "origin_to_floor", "params": {"object": called}})
     if spec.get("smooth", True):
         steps.append({"action": "smooth_shade", "params": {"object": called}})
     return steps
@@ -1150,6 +1177,27 @@ def garment_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, A
             steps.append({"action": "apply_solidify",
                           "params": {"object": worn, "thickness": item["thickness"],
                                      "apply": True}})
+
+        # A clean edge where a box cut cannot give one. A mask follows
+        # the body's own faces, so an edge that crosses them at an
+        # angle -- a neckline round a neck -- comes out torn. `cuts`
+        # carves the finished garment with a smooth oval instead:
+        # {"at": [x, y, z], "size": [x, y, z]} are its centre and radii,
+        # landmark names allowed. After the solidify, so the carve goes
+        # clean through both faces of the cloth.
+        for number, cut in enumerate(item.get("cuts", []), 1):
+            where = f"{name}/{item.get('id')} cut {number}"
+            cutter = f"{worn}_Cut{number}"
+            radii = _point(cut.get("size") or [0.1, 0.1, 0.1], marks, where + " size")
+            steps.append({"action": "add_sphere",
+                          "params": {"name": cutter, "radius": 1.0,
+                                     "location": _point(cut.get("at"), marks, where + " at")}})
+            steps.append({"action": "scale",
+                          "params": {"object": cutter, "x": radii[0], "y": radii[1], "z": radii[2]}})
+            steps.append({"action": "apply_boolean",
+                          "params": {"object": worn, "target": cutter,
+                                     "operation": "DIFFERENCE", "apply": True}})
+            steps.append({"action": "delete_object", "params": {"object": cutter}})
 
         if item.get("smooth", True):
             steps.append({"action": "smooth_shade", "params": {"object": worn}})

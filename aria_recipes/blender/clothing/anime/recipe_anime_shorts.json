@@ -1,0 +1,38 @@
+{
+  "name": "anime_shorts",
+  "version": "1.0",
+  "description": "Shorts for the anime male body: waist to just above the knee, a little loose. Cut from the reshaped anime body (base.recipe).",
+  "units": "meters",
+  "base": {
+    "recipe": "anime_male_body",
+    "as": "Shorts_Body",
+    "keep": false
+  },
+  "garments": [
+    {
+      "id": "shorts",
+      "from": "Shorts_Body",
+      "z_min": "knee+0.06",
+      "z_max": "waist+0.01",
+      "x_min": "-hip_x-0.03",
+      "x_max": "hip_x+0.03",
+      "soft": 0.008,
+      "offset": 0.022,
+      "thickness": 0.012,
+      "relax": {
+        "factor": 0.8,
+        "iterations": 16
+      }
+    }
+  ],
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": false
+  },
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/anime_shorts.fbx",
+    "apply_scale": true
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "anime_skinny_jeans",
+  "version": "1.0",
+  "description": "Skinny jeans for the anime male body (Jin-Woo's black jeans): waist to ankle, close to the leg. Cut from the reshaped anime body (base.recipe).",
+  "units": "meters",
+  "base": {
+    "recipe": "anime_male_body",
+    "as": "Jeans_Body",
+    "keep": false
+  },
+  "garments": [
+    {
+      "id": "jeans",
+      "from": "Jeans_Body",
+      "z_min": "ankle+0.03",
+      "z_max": "waist+0.01",
+      "x_min": "-hip_x-0.03",
+      "x_max": "hip_x+0.03",
+      "soft": 0.01,
+      "offset": 0.02,
+      "thickness": 0.008,
+      "relax": {
+        "factor": 0.75,
+        "iterations": 14
+      }
+    }
+  ],
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": false
+  },
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/anime_skinny_jeans.fbx",
+    "apply_scale": true
+  }
+}

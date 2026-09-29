@@ -2172,14 +2172,16 @@ def scale_to_height(params: Dict[str, Any]) -> str:
 
     Scaled about the world origin as one group, so a model made of
     several objects keeps its proportions and its parts stay together.
+
+    `object` narrows it to one model, for a scene that already holds
+    another: two bodies measured together are measured as a crowd.
     """
     return (
         f'from mathutils import Vector\n'
         f'_target = {_num(params.get("height"), 1.8)}\n'
         f'if _target <= 0:\n'
         f'    raise RuntimeError("a target height of %s is not a height" % _target)\n'
-        f'_movable = [o for o in bpy.data.objects if o.parent is None]\n'
-        f'_meshes = [o for o in bpy.data.objects if o.type == "MESH"]\n'
+        + _one_or_all(params.get("object")) +
         f'if not _meshes:\n'
         f'    raise RuntimeError("there is no mesh in the scene to scale")\n'
         f'_lo = Vector((1e18, 1e18, 1e18))\n'
@@ -2202,6 +2204,14 @@ def scale_to_height(params: Dict[str, Any]) -> str:
         f'factor=round(_factor, 4))')
 
 
+def _one_or_all(only: Any) -> str:
+    """`_meshes` to measure and `_movable` to move: one named model, or the scene."""
+    if only:
+        return f'_meshes = [_obj({_text(only)})]\n_movable = list(_meshes)\n'
+    return ('_movable = [o for o in bpy.data.objects if o.parent is None]\n'
+            '_meshes = [o for o in bpy.data.objects if o.type == "MESH"]\n')
+
+
 def origin_to_floor(params: Dict[str, Any]) -> str:
     """Put the origin under the model's feet, centred.
 
@@ -2209,10 +2219,12 @@ def origin_to_floor(params: Dict[str, Any]) -> str:
     the model, so dropping one into a scene at ground level buries it
     to the waist -- and the fix, done by hand, is the same offset every
     single time.
+
+    `object` narrows it to one model, as scale_to_height does.
     """
     return (
         'from mathutils import Vector\n'
-        '_meshes = [o for o in bpy.data.objects if o.type == "MESH"]\n'
+        + _one_or_all(params.get("object")) +
         'if not _meshes:\n'
         '    raise RuntimeError("there is no mesh in the scene to re-origin")\n'
         '_lo = Vector((1e18, 1e18, 1e18))\n'
@@ -2224,7 +2236,7 @@ def origin_to_floor(params: Dict[str, Any]) -> str:
         '            _lo[_a] = min(_lo[_a], _w[_a])\n'
         '            _hi[_a] = max(_hi[_a], _w[_a])\n'
         '_shift = Vector(((_lo.x + _hi.x) / 2.0, (_lo.y + _hi.y) / 2.0, _lo.z))\n'
-        'for _o in [o for o in bpy.data.objects if o.parent is None]:\n'
+        'for _o in _movable:\n'
         '    _o.location = _o.location - _shift\n'
         'bpy.context.view_layer.update()\n'
         '_note("origin_to_floor", moved=(round(-_shift.x, 4), '
@@ -4227,15 +4239,17 @@ def vertex_group_by_region(params: Dict[str, Any]) -> str:
     Leaving a bound out leaves that side open: a vest needs a top and a
     bottom and does not care about x at all.
     """
-    def bound(key, default):
-        value = params.get(key)
+    # Each bound is read with its own params.get so `parameters()` can
+    # see it: read through a helper by key, the session refused every
+    # garment ("has no 'x_min' parameter") before Blender even started.
+    def bound(value, default):
         return "None" if value is None or str(value).strip() == "" else _num(value, default)
 
     return (f'_target = _obj({_text(params.get("object"))})\n'
             f'_gname = {_named(params, "ARIA_Region")}\n'
             f'_grp = _target.vertex_groups.get(_gname) or _target.vertex_groups.new(name=_gname)\n'
-            f'_lo = [{bound("x_min", 0)}, {bound("y_min", 0)}, {bound("z_min", 0)}]\n'
-            f'_hi = [{bound("x_max", 0)}, {bound("y_max", 0)}, {bound("z_max", 0)}]\n'
+            f'_lo = [{bound(params.get("x_min"), 0)}, {bound(params.get("y_min"), 0)}, {bound(params.get("z_min"), 0)}]\n'
+            f'_hi = [{bound(params.get("x_max"), 0)}, {bound(params.get("y_max"), 0)}, {bound(params.get("z_max"), 0)}]\n'
             f'_soft = {_num(params.get("soft"), 0.0)}\n'
             f'_M = _target.matrix_world\n'
             f'_in = 0\n'
@@ -4478,6 +4492,12 @@ def reshape_body(params: Dict[str, Any]) -> str:
             f'if _target.data.has_custom_normals:\n'
             f'    bpy.ops.mesh.customdata_custom_splitnormals_clear()\n'
             f'_target.data.update()\n'
+            # The bounding box is cached on the evaluated object. Without
+            # this, scale_to_height and origin_to_floor read the body as
+            # it was BEFORE the reshape: the anime male came out 1.874 m
+            # for a 1.8 m recipe, standing 13 mm under the floor.
+            f'_target.update_tag()\n'
+            f'bpy.context.view_layer.update()\n'
             f'_RESULT["modified"].append(_target.name)\n'
             f'_note("reshape_body", object=_target.name, parts=_report, '
             f'heights=len(_pairs), height=round(max(_p.z for _p in _co) - min(_p.z for _p in _co), 4))')

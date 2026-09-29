@@ -1,0 +1,38 @@
+{
+  "name": "anime_briefs",
+  "version": "1.0",
+  "description": "Briefs for the anime male body: under the waist to the top of the thigh, close fitting. Cut from the reshaped anime body (base.recipe).",
+  "units": "meters",
+  "base": {
+    "recipe": "anime_male_body",
+    "as": "Briefs_Body",
+    "keep": false
+  },
+  "garments": [
+    {
+      "id": "briefs",
+      "from": "Briefs_Body",
+      "z_min": "crotch-0.07",
+      "z_max": "waist-0.02",
+      "x_min": "-hip_x-0.02",
+      "x_max": "hip_x+0.02",
+      "soft": 0.01,
+      "offset": 0.009,
+      "thickness": 0.006,
+      "relax": {
+        "factor": 0.5,
+        "iterations": 6
+      }
+    }
+  ],
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": false
+  },
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/anime_briefs.fbx",
+    "apply_scale": true
+  }
+}

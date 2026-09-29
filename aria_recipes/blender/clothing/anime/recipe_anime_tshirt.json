@@ -1,0 +1,62 @@
+{
+  "name": "anime_tshirt",
+  "version": "1.0",
+  "description": "A plain T-shirt for the anime male body (Jin-Woo's white tee): the torso from just under the waist to a scoop neck carved clean (cuts), short sleeves. Cut from the reshaped anime body, so it uses that body's own landmarks (base.recipe). Loose but not baggy.",
+  "units": "meters",
+  "base": {
+    "recipe": "anime_male_body",
+    "as": "Tee_Body",
+    "keep": false
+  },
+  "garments": [
+    {
+      "id": "tshirt",
+      "from": "Tee_Body",
+      "regions": [
+        {
+          "z_min": "waist-0.07",
+          "z_max": "neck+0.02",
+          "x_min": "-chest_x-0.05",
+          "x_max": "chest_x+0.05"
+        },
+        {
+          "z_min": "armpit-0.12",
+          "z_max": "neck+0.02",
+          "x_min": "-shoulder_x",
+          "x_max": "shoulder_x"
+        }
+      ],
+      "soft": 0.004,
+      "offset": 0.024,
+      "thickness": 0.008,
+      "relax": {
+        "factor": 0.85,
+        "iterations": 24
+      },
+      "cuts": [
+        {
+          "at": [
+            0,
+            -0.045,
+            "neck+0.02"
+          ],
+          "size": [
+            0.115,
+            0.145,
+            0.115
+          ]
+        }
+      ]
+    }
+  ],
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": false
+  },
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/anime_tshirt.fbx",
+    "apply_scale": true
+  }
+}

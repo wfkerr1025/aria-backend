@@ -568,3 +568,23 @@ def test_reshape_body_refuses_a_pivot_it_does_not_know():
         templates.reshape_body({"object": "Body", "parts": [{"pivot": "__import__('os')"}]})
     with pytest.raises(templates.BadValue):
         templates.reshape_body({"object": "Body", "heights": [[0, 0]]})
+
+
+def test_a_garment_cut_carves_after_the_cloth_is_thickened_and_leaves_no_cutter():
+    steps = recipes.garment_actions("anime_tshirt")
+    order = [step["action"] for step in steps]
+    boolean = order.index("apply_boolean")
+    assert order.index("apply_solidify") < boolean < order.index("smooth_shade")
+    cutter = steps[boolean]["params"]["target"]
+    assert {"action": "delete_object", "params": {"object": cutter}} in steps
+
+
+def test_a_garment_can_be_cut_from_a_recipe_body_named_for_itself():
+    """build_many puts the body and its clothes in one scene: the garment's
+    copy of the body must not share the body's name, and is measured alone."""
+    steps = recipes.base_actions("anime_tshirt")
+    names = {s["params"].get("name") for s in steps if s["action"] == "append_from_blend"}
+    assert names == {"Tee_Body"}
+    for step in steps:
+        if step["action"] in ("scale_to_height", "origin_to_floor"):
+            assert step["params"]["object"] == "Tee_Body"

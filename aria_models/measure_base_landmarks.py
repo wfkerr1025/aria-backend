@@ -91,6 +91,12 @@ BODIES = [
     ("GEO-body_female_realistic", 1.64),
 ]
 
+# Bodies a RECIPE makes by reshaping a base -- the anime figures. They
+# are measured as the recipe leaves them (base, then proportions), and
+# filed under the recipe's name, which is what a garment recipe names
+# in `base.recipe` to be cut from one.
+RECIPE_BODIES = ["anime_male_body", "anime_female_body"]
+
 
 # The measurement, as it runs inside Blender. Printed between markers
 # because Blender's stdout also carries add-on banners and timings.
@@ -152,11 +158,13 @@ print("ARIA_PROFILE_CLOSE")
 '''
 
 
-def _profile(blender, blend, body, height):
+def _profile(blender, blend, body, height, recipe=None):
     """Run the base pipeline on one body and slice what comes out."""
+    from backend.blender import blender_recipes as recipes
     from backend.blender import blender_script_templates as templates
 
-    setup = [
+    setup = ([{"action": "clear_scene"}] + recipes.base_actions(recipe)
+             + recipes.proportions_actions(recipe)) if recipe else [
         {"action": "clear_scene"},
         {"action": "append_from_blend",
          "params": {"blend": blend, "object": body, "name": "Body",
@@ -182,7 +190,7 @@ def _profile(blender, blend, body, height):
 
     if "ARIA_PROFILE_OPEN" not in run.stdout:
         raise RuntimeError(
-            f"{body}: Blender printed no profile (exit {run.returncode}).\n"
+            f"{body or recipe}: Blender printed no profile (exit {run.returncode}).\n"
             + (run.stdout[-2000:] or "") + (run.stderr[-2000:] or ""))
 
     blob = run.stdout.split("ARIA_PROFILE_OPEN")[1].split("ARIA_PROFILE_CLOSE")[0]
@@ -450,6 +458,18 @@ def main():
             print("   ", error, file=sys.stderr)
             continue
         found = bases[body]["z"]
+        print("ok -- crotch %s, waist %s, neck %s"
+              % (found["crotch"], found["waist"], found["neck"]))
+
+    for recipe in RECIPE_BODIES:
+        print(" ", recipe, "(recipe) ...", end=" ", flush=True)
+        try:
+            bases[recipe] = _landmarks(_profile(blender, blend, None, None, recipe=recipe))
+        except (RuntimeError, ValueError) as error:
+            print("FAILED")
+            print("   ", error, file=sys.stderr)
+            continue
+        found = bases[recipe]["z"]
         print("ok -- crotch %s, waist %s, neck %s"
               % (found["crotch"], found["waist"], found["neck"]))
 
