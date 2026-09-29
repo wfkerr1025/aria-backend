@@ -183,3 +183,15 @@ def test_a_mesh_with_shape_keys_is_refused_not_torn():
     """No action adds shape keys yet, so this cannot be run in Blender;
     it checks the refusal is in every stroke's script."""
     assert "has shape keys" in _script(points=[[0, 0, 0]])
+
+
+def test_a_snake_hook_drags_along_a_free_path_and_snaps_only_its_start():
+    """A lock of hair runs out into space: only its root is on the surface."""
+    from backend.blender import blender_script_templates as templates
+    script = templates.sculpt_stroke({
+        "object": "Hair", "brush": "snake_hook", "radius": 0.03, "taper": 0.4, "pinch": 0.0,
+        "points": [[0, 0, 1.8], [0.05, 0, 1.85], [0.1, 0, 1.82]]})
+    compile(script, "snake_hook", "exec")
+    assert "_aria_snake(_sculpt" in script
+    assert "!= \"snake_hook\" or _i == 0" in script
+    assert "snake_hook" in templates.SCULPT_STROKE_BRUSHES

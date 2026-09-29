@@ -5582,7 +5582,7 @@ def describe_scene(params: Dict[str, Any]) -> str:
 
 SCULPT_STROKE_BRUSHES = frozenset({
     "draw", "clay", "inflate", "crease", "pinch", "flatten", "fill",
-    "scrape", "smooth", "grab",
+    "scrape", "smooth", "grab", "snake_hook",
 })
 
 # How strongly a vertex is moved against how far it is from the brush
@@ -5764,6 +5764,40 @@ class _AriaSculpt:
 
         self.co[inside] = points + move
         return int((_np.abs(move).sum(axis=1) > 1e-12).sum())
+
+
+def _aria_snake(sculpt, dabs, radius, taper, falloff, pinch):
+    """Drag the surface along a path -- a lock of hair, a horn, a tail.
+
+    Each dab takes what is under the brush and carries it to the next
+    point on the path, so the surface follows the stroke out into space
+    the way a sculptor's snake hook does; the brush narrows toward the
+    tip (`taper`, the end radius as a fraction of the start) and `pinch`
+    draws the dragged part in toward the path so it stays a lock and not
+    a cone. A grab moves a round region in one straight jump -- every
+    lock of hair made with one came out a spike.
+    """
+    moved = 0
+    count = max(len(dabs) - 1, 1)
+    for i in range(len(dabs) - 1):
+        a = _np.array(dabs[i]); b = _np.array(dabs[i + 1])
+        r = radius * (1.0 + (taper - 1.0) * i / count)
+        delta = sculpt.co - a
+        dist = _np.sqrt((delta * delta).sum(axis=1))
+        inside = _np.nonzero(dist < r)[0]
+        if not len(inside):
+            continue
+        w = _aria_falloff(dist[inside] / r, falloff)
+        step = b - a
+        pts = sculpt.co[inside] + step[None, :] * w[:, None]
+        if pinch > 0:
+            axis = step / max(_np.linalg.norm(step), 1e-12)
+            rel = pts - b
+            side = rel - (rel @ axis)[:, None] * axis[None, :]
+            pts = pts - side * (pinch * 0.25 * w)[:, None]
+        sculpt.co[inside] = pts
+        moved += len(inside)
+    return moved
 
 
 def _aria_resample(points, spacing):
@@ -6079,8 +6113,10 @@ def sculpt_stroke(params: Dict[str, Any]) -> str:
             f'    _world = [mathutils.Vector(p) for p in _raw]\n'
             f'_tree = _sculpt.tree()\n'
             f'_path = []\n'
-            f'for _p in _world:\n'
-            f'    _near = _tree.find_nearest(_inverse @ _p) if {snap} else (None,)\n'
+            # A snake hook's path runs out into space: only its first
+            # point sits on the surface.
+            f'for _i, _p in enumerate(_world):\n'
+            f'    _near = _tree.find_nearest(_inverse @ _p) if {snap} and ({brush} != "snake_hook" or _i == 0) else (None,)\n'
             f'    _path.append(_near[0] if _near[0] is not None else _inverse @ _p)\n'
             f'_dabs = _aria_resample([tuple(p) for p in _path], _radius * {_num(params.get("spacing"), 0.25)})\n'
             f'_offset_world = mathutils.Vector({_vector(params.get("offset"))})\n'
@@ -6100,6 +6136,13 @@ def sculpt_stroke(params: Dict[str, Any]) -> str:
             f'if _mirror >= 0:\n'
             f'    _flip = lambda v: mathutils.Vector([-c if i == _mirror else c for i, c in enumerate(v)])\n'
             f'    _centres += [(_flip(_d), _flip(_offset)) for _d in _dabs]\n'
+            f'if _brush == "snake_hook":\n'
+            f'    _moved = _aria_snake(_sculpt, [tuple(d) for d in _dabs], _radius, '
+            f'{_num(params.get("taper"), 0.25)}, {falloff}, {_num(params.get("pinch"), 0.5)})\n'
+            f'    if _mirror >= 0:\n'
+            f'        _moved += _aria_snake(_sculpt, [tuple(_flip(mathutils.Vector(d))) for d in _dabs], _radius, '
+            f'{_num(params.get("taper"), 0.25)}, {falloff}, {_num(params.get("pinch"), 0.5)})\n'
+            f'    _centres = []\n'
             f'if _brush == "grab":\n'
             f'    # A grab carries the region once, from where it was taken;\n'
             f'    # repeated along a path it would drag the same vertices twice.\n'
