@@ -8,7 +8,12 @@
     "object": "GEO-body_male_stylized",
     "as": "AnimeMale",
     "height": 1.8,
-    "keep": true
+    "keep": true,
+    "color": [
+      0.96,
+      0.8,
+      0.68
+    ]
   },
   "proportions": {
     "height": 1.8,

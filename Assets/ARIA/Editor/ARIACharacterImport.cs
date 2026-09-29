@@ -51,6 +51,9 @@ namespace ARIA.Characters
         public TextureSlot[] textures = new TextureSlot[0];
         // The material those maps belong to; empty means every renderer's.
         public string material = "";
+        // "toon": ARIA/Toon -- flat tones and an ink outline, for a character
+        // drawn that way. Empty: URP Lit (or Standard).
+        public string style = "";
     }
 
     [Serializable]
@@ -218,12 +221,19 @@ namespace ARIA.Characters
             }
             if (models.Count == 0)
                 return;
-            // Assets are not to be made while an import is running.
-            EditorApplication.delayCall += () =>
+            // Assets are not to be made while an import is running -- so on the
+            // next editor tick. That tick is EditorApplication.update, not
+            // delayCall: with the editor in the background (the person in
+            // another window while Aria sends the character) delayCall never
+            // came, and the character was never built. update keeps ticking.
+            EditorApplication.CallbackFunction once = null;
+            once = () =>
             {
+                EditorApplication.update -= once;
                 foreach (string model in models)
                     Build(model, render: false);
             };
+            EditorApplication.update += once;
         }
 
         // Unity -batchmode -projectPath <p> -executeMethod ARIA.Characters.ARIACharacterImporter.ImportPending -quit
@@ -371,6 +381,12 @@ namespace ARIA.Characters
                                 slots[m] = material;
                         r.sharedMaterials = slots;
                     }
+                // A kit character -- a body and separate clothes, each in its own
+                // flat colour, no baked maps -- drawn toon: every material the
+                // FBX brought becomes an ARIA/Toon material of the same colour,
+                // one per colour, so swapping a piece keeps its look.
+                if (material == null && sidecar.style == "toon")
+                    ToonEveryMaterial(folder, instance, report);
                 var group = instance.GetComponentInChildren<LODGroup>();
                 if (group != null)
                     report.lods = group.GetLODs().Select((l, i) => "LOD" + i + " " + string.Join("+",
@@ -442,6 +458,58 @@ namespace ARIA.Characters
             AssetDatabase.SaveAssets();
         }
 
+        // Each imported material, redrawn as ARIA/Toon in its own colour.
+        // Kept at <folder>/Toon/<material>.mat, so GUIDs survive a re-send.
+        static void ToonEveryMaterial(string folder, GameObject instance, CharacterReport report)
+        {
+            if (UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline == null)
+            {
+                report.warnings.Add("toon needs URP -- this project draws without it, so the kit keeps its imported materials");
+                return;
+            }
+            var toon = Shader.Find("ARIA/Toon");
+            if (toon == null || !toon.isSupported)
+            {
+                report.warnings.Add("ARIA/Toon is missing or does not compile here -- the kit keeps its imported materials");
+                return;
+            }
+            string toonFolder = folder + "/Toon";
+            if (!AssetDatabase.IsValidFolder(toonFolder))
+                AssetDatabase.CreateFolder(folder, "Toon");
+            var made = new Dictionary<string, Material>();
+            foreach (var r in instance.GetComponentsInChildren<Renderer>(true))
+            {
+                var slots = r.sharedMaterials;
+                for (int m = 0; m < slots.Length; m++)
+                {
+                    var source = slots[m];
+                    string key = source != null ? source.name : r.name;
+                    Material drawn;
+                    if (!made.TryGetValue(key, out drawn))
+                    {
+                        Color colour = Color.white;
+                        if (source != null)
+                            colour = source.HasProperty("_BaseColor") ? source.GetColor("_BaseColor")
+                                   : source.HasProperty("_Color") ? source.GetColor("_Color") : Color.white;
+                        string path = toonFolder + "/" + string.Concat(key.Split(Path.GetInvalidFileNameChars())) + ".mat";
+                        drawn = AssetDatabase.LoadAssetAtPath<Material>(path);
+                        if (drawn == null)
+                        {
+                            drawn = new Material(toon);
+                            AssetDatabase.CreateAsset(drawn, path);
+                        }
+                        drawn.shader = toon;
+                        drawn.SetColor("_BaseColor", colour);
+                        EditorUtility.SetDirty(drawn);
+                        made[key] = drawn;
+                    }
+                    slots[m] = drawn;
+                }
+                r.sharedMaterials = slots;
+            }
+            report.material = toonFolder;
+        }
+
         // A material from the baked maps -- URP Lit when the project draws with
         // URP, Standard otherwise. Kept at the same path, so its GUID survives.
         static Material BuildMaterial(string folder, CharacterSidecar sidecar, CharacterReport report)
@@ -454,6 +522,23 @@ namespace ARIA.Characters
                 return null;
             bool urp = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline != null;
             var shader = Shader.Find(urp ? "Universal Render Pipeline/Lit" : "Standard");
+            bool toon = urp && sidecar.style == "toon";
+            if (toon)
+            {
+                var drawn = Shader.Find("ARIA/Toon");
+                if (drawn != null && drawn.isSupported)
+                    shader = drawn;
+                else
+                {
+                    toon = false;
+                    report.warnings.Add("ARIA/Toon is missing or does not compile here -- drawn with URP Lit instead");
+                    // Why, in Unity's own words: a shader's compile errors show
+                    // only in its inspector, never in the log.
+                    if (drawn != null)
+                        foreach (var message in ShaderUtil.GetShaderMessages(drawn))
+                            report.warnings.Add("ARIA/Toon: " + message.message + " (line " + message.line + ")");
+                }
+            }
             string path = folder + "/" + sidecar.name + ".mat";
             var material = AssetDatabase.LoadAssetAtPath<Material>(path);
             if (material == null)
@@ -465,7 +550,9 @@ namespace ARIA.Characters
             Texture2D map;
             if (maps.TryGetValue("color", out map) && map != null)
                 material.SetTexture(urp ? "_BaseMap" : "_MainTex", map);
-            if (maps.TryGetValue("normal", out map) && map != null)
+            // A toon surface is flat by design: a normal map's bumps would
+            // break the tones up into the noise the style does away with.
+            if (!toon && maps.TryGetValue("normal", out map) && map != null)
             {
                 material.SetTexture("_BumpMap", map);
                 material.EnableKeyword("_NORMALMAP");
@@ -475,7 +562,8 @@ namespace ARIA.Characters
                 material.SetTexture("_OcclusionMap", map);
                 material.EnableKeyword("_OCCLUSIONMAP");
             }
-            material.SetFloat(urp ? "_Smoothness" : "_Glossiness", 0.35f);
+            if (!toon)
+                material.SetFloat(urp ? "_Smoothness" : "_Glossiness", 0.35f);
             foreach (var missing in maps.Where(m => m.Value == null))
                 report.warnings.Add("the " + missing.Key + " map did not import");
             EditorUtility.SetDirty(material);
@@ -500,6 +588,11 @@ namespace ARIA.Characters
                 if (slot == null)
                     continue;
                 var importer = (TextureImporter)assetImporter;
+                // At full size: Unity's default caps every texture at 2048, and
+                // a character's drawing baked at 8192 arrived at a quarter of
+                // its detail -- the lines ARIA painted on, blurred away.
+                importer.maxTextureSize = 8192;
+                importer.textureCompression = TextureImporterCompression.CompressedHQ;
                 if (slot.role == "normal")
                     importer.textureType = TextureImporterType.NormalMap;
                 else if (slot.role == "occlusion")
@@ -515,6 +608,66 @@ namespace ARIA.Characters
         // Unity's auto-mapper lost a game-ready character's LeftHand, and the
         // description Unity keeps in the .meta held on to a stride from an
         // earlier import, tilting every clip 65 degrees. True when it changed.
+        // The avatar's reference pose: the model as it stands, with its arms
+        // swung out level -- a T-pose -- worked out on a copy, so the mesh
+        // itself stays in the pose it was drawn in. This is what Unity's own
+        // "Enforce T-Pose" does. Bending the MESH into a T-pose instead (as
+        // ARIA once did in Blender) stretched a generated coat wherever the
+        // arms had touched it: scraps hanging in the air beside a man in a
+        // coat, visible whenever Unity showed his rest pose (2026-09-28).
+        static SkeletonBone[] TPoseSkeleton(GameObject model)
+        {
+            var copy = UnityEngine.Object.Instantiate(model);
+            copy.hideFlags = HideFlags.HideAndDontSave;
+            try
+            {
+                var named = new Dictionary<string, Transform>();
+                foreach (var t in copy.GetComponentsInChildren<Transform>(true))
+                    if (!named.ContainsKey(t.name)) named[t.name] = t;
+                Transform chest;
+                if (!named.TryGetValue("Chest", out chest) && !named.TryGetValue("Spine", out chest))
+                    chest = copy.transform;
+                foreach (string side in new[] { "Left", "Right" })
+                {
+                    Transform upper, lower, hand;
+                    if (!named.TryGetValue(side + "UpperArm", out upper) || !named.TryGetValue(side + "LowerArm", out lower))
+                        continue;
+                    named.TryGetValue(side + "Hand", out hand);
+                    // Out, level, away from the chest, whichever way the model faces.
+                    Vector3 up = copy.transform.up;
+                    Vector3 outward = Vector3.ProjectOnPlane(upper.position - chest.position, up);
+                    if (outward.sqrMagnitude < 1e-8f)
+                        continue;
+                    outward.Normalize();
+                    Align(upper, lower.position, outward);
+                    if (hand != null)
+                    {
+                        Align(lower, hand.position, outward);
+                        Transform tip = hand.childCount > 0 ? hand.GetChild(0) : null;
+                        if (tip != null)
+                            Align(hand, tip.position, outward);
+                    }
+                }
+                return copy.GetComponentsInChildren<Transform>(true).Select(t => new SkeletonBone
+                {
+                    name = t == copy.transform ? model.name : t.name,
+                    position = t.localPosition, rotation = t.localRotation, scale = t.localScale,
+                }).ToArray();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(copy);
+            }
+        }
+
+        static void Align(Transform bone, Vector3 childAt, Vector3 direction)
+        {
+            Vector3 now = childAt - bone.position;
+            if (now.sqrMagnitude < 1e-10f)
+                return;
+            bone.rotation = Quaternion.FromToRotation(now.normalized, direction) * bone.rotation;
+        }
+
         static bool MapHumanoid(ModelImporter importer, GameObject model)
         {
             var named = new Dictionary<string, Transform>();
@@ -533,10 +686,7 @@ namespace ARIA.Characters
             }
             if (RequiredBones.Any(r => !named.ContainsKey(r)))
                 return false;                          // not ARIA's naming: leave it to Unity
-            var skeleton = model.GetComponentsInChildren<Transform>(true).Select(t => new SkeletonBone
-            {
-                name = t.name, position = t.localPosition, rotation = t.localRotation, scale = t.localScale,
-            }).ToArray();
+            var skeleton = TPoseSkeleton(model);
 
             var current = importer.humanDescription;
             bool same = current.human != null && current.skeleton != null

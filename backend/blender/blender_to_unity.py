@@ -48,6 +48,10 @@ __all__ = ["IMPORTER", "configured_project", "projects", "project_named", "proje
 REPO_ROOT = Path(__file__).resolve().parents[2]
 IMPORTER = REPO_ROOT / "Assets" / "ARIA" / "Editor" / "ARIACharacterImport.cs"
 IMPORTER_IN_PROJECT = Path("Assets", "ARIA", "Editor", "ARIACharacterImport.cs")
+# The shaders a character's style can ask for, installed beside the importer.
+SHADERS = {REPO_ROOT / "Assets" / "ARIA" / "Shaders" / "ARIAToon.shader":
+           Path("Assets", "ARIA", "Shaders", "ARIAToon.shader")}
+STYLES = ("", "toon")
 CHARACTERS = "Assets/ARIA/Characters"
 PROPS = "Assets/ARIA/Props"
 IMPORT_METHOD = "ARIA.Characters.ARIACharacterImporter.ImportPending"
@@ -109,14 +113,19 @@ def project_is_open(project: Path) -> bool:
 
 
 def install_importer(project: Path) -> bool:
-    """Put ARIACharacterImport.cs into the project. True when it changed."""
-    target = Path(project) / IMPORTER_IN_PROJECT
-    source = IMPORTER.read_bytes()
-    if target.is_file() and target.read_bytes() == source:
-        return False
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(source)
-    return True
+    """Put ARIACharacterImport.cs, and the shaders styles use, into the project.
+
+    True when anything changed."""
+    changed = False
+    for source_path, inside in ((IMPORTER, IMPORTER_IN_PROJECT), *SHADERS.items()):
+        target = Path(project) / inside
+        source = source_path.read_bytes()
+        if target.is_file() and target.read_bytes() == source:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source)
+        changed = True
+    return changed
 
 
 # ======================================================
@@ -243,13 +252,19 @@ def _batch_import(project: Path, name: str, since: float) -> dict:
     return {"done": True, "report": report}
 
 
-def _open_import(project: Path, name: str, since: float, wait: float) -> dict:
+def _open_import(project: Path, name: str, since: float, wait: float,
+                 model: Optional[str] = None) -> dict:
     try:
         sys.path.insert(0, str(REPO_ROOT)) if str(REPO_ROOT) not in sys.path else None
         from aria.unity_editor_bridge import UnityEditorBridge
 
         bridge = UnityEditorBridge(project, timeout=20)
         bridge.refresh_assets()
+        # The model imported again whether or not its bytes changed: sent a
+        # second time with only a new style in its sidecar, an identical FBX
+        # was skipped, the importer never ran, and the style never arrived.
+        if model:
+            bridge.refresh_assets(path=model, force=True)
     except Exception as error:     # no bridge in the project, or it is not answering
         logger.info("bridge refresh not possible: %s", error)
         return {"done": False, "text": "Unity has the project open but did not answer, so it will "
@@ -270,8 +285,14 @@ def _open_import(project: Path, name: str, since: float, wait: float) -> dict:
 
 def send(session, *, project: Optional[Path] = None, rig: Optional[str] = None,
          name: Optional[str] = None, loop: Sequence[str] = LOOPING,
-         preview_clips: Sequence[str] = (), wait: float = 120) -> dict:
-    """Export the rigged character from `session` and set it up in Unity."""
+         preview_clips: Sequence[str] = (), wait: float = 120, style: str = "") -> dict:
+    """Export the rigged character from `session` and set it up in Unity.
+
+    style "toon": drawn with ARIA/Toon -- flat tones and an ink outline --
+    for a character made from a drawing. "" is URP Lit."""
+    style = str(style or "").strip().lower()
+    if style not in STYLES:
+        return {"success": False, "text": f"{style!r} is not a style I know -- toon, or none."}
     project = Path(project) if project else configured_project()
     if project is None or not _is_project(project):
         return {"success": False, "text": "No Unity project is set -- choose one on the Unity "
@@ -293,7 +314,7 @@ def send(session, *, project: Optional[Path] = None, rig: Optional[str] = None,
     # The sidecar first: an editor that imports the FBX the moment it lands
     # must already find it, or the model imports as Generic.
     sidecar = {"name": name, "rigged": rigged, "loop": list(loop), "idle": "Idle", "walk": "Walk",
-               "preview_clips": list(preview_clips)}
+               "preview_clips": list(preview_clips), "style": style}
     sidecar_path = folder / f"{name}.aria.json"
     sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
     # Unity cannot read node patterns or pictures laid on in object space:
@@ -329,7 +350,8 @@ def send(session, *, project: Optional[Path] = None, rig: Optional[str] = None,
     changed = install_importer(project)
 
     opened = project_is_open(project)
-    outcome = (_open_import(project, name, since, wait) if opened
+    model_asset = f"{CHARACTERS if rigged else PROPS}/{name}/{name}.fbx"
+    outcome = (_open_import(project, name, since, wait, model_asset) if opened
                else _batch_import(project, name, since))
     relative = f"{CHARACTERS if rigged else PROPS}/{name}"
     result: Dict[str, Any] = {"success": True, "project": str(project), "name": name,
@@ -393,10 +415,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--name", help="what to call it in Unity")
     parser.add_argument("--preview-clip", action="append", default=[],
                         help="an Assets/ path to another clip to picture on it (batch runs)")
+    parser.add_argument("--style", default="", choices=STYLES,
+                        help="toon: flat tones and an ink outline (ARIA/Toon)")
     args = parser.parse_args(argv)
     session = blender_session.LiveSession() if args.live else blender_session.Session(args.session)
     outcome = send(session, project=Path(args.project) if args.project else None, rig=args.rig,
-                   name=args.name, preview_clips=args.preview_clip)
+                   name=args.name, preview_clips=args.preview_clip, style=args.style)
     print(outcome["text"])
     for picture in outcome.get("pictures") or []:
         print(f"- {picture}")

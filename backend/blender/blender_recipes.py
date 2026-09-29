@@ -1271,6 +1271,10 @@ def base_actions(name: str, prefix: Optional[str] = None,
         steps.append({"action": "apply_transforms", "params": {}})
         steps.append({"action": "origin_to_floor", "params": {"object": called}})
 
+    # A skin tone for a body, when the recipe gives one (a body a garment
+    # is cut from and then deletes does not need it, and is not given it).
+    if spec.get("keep", True):
+        steps.extend(_colour_steps(called, spec))
     return steps
 
 
