@@ -80,9 +80,9 @@
       "id": "sole_r",
       "type": "cube",
       "size": [
-        0.132,
-        0.27,
-        0.02
+        0.122,
+        0.262,
+        0.022
       ],
       "location": [
         0.113,
@@ -171,9 +171,9 @@
       "id": "sole_l",
       "type": "cube",
       "size": [
-        0.132,
-        0.27,
-        0.02
+        0.122,
+        0.262,
+        0.022
       ],
       "location": [
         -0.113,
@@ -237,15 +237,15 @@
     {
       "target": "sole_r",
       "type": "bevel",
-      "amount": 0.009,
-      "segments": 3,
+      "amount": 0.018,
+      "segments": 5,
       "apply": true
     },
     {
       "target": "sole_l",
       "type": "bevel",
-      "amount": 0.009,
-      "segments": 3,
+      "amount": 0.018,
+      "segments": 5,
       "apply": true
     }
   ],
