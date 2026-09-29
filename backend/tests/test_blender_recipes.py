@@ -684,3 +684,21 @@ def test_every_decal_kind_faces_out_of_the_face():
                  {"kind": "stroke", "path": [[0, 0], [1, 0.1], [2, 0]], "width": 0.1}):
         vertices, faces = recipes._decal_mesh(item)
         assert all(normal_y(vertices, f) < 0 for f in faces), item["kind"]
+
+
+def test_a_wedge_cutter_is_a_closed_prism_facing_out():
+    vertices, faces = recipes._wedge_mesh(
+        {"top": 1.6, "bottom": 0.9, "top_width": 0.2, "bottom_width": 0.04, "y": [-0.3, -0.02]}, {}, "t")
+    assert len(vertices) == 8 and len(faces) == 6
+    edges = {}
+    for f in faces:
+        for a, b in zip(f, f[1:] + f[:1]):
+            edges[(a, b)] = edges.get((a, b), 0) + 1
+    assert all(edges.get((b, a)) == 1 for (a, b) in edges)      # closed, consistently wound
+    centre = [sum(v[k] for v in vertices) / 8 for k in range(3)]
+    for f in faces:
+        a, b, c = (vertices[i] for i in f[:3])
+        u = [b[k] - a[k] for k in range(3)]; w = [c[k] - a[k] for k in range(3)]
+        n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]]
+        out = [a[k] - centre[k] for k in range(3)]
+        assert sum(n[k] * out[k] for k in range(3)) > 0

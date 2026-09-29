@@ -35,15 +35,14 @@
       },
       "cuts": [
         {
-          "at": [
-            0,
-            -0.15,
-            "hip"
-          ],
-          "size": [
-            0.11,
-            0.12,
-            0.75
+          "shape": "wedge",
+          "top": "neck+0.06",
+          "bottom": "hip-0.04",
+          "top_width": 0.2,
+          "bottom_width": 0.05,
+          "y": [
+            -0.3,
+            -0.02
           ]
         },
         {
@@ -98,28 +97,26 @@
       },
       "cuts": [
         {
-          "at": [
-            0,
-            -0.15,
-            "hip"
-          ],
-          "size": [
-            0.11,
-            0.12,
-            0.75
+          "shape": "wedge",
+          "top": "neck+0.06",
+          "bottom": "hip-0.04",
+          "top_width": 0.2,
+          "bottom_width": 0.05,
+          "y": [
+            -0.3,
+            -0.02
           ]
         },
         {
+          "shape": "wedge",
           "keep": true,
-          "at": [
-            0,
-            -0.15,
-            "neck-0.06"
-          ],
-          "size": [
-            0.19,
-            0.2,
-            0.46
+          "top": "neck+0.06",
+          "bottom": "waist-0.06",
+          "top_width": 0.34,
+          "bottom_width": 0.08,
+          "y": [
+            -0.3,
+            -0.02
           ]
         }
       ],

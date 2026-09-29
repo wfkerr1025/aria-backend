@@ -1651,6 +1651,20 @@ def fit_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]
     return steps
 
 
+def _wedge_mesh(cut: Dict[str, Any], marks: Dict[str, Any], where: str):
+    """A closed trapezoid prism: a V-shaped cutter, faces pointing out."""
+    top = float(resolve(cut.get("top"), marks, where + " top"))
+    bottom = float(resolve(cut.get("bottom"), marks, where + " bottom"))
+    tw = float(resolve(cut.get("top_width", 0.2), marks, where)) / 2
+    bw = float(resolve(cut.get("bottom_width", 0.02), marks, where)) / 2
+    y0, y1 = (float(v) for v in (cut.get("y") or [-0.3, -0.02]))
+    x = float(cut.get("x", 0.0))
+    front = [[x - tw, y0, top], [x + tw, y0, top], [x + bw, y0, bottom], [x - bw, y0, bottom]]
+    back = [[a, y1, c] for a, _, c in front]
+    faces = [[3, 2, 1, 0], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [3, 0, 4, 7]]
+    return front + back, faces
+
+
 def garment_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
     """Cut a garment out of the body it is worn by.
 
@@ -1757,12 +1771,20 @@ def garment_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, A
         for number, cut in enumerate(item.get("cuts", []), 1):
             where = f"{name}/{item.get('id')} cut {number}"
             cutter = f"{worn}_Cut{number}"
-            radii = _point(cut.get("size") or [0.1, 0.1, 0.1], marks, where + " size")
-            steps.append({"action": "add_sphere",
-                          "params": {"name": cutter, "radius": 1.0,
-                                     "location": _point(cut.get("at"), marks, where + " at")}})
-            steps.append({"action": "scale",
-                          "params": {"object": cutter, "x": radii[0], "y": radii[1], "z": radii[2]}})
+            if str(cut.get("shape", "oval")).lower() == "wedge":
+                # A V: `top` and `bottom` heights, `top_width` and
+                # `bottom_width` across, through `y` [front, back]. An oval
+                # can only carve an arch; a coat's front opens in a V.
+                vertices, faces = _wedge_mesh(cut, marks, where)
+                steps.append({"action": "create_mesh",
+                              "params": {"name": cutter, "vertices": vertices, "faces": faces}})
+            else:
+                radii = _point(cut.get("size") or [0.1, 0.1, 0.1], marks, where + " size")
+                steps.append({"action": "add_sphere",
+                              "params": {"name": cutter, "radius": 1.0,
+                                         "location": _point(cut.get("at"), marks, where + " at")}})
+                steps.append({"action": "scale",
+                              "params": {"object": cutter, "x": radii[0], "y": radii[1], "z": radii[2]}})
             # "keep": true keeps what is INSIDE the oval instead -- how a
             # lapel is trimmed to a band along the coat's opening.
             steps.append({"action": "apply_boolean",
