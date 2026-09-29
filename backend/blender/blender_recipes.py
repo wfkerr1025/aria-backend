@@ -492,7 +492,8 @@ def part_names(name: str, prefix: Optional[str] = None) -> List[str]:
         # A neckline cutter is made and deleted inside the build; it is
         # still a mesh the build created, in this order.
         garments += [f"{worn}_Cut{n}" for n in range(1, len(item.get("cuts", [])) + 1)]
-    return [_name(head, item.get("id")) for item in recipe.get("objects", [])] + garments
+    drapes = [_name(head, item.get("id"), "Drape") for item in recipe.get("drapes", [])]
+    return [_name(head, item.get("id")) for item in recipe.get("objects", [])] + garments + drapes
 
 
 def _one_object(item: Dict[str, Any], head: str,
@@ -633,6 +634,7 @@ def actions(name: str, *, prefix: Optional[str] = None,
     # every origin and a wrap done afterwards would be aiming at a body
     # that has since shifted under it.
     steps.extend(fit_actions(name, prefix=head))
+    steps.extend(drape_actions(name, prefix=head))
 
     # And now the scaffolding can go. Two kinds of it, and the reason
     # is the same for both: export_fbx writes every mesh in the file,
@@ -1039,6 +1041,102 @@ def proportions_actions(name: str, prefix: Optional[str] = None,
     return steps
 
 
+def _drape_mesh(spec: Dict[str, Any], marks: Dict[str, Any], where: str):
+    """Points and faces of a flared, open-fronted skirt round the body.
+
+    Rings from `top` down to `bottom`, each an ellipse: half-width
+    `width` and depth `front`/`back` at the top, growing by `flare`
+    toward the hem (eased, so it hangs straight first and swings out
+    lower down, the way a long coat does). The front is left open over
+    `opening` degrees either side of straight ahead, widening from
+    `opening[0]` at the top to `opening[1]` at the hem.
+    """
+    import math
+
+    top = float(resolve(spec.get("top", "hip"), marks, where))
+    bottom = float(resolve(spec.get("bottom", "knee"), marks, where))
+    width = float(resolve(spec.get("width", "hip_x+0.04"), marks, where))
+    front = float(resolve(spec.get("front", 0.14), marks, where))
+    back = float(resolve(spec.get("back", 0.15), marks, where))
+    flare = [float(v) for v in (spec.get("flare") or [0.1, 0.08])]
+    opening = [math.radians(float(v)) for v in (spec.get("opening") or [20, 50])]
+    rows = max(4, int(spec.get("rows", 24)))
+    columns = max(8, int(spec.get("columns", 48)))
+    ease = float(spec.get("ease", 1.6))
+    centre_y = float(spec.get("centre_y", 0.0))
+
+    # A `profile` says the shape outright, [height, half-width, front,
+    # back] at several heights, top first -- a coat follows the waist,
+    # clears the hips, then swings out. Without one, width + flare.
+    profile = [[float(resolve(v, marks, where)) for v in point]
+               for point in spec.get("profile") or []]
+    if profile:
+        top, bottom = profile[0][0], profile[-1][0]
+
+    def shape_at(z: float, t: float):
+        if not profile:
+            swing = t ** ease
+            return (width + flare[0] * swing, front + flare[1] * swing,
+                    back + flare[1] * swing)
+        for upper, lower in zip(profile, profile[1:]):
+            if lower[0] <= z <= upper[0]:
+                f = (upper[0] - z) / ((upper[0] - lower[0]) or 1e-9)
+                return tuple(upper[k] + (lower[k] - upper[k]) * f for k in (1, 2, 3))
+        edge = profile[0] if z >= profile[0][0] else profile[-1]
+        return edge[1], edge[2], edge[3]
+
+    vertices, faces = [], []
+    for r in range(rows + 1):
+        t = r / rows
+        z = top + (bottom - top) * t
+        rx, rf, rb = shape_at(z, t)
+        gap = opening[0] + (opening[1] - opening[0]) * t
+        for c in range(columns + 1):
+            # Angle measured from straight ahead (-Y), round the back
+            # and out the other side, stopping short of the opening.
+            a = gap + (2 * math.pi - 2 * gap) * c / columns
+            depth = rf if math.cos(a) > 0 else rb
+            vertices.append([round(rx * math.sin(a), 5),
+                             round(centre_y - depth * math.cos(a), 5),
+                             round(z, 5)])
+    stride = columns + 1
+    for r in range(rows):
+        for c in range(columns):
+            i = r * stride + c
+            faces.append([i, i + 1, i + 1 + stride, i + stride])
+    return vertices, faces
+
+
+def drape_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Cloth that hangs where the body has nothing to cut it from.
+
+    A garment cut from the body can only give back surface the body
+    has, so a coat cut that way stops at the hips -- below them there is
+    nothing but two legs, and a cut there is a pair of trousers. The
+    tails of a long coat hang in the air, so they are generated: a
+    flared, open-fronted skirt placed from the body's own landmarks (see
+    _drape_mesh), then thickened and shaded like any garment.
+    """
+    recipe = load(name)
+    head = prefix or prefix_for(name)
+    marks = _marks_for(recipe)
+    steps: List[Dict[str, Any]] = []
+    for item in recipe.get("drapes", []):
+        worn = _name(head, item.get("id"), "Drape")
+        vertices, faces = _drape_mesh(item, marks, f"{name}/{item.get('id')}")
+        steps.append({"action": "create_mesh",
+                      "params": {"name": worn, "vertices": vertices, "faces": faces}})
+        if item.get("thickness"):
+            steps.append({"action": "apply_solidify",
+                          "params": {"object": worn, "thickness": item["thickness"],
+                                     "apply": True}})
+        steps.append({"action": "smooth_shade", "params": {"object": worn}})
+        if item.get("unwrap", True):
+            steps.append({"action": "smart_uv_project",
+                          "params": {"object": worn, "angle_limit": 1.15, "margin": 0.02}})
+    return steps
+
+
 def fit_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
     """Wrap each blank onto what it is being worn by, then thicken it.
 
@@ -1196,7 +1294,8 @@ def garment_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, A
                           "params": {"object": cutter, "x": radii[0], "y": radii[1], "z": radii[2]}})
             steps.append({"action": "apply_boolean",
                           "params": {"object": worn, "target": cutter,
-                                     "operation": "DIFFERENCE", "apply": True}})
+                                     "operation": "DIFFERENCE", "apply": True,
+                                     "self_intersection": True}})
             steps.append({"action": "delete_object", "params": {"object": cutter}})
 
         if item.get("smooth", True):

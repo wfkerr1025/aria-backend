@@ -89,7 +89,7 @@ def test_part_names_match_what_the_build_creates():
     for name in recipes.names():
         made = [step["params"]["name"] for step in recipes.actions(name)
                 if step["action"].startswith("add_")
-                or step["action"] == "duplicate_object"]
+                or step["action"] in ("duplicate_object", "create_mesh")]
         assert made == recipes.part_names(name), name
 
 
