@@ -391,6 +391,203 @@ def join_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]
     return steps
 
 
+def _chain_links(spec: Dict[str, Any], marks: Dict[str, Any], where: str):
+    """Where each link of a hanging chain goes, and which way it faces.
+
+    The chain hangs from `from` to `to`, sagging `sag` metres in the
+    middle and swinging `lean` metres forward (off the thigh). Links are
+    rings of radius `link` in wire `wire`, one every `pitch` metres (a
+    little under a link's inside length, so they overlap as real links
+    do), and every other one is turned a quarter round the chain -- the
+    thing that makes a row of rings read as a chain.
+    Returns [(location, euler degrees)], Blender XYZ order.
+    """
+    import math
+
+    a = [float(v) for v in _point(spec.get("from"), marks, where + " from")]
+    b = [float(v) for v in _point(spec.get("to"), marks, where + " to")]
+    sag = float(spec.get("sag", 0.1))
+    lean = float(spec.get("lean", 0.02))
+    link = float(spec.get("link", 0.008))
+    wire = float(spec.get("wire", 0.0022))
+    pitch = float(spec.get("pitch", 2 * (link - wire) * 0.95))
+
+    def at(t):
+        bow = 4 * t * (1 - t)
+        return [a[0] + (b[0] - a[0]) * t,
+                a[1] + (b[1] - a[1]) * t - lean * bow,
+                a[2] + (b[2] - a[2]) * t - sag * bow]
+
+    # Walk the curve finely and drop a link every `pitch` along it.
+    fine = [at(i / 400) for i in range(401)]
+    places, walked, need = [], 0.0, 0.0
+    for p, q in zip(fine, fine[1:]):
+        step = math.dist(p, q)
+        while walked + step >= need:
+            f = (need - walked) / step if step else 0.0
+            here = [p[k] + (q[k] - p[k]) * f for k in range(3)]
+            tangent = [q[k] - p[k] for k in range(3)]
+            places.append((here, tangent))
+            need += pitch
+        walked += step
+
+    def norm(v):
+        n = math.sqrt(sum(c * c for c in v)) or 1.0
+        return [c / n for c in v]
+
+    def cross(u, v):
+        return [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
+
+    links = []
+    for i, (here, tangent) in enumerate(places):
+        t = norm(tangent)
+        side = norm(cross(t, [0.0, 0.0, 1.0]) if abs(t[2]) < 0.95 else cross(t, [1.0, 0.0, 0.0]))
+        n = side if i % 2 == 0 else norm(cross(t, side))
+        y_axis = cross(n, t)
+        # Columns x=t, y=n x t, z=n: the ring's own axis (z) is n, so the
+        # ring lies in the plane holding the chain's direction.
+        r = [[t[0], y_axis[0], n[0]], [t[1], y_axis[1], n[1]], [t[2], y_axis[2], n[2]]]
+        ry = math.asin(max(-1.0, min(1.0, -r[2][0])))
+        rx = math.atan2(r[2][1], r[2][2])
+        rz = math.atan2(r[1][0], r[0][0])
+        links.append(([round(c, 5) for c in here],
+                      [round(math.degrees(v), 3) for v in (rx, ry, rz)]))
+    return links, link, wire
+
+
+def _aim_euler(d, thin=None):
+    """Euler degrees (XYZ) that turn +Z to point along `d`.
+
+    `thin` (optional) is the direction local X should face as nearly as
+    it can -- scale X down and the spike becomes a blade lying flat
+    against whatever `thin` points out of (a hair clump against a head).
+    """
+    import math
+    n = math.sqrt(sum(c * c for c in d)) or 1.0
+    z = [c / n for c in d]
+    x = None
+    if thin is not None:
+        dot = sum(thin[k] * z[k] for k in range(3))
+        x = [thin[k] - dot * z[k] for k in range(3)]
+        if math.sqrt(sum(c * c for c in x)) < 1e-4:
+            x = None
+    if x is None:
+        helper = [1.0, 0.0, 0.0] if abs(z[0]) < 0.9 else [0.0, 1.0, 0.0]
+        x = [helper[1] * z[2] - helper[2] * z[1], helper[2] * z[0] - helper[0] * z[2],
+             helper[0] * z[1] - helper[1] * z[0]]
+    nx = math.sqrt(sum(c * c for c in x)) or 1.0
+    x = [c / nx for c in x]
+    y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]]
+    r = [[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]]]
+    ry = math.asin(max(-1.0, min(1.0, -r[2][0])))
+    rx = math.atan2(r[2][1], r[2][2])
+    rz = math.atan2(r[1][0], r[0][0])
+    return [round(math.degrees(v), 3) for v in (rx, ry, rz)]
+
+
+def _hair_spikes(spec: Dict[str, Any], marks: Dict[str, Any], where: str):
+    """Tapered spikes round a head, grouped the way anime hair is drawn.
+
+    `centre` and `radii` place the head as an oval. Each group in
+    `groups` is a band of spikes: `azimuth` [from, to] in degrees round
+    the head (0 = straight ahead, 90 = his left, +X), `elevation`
+    [from, to] up from the head's equator, `count`, `length` [min, max],
+    `radius` (at the root), and `fall` -- how far each spike bends from
+    pointing straight out toward straight down (0 out, 1 down), with
+    `forward` pushing it toward the face (bangs) and `back` away from
+    it. Seeded, so the same recipe grows the same mess every build.
+    Returns [(location, euler, root radius, length)].
+    """
+    import math
+    import random
+
+    centre = [float(v) for v in _point(spec.get("centre"), marks, where + " centre")]
+    radii = [float(v) for v in _point(spec.get("radii"), marks, where + " radii")]
+    chance = random.Random(int(spec.get("seed", 5)))
+    spikes = []
+    for group in spec.get("groups", []):
+        count = int(group.get("count", 6))
+        a0, a1 = group.get("azimuth", [-180, 180])
+        e0, e1 = group.get("elevation", [0, 30])
+        l0, l1 = group.get("length", [0.06, 0.09])
+        fall = float(group.get("fall", 0.5))
+        forward = float(group.get("forward", 0.0))
+        back = float(group.get("back", 0.0))
+        root = float(group.get("radius", 0.022))
+        for i in range(count):
+            f = (i + 0.5) / count
+            az = math.radians(a0 + (a1 - a0) * f + chance.uniform(-4, 4))
+            el = math.radians(e0 + (e1 - e0) * chance.random())
+            # Out from the head: 0 degrees azimuth faces -Y (his front).
+            out = [math.sin(az) * math.cos(el), -math.cos(az) * math.cos(el), math.sin(el)]
+            base = [centre[k] + radii[k] * out[k] * 0.92 for k in range(3)]
+            wobble = chance.uniform(-0.12, 0.12)
+            aim = [out[0] * (1 - fall) + wobble * out[1],
+                   out[1] * (1 - fall) - forward + back - wobble * out[0],
+                   out[2] * (1 - fall) - fall]
+            length = chance.uniform(l0, l1)
+            n = math.sqrt(sum(c * c for c in aim)) or 1.0
+            aim = [c / n for c in aim]
+            # A cone's origin is its middle: move it half a length along.
+            middle = [round(base[k] + aim[k] * length / 2, 5) for k in range(3)]
+            spikes.append((middle, _aim_euler(aim, thin=out), root * chance.uniform(0.85, 1.15), round(length, 4)))
+    return spikes
+
+
+def hair_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Anime hair: generated spikes welded onto a cap garment (`hair.cap`)."""
+    recipe = load(name)
+    spec = recipe.get("hair")
+    if not spec:
+        return []
+    head = prefix or prefix_for(name)
+    marks = _marks_for(recipe)
+    cap = _name(head, spec.get("cap"), "Garment")
+    names = [cap]
+    steps: List[Dict[str, Any]] = []
+    for i, (middle, euler, root, length) in enumerate(_hair_spikes(spec, marks, f"{name}/hair"), 1):
+        called = f"{cap}_Spike{i:03d}"
+        names.append(called)
+        steps.append({"action": "add_cone",
+                      "params": {"name": called, "radius": round(root, 4), "radius_top": 0.0,
+                                 "depth": length, "location": middle}})
+        steps.append({"action": "rotate",
+                      "params": {"object": called, "x": euler[0], "y": euler[1], "z": euler[2]}})
+        # Flattened against the head: anime hair is drawn in blades.
+        flat = float(spec.get("flat", 0.5))
+        if flat < 1.0:
+            steps.append({"action": "scale", "params": {"object": called, "x": flat, "y": 1.0, "z": 1.0}})
+    steps.append({"action": "join_objects", "params": {"objects": names}})
+    steps.append({"action": "smooth_shade", "params": {"object": cap, "angle": 40}})
+    steps.extend(_colour_steps(cap, spec))
+    return steps
+
+
+def chain_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Hanging chains made of real links, welded into one mesh per chain."""
+    recipe = load(name)
+    head = prefix or prefix_for(name)
+    marks = _marks_for(recipe)
+    steps: List[Dict[str, Any]] = []
+    for item in recipe.get("chains", []):
+        chain = _name(head, item.get("id"), "Chain")
+        links, link, wire = _chain_links(item, marks, f"{name}/{item.get('id')}")
+        names = []
+        for i, (location, euler) in enumerate(links):
+            called = chain if i == 0 else f"{chain}_{i:03d}"
+            names.append(called)
+            steps.append({"action": "add_torus",
+                          "params": {"name": called, "major_radius": link, "minor_radius": wire,
+                                     "segments": 10, "ring_segments": 6, "location": location}})
+            steps.append({"action": "rotate",
+                          "params": {"object": called, "x": euler[0], "y": euler[1], "z": euler[2]}})
+        if len(names) > 1:
+            steps.append({"action": "join_objects", "params": {"objects": names}})
+        steps.append({"action": "smooth_shade", "params": {"object": chain}})
+        steps.extend(_colour_steps(chain, item))
+    return steps
+
+
 def _boxes(item: Dict[str, Any]) -> List[Dict[str, Any]]:
     """The one or more boxes a garment is cut with.
 
@@ -493,7 +690,18 @@ def part_names(name: str, prefix: Optional[str] = None) -> List[str]:
         # still a mesh the build created, in this order.
         garments += [f"{worn}_Cut{n}" for n in range(1, len(item.get("cuts", [])) + 1)]
     drapes = [_name(head, item.get("id"), "Drape") for item in recipe.get("drapes", [])]
-    return [_name(head, item.get("id")) for item in recipe.get("objects", [])] + garments + drapes
+    links: List[str] = []
+    for item in recipe.get("chains", []):
+        chain = _name(head, item.get("id"), "Chain")
+        count = len(_chain_links(item, _marks_for(recipe), name)[0])
+        links += [chain] + [f"{chain}_{i:03d}" for i in range(1, count)]
+    spikes: List[str] = []
+    if recipe.get("hair"):
+        cap = _name(head, recipe["hair"].get("cap"), "Garment")
+        spikes = [f"{cap}_Spike{i:03d}" for i in
+                  range(1, len(_hair_spikes(recipe["hair"], _marks_for(recipe), name)) + 1)]
+    return ([_name(head, item.get("id")) for item in recipe.get("objects", [])]
+            + links + garments + drapes + spikes)
 
 
 def _one_object(item: Dict[str, Any], head: str,
@@ -533,6 +741,12 @@ def _one_object(item: Dict[str, Any], head: str,
         steps.append({"action": "add_sphere",
                       "params": {"name": name, "radius": dim("radius", 1.0),
                                  "location": location}})
+        # Three radii make an oval -- a foot, a heel, a toe cap.
+        if isinstance(size, (list, tuple)):
+            x, y, z = (list(size) + [1.0, 1.0, 1.0])[:3]
+            steps[-1]["params"]["radius"] = 1.0
+            steps.append({"action": "scale",
+                          "params": {"object": name, "x": x, "y": y, "z": z}})
 
     elif kind == "cylinder":
         steps.append({"action": "add_cylinder",
@@ -609,6 +823,7 @@ def actions(name: str, *, prefix: Optional[str] = None,
     # four spheres, while one joined and remeshed rock takes the noise
     # across its whole surface and becomes a rock.
     steps.extend(join_actions(name, prefix=head))
+    steps.extend(chain_actions(name, prefix=head))
 
     for modifier in recipe.get("modifiers", []):
         kind = str(modifier.get("type", "")).lower()
@@ -626,6 +841,13 @@ def actions(name: str, *, prefix: Optional[str] = None,
                 params[called] = _name(head, modifier[written])
         steps.append({"action": action, "params": params})
 
+    # A primitive's stand-in colour, once joins are done (a part joined
+    # into another is gone; its `into` carries the colour).
+    absorbed = {part for weld in recipe.get("join", []) for part in weld.get("parts", [])}
+    for item in recipe.get("objects", []):
+        if item.get("id") not in absorbed:
+            steps.extend(_colour_steps(_name(head, item.get("id")), item))
+
     # Garments are cut from the base, so the base has to exist and the
     # blanks must not have been merged into anything yet.
     steps.extend(garment_actions(name, prefix=head))
@@ -635,6 +857,7 @@ def actions(name: str, *, prefix: Optional[str] = None,
     # that has since shifted under it.
     steps.extend(fit_actions(name, prefix=head))
     steps.extend(drape_actions(name, prefix=head))
+    steps.extend(hair_actions(name, prefix=head))
 
     # And now the scaffolding can go. Two kinds of it, and the reason
     # is the same for both: export_fbx writes every mesh in the file,
@@ -727,6 +950,9 @@ def outfit_actions(body: str, pieces: Iterable[str], *, rig: bool = True,
     # and deleted inside it, and has nothing to be weighted.
     deleted = {step["params"].get("object") for step in steps
                if step["action"] == "delete_object"}
+    # ...nor parts a join swallowed (a boot's heel, a chain's links).
+    deleted |= {part for step in steps if step["action"] == "join_objects"
+                for part in step["params"]["objects"][1:]}
     for piece in pieces:
         for part in part_names(piece):
             if part in deleted:

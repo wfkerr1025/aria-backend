@@ -618,3 +618,24 @@ def test_coat_tails_are_baked_as_cloth_after_the_clips_on_their_own_bones():
     assert bake["also"] == ["AnimeLongCoat_Lining"]
     tails = next(d for d in recipes.load("anime_long_coat")["drapes"] if d["id"] == "tails")
     assert (bake["rows"], bake["columns"]) == (tails["rows"], tails["columns"])
+
+
+def test_chain_links_alternate_a_quarter_turn_and_follow_the_sag():
+    links, link, wire = recipes._chain_links(
+        {"from": [0.05, -0.13, 1.1], "to": [0.13, -0.05, 1.1], "sag": 0.1}, {}, "test")
+    assert len(links) > 10
+    lowest = min(location[2] for location, _ in links)
+    assert 0.99 < lowest < 1.01                          # sagged about 10 cm
+    assert links[0][1] != links[1][1]                    # neighbours face differently
+
+
+def test_hair_spikes_are_seeded_and_every_piece_is_named_for_the_rig():
+    spec = recipes.load("anime_hair_messy")["hair"]
+    first = recipes._hair_spikes(spec, {}, "test")
+    assert first == recipes._hair_spikes(spec, {}, "test")          # same mess every build
+    assert len(first) == sum(group["count"] for group in spec["groups"])
+    steps = recipes.outfit_actions("anime_male_body", ["anime_hair_messy", "anime_belt", "anime_boots"])
+    targets = {s["params"]["target"] for s in steps if s["action"] == "transfer_weights"}
+    assert "AnimeHairMessy_Hair" in targets
+    assert not any("_Spike" in t or "_0" in t for t in targets)      # joined parts are not weighted
+    assert {"AnimeBoots_BootR", "AnimeBoots_SoleL", "AnimeBelt_ChainRShort"} <= targets

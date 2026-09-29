@@ -361,9 +361,14 @@ def add_plane(params: Dict[str, Any]) -> str:
 
 
 def add_torus(params: Dict[str, Any]) -> str:
+    """A ring. `segments` / `ring_segments` set how round it is -- a
+    chain link wants 10 x 6, not Blender's 48 x 12 (a chain of eighty
+    links at the default was 46,000 faces)."""
     return (f'bpy.ops.mesh.primitive_torus_add('
             f'major_radius={_num(params.get("major_radius"), 1.0)}, '
             f'minor_radius={_num(params.get("minor_radius"), 0.25)}, '
+            f'major_segments={_int(params.get("segments"), 48, 3, 256)}, '
+            f'minor_segments={_int(params.get("ring_segments"), 12, 3, 256)}, '
             f'location={_vector(params.get("location"))})\n'
             f'bpy.context.active_object.name = {_named(params, "Torus")}\n'
             f'_RESULT["created"].append(bpy.context.active_object.name)\n'

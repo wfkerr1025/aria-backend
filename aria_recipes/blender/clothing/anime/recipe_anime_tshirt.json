@@ -14,7 +14,7 @@
       "from": "Tee_Body",
       "regions": [
         {
-          "z_min": "waist-0.07",
+          "z_min": "waist-0.02",
           "z_max": "neck+0.02",
           "x_min": "-chest_x-0.05",
           "x_max": "chest_x+0.05"

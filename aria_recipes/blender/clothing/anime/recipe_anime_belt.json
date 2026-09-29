@@ -1,0 +1,155 @@
+{
+  "name": "anime_belt",
+  "version": "0.1",
+  "description": "Jin-Woo's belt for the anime male body: a band round the top of the jeans (cut from the body, outside the jeans), a bevelled metal buckle at the front, and two hanging chains on each hip -- real links, each turned a quarter from the last, welded into one mesh per chain. Placed from the anime body's measured waist (front y -0.097 at z 1.13).",
+  "units": "meters",
+  "base": {
+    "recipe": "anime_male_body",
+    "as": "Belt_Body",
+    "keep": false
+  },
+  "objects": [
+    {
+      "id": "buckle",
+      "type": "cube",
+      "size": [
+        0.055,
+        0.012,
+        0.036
+      ],
+      "location": [
+        0,
+        -0.147,
+        1.113
+      ],
+      "color": [
+        0.5,
+        0.5,
+        0.53
+      ]
+    }
+  ],
+  "modifiers": [
+    {
+      "target": "buckle",
+      "type": "bevel",
+      "amount": 0.004,
+      "segments": 2,
+      "apply": true
+    }
+  ],
+  "chains": [
+    {
+      "id": "chain_r_short",
+      "from": [
+        0.055,
+        -0.128,
+        1.105
+      ],
+      "to": [
+        0.128,
+        -0.06,
+        1.105
+      ],
+      "sag": 0.075,
+      "lean": 0.02,
+      "color": [
+        0.6,
+        0.6,
+        0.63
+      ]
+    },
+    {
+      "id": "chain_r_long",
+      "from": [
+        0.05,
+        -0.128,
+        1.1
+      ],
+      "to": [
+        0.132,
+        -0.052,
+        1.1
+      ],
+      "sag": 0.135,
+      "lean": 0.03,
+      "color": [
+        0.6,
+        0.6,
+        0.63
+      ]
+    },
+    {
+      "id": "chain_l_short",
+      "from": [
+        -0.055,
+        -0.128,
+        1.105
+      ],
+      "to": [
+        -0.128,
+        -0.06,
+        1.105
+      ],
+      "sag": 0.075,
+      "lean": 0.02,
+      "color": [
+        0.6,
+        0.6,
+        0.63
+      ]
+    },
+    {
+      "id": "chain_l_long",
+      "from": [
+        -0.05,
+        -0.128,
+        1.1
+      ],
+      "to": [
+        -0.132,
+        -0.052,
+        1.1
+      ],
+      "sag": 0.135,
+      "lean": 0.03,
+      "color": [
+        0.6,
+        0.6,
+        0.63
+      ]
+    }
+  ],
+  "garments": [
+    {
+      "id": "belt",
+      "from": "Belt_Body",
+      "z_min": "waist-0.035",
+      "z_max": "waist+0.005",
+      "x_min": "-hip_x-0.03",
+      "x_max": "hip_x+0.03",
+      "soft": 0.004,
+      "offset": 0.038,
+      "thickness": 0.008,
+      "relax": {
+        "factor": 0.7,
+        "iterations": 12
+      },
+      "color": [
+        0.04,
+        0.035,
+        0.035
+      ]
+    }
+  ],
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": false
+  },
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/anime_belt.fbx",
+    "apply_scale": true
+  }
+}

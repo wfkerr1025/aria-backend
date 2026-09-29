@@ -1,0 +1,262 @@
+{
+  "name": "anime_boots",
+  "version": "0.3",
+  "description": "Lace-up ankle boots for the anime male body (Jin-Woo's dark boots). Built, not cut: a foot is not the shape of a boot, and a boot cut from one comes out a sock with toes. Each is a shaft round the ankle (over the jeans' hem), a rounded foot, heel and toe cap welded into one surface (voxel remesh), on a bevelled sole. Placed from the anime body's measured foot: ankle at x 0.096, the ball splayed out to x 0.125, heel at 0.10, toe y -0.15.",
+  "units": "meters",
+  "objects": [
+    {
+      "id": "boot_r",
+      "type": "cylinder",
+      "radius": 0.047,
+      "depth": 0.15,
+      "location": [
+        0.0963,
+        0.036,
+        0.165
+      ],
+      "color": [
+        0.07,
+        0.05,
+        0.045
+      ]
+    },
+    {
+      "id": "foot_r",
+      "type": "sphere",
+      "size": [
+        0.0691,
+        0.081,
+        0.0562
+      ],
+      "location": [
+        0.125,
+        -0.07,
+        0.045
+      ]
+    },
+    {
+      "id": "instep_r",
+      "type": "sphere",
+      "size": [
+        0.0605,
+        0.0702,
+        0.0734
+      ],
+      "location": [
+        0.112,
+        -0.01,
+        0.062
+      ]
+    },
+    {
+      "id": "heel_r",
+      "type": "sphere",
+      "size": [
+        0.054,
+        0.0583,
+        0.067
+      ],
+      "location": [
+        0.1,
+        0.05,
+        0.062
+      ]
+    },
+    {
+      "id": "toe_r",
+      "type": "sphere",
+      "size": [
+        0.0626,
+        0.0518,
+        0.041
+      ],
+      "location": [
+        0.115,
+        -0.12,
+        0.034
+      ]
+    },
+    {
+      "id": "sole_r",
+      "type": "cube",
+      "size": [
+        0.132,
+        0.27,
+        0.02
+      ],
+      "location": [
+        0.113,
+        -0.035,
+        0.01
+      ],
+      "color": [
+        0.03,
+        0.03,
+        0.03
+      ]
+    },
+    {
+      "id": "boot_l",
+      "type": "cylinder",
+      "radius": 0.047,
+      "depth": 0.15,
+      "location": [
+        -0.0963,
+        0.036,
+        0.165
+      ],
+      "color": [
+        0.07,
+        0.05,
+        0.045
+      ]
+    },
+    {
+      "id": "foot_l",
+      "type": "sphere",
+      "size": [
+        0.0691,
+        0.081,
+        0.0562
+      ],
+      "location": [
+        -0.125,
+        -0.07,
+        0.045
+      ]
+    },
+    {
+      "id": "instep_l",
+      "type": "sphere",
+      "size": [
+        0.0605,
+        0.0702,
+        0.0734
+      ],
+      "location": [
+        -0.112,
+        -0.01,
+        0.062
+      ]
+    },
+    {
+      "id": "heel_l",
+      "type": "sphere",
+      "size": [
+        0.054,
+        0.0583,
+        0.067
+      ],
+      "location": [
+        -0.1,
+        0.05,
+        0.062
+      ]
+    },
+    {
+      "id": "toe_l",
+      "type": "sphere",
+      "size": [
+        0.0626,
+        0.0518,
+        0.041
+      ],
+      "location": [
+        -0.115,
+        -0.12,
+        0.034
+      ]
+    },
+    {
+      "id": "sole_l",
+      "type": "cube",
+      "size": [
+        0.132,
+        0.27,
+        0.02
+      ],
+      "location": [
+        -0.113,
+        -0.035,
+        0.01
+      ],
+      "color": [
+        0.03,
+        0.03,
+        0.03
+      ]
+    }
+  ],
+  "join": [
+    {
+      "into": "boot_r",
+      "parts": [
+        "foot_r",
+        "instep_r",
+        "heel_r",
+        "toe_r"
+      ],
+      "merge": 0.001,
+      "remesh": {
+        "size": 0.005,
+        "adaptivity": 0.0
+      },
+      "smooth": true
+    },
+    {
+      "into": "boot_l",
+      "parts": [
+        "foot_l",
+        "instep_l",
+        "heel_l",
+        "toe_l"
+      ],
+      "merge": 0.001,
+      "remesh": {
+        "size": 0.005,
+        "adaptivity": 0.0
+      },
+      "smooth": true
+    }
+  ],
+  "modifiers": [
+    {
+      "target": "boot_l",
+      "type": "relax",
+      "factor": 0.95,
+      "iterations": 60,
+      "apply": true
+    },
+    {
+      "target": "boot_r",
+      "type": "relax",
+      "factor": 0.95,
+      "iterations": 60,
+      "apply": true
+    },
+    {
+      "target": "sole_r",
+      "type": "bevel",
+      "amount": 0.009,
+      "segments": 3,
+      "apply": true
+    },
+    {
+      "target": "sole_l",
+      "type": "bevel",
+      "amount": 0.009,
+      "segments": 3,
+      "apply": true
+    }
+  ],
+  "cleanup": {
+    "apply_transforms": true,
+    "merge_by_distance": false,
+    "origin_to_geometry": false
+  },
+  "export": {
+    "format": "fbx",
+    "path": "D:/Users/William/Game Development/Aria-Output/models/anime_boots.fbx",
+    "apply_scale": true
+  }
+}
