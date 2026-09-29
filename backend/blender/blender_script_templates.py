@@ -437,12 +437,25 @@ def apply_boolean(params: Dict[str, Any]) -> str:
     that runs through itself. A garment does: its sleeves' thickness
     meets the torso's at the armpit. Without it, carving the long coat
     took it from 6,792 faces to 79 -- measured, not guessed.
+
+    `keep_at_least` (0-1) refuses a result with fewer than that share of
+    the faces it started with. Exact booleans fail QUIETLY: the coat's
+    sleeve carve once returned 353 faces of 6,966 and the build carried
+    on and shipped a sleeveless coat.
     """
-    return _modifier(params, "BOOLEAN",
+    guard = params.get("keep_at_least")
+    code = _modifier(params, "BOOLEAN",
+                     f'_before = len(_obj({_text(params.get("object") or params.get("obj"))}).data.polygons)\n'
                      f'_mod.object = _obj({_text(params.get("target"))})\n'
                      f'_mod.operation = {_choice(params.get("operation"), BOOLEAN_OPERATIONS, "DIFFERENCE")}\n'
                      f'_mod.use_self = {bool(params.get("self_intersection"))}',
                      "boolean")
+    if guard is not None and params.get("apply"):
+        code += (f'\n_after = len(_target.data.polygons)\n'
+                 f'if _after < _before * {_num(guard, 0.5)}:\n'
+                 f'    raise RuntimeError("the boolean on %r kept %d of %d faces -- it failed, not cut; '
+                 f'check the cutter against the mesh" % (_target.name, _after, _before))\n')
+    return code
 
 
 def apply_solidify(params: Dict[str, Any]) -> str:
@@ -4749,10 +4762,12 @@ def reshape_body(params: Dict[str, Any]) -> str:
             f'    w = max(0.0, min(1.0, w))\n'
             f'    return w * w * (3.0 - 2.0 * w)\n'
             f'_report = []\n'
+            f'_moved = set()\n'
             f'for _part in _parts:\n'
             f'    _ws = [_box_weight(_p, _part["box"], _part["soft"]) for _p in _co]\n'
             f'    _core = [_i for _i, _w in enumerate(_ws) if _w >= 0.999]\n'
             f'    _touched = [_i for _i, _w in enumerate(_ws) if _w > 0.0]\n'
+            f'    _moved.update(_touched)\n'
             f'    if not _core:\n'
             f'        raise RuntimeError("reshape part %r has no vertices fully inside its box -- '
             f'check its bounds against the body" % _part["name"])\n'
@@ -4801,7 +4816,15 @@ def reshape_body(params: Dict[str, Any]) -> str:
             f'        (_a, _fa), (_b, _fb) = _pairs[_k], _pairs[_k + 1]\n'
             f'        if z <= _b or _k == len(_pairs) - 2:\n'
             f'            return _fa + (z - _a) * (_fb - _fa) / ((_b - _a) or 1e-9)\n'
-            f'for _i, _p in enumerate(_co):\n'
+            # Only vertices that moved are written back. Writing every one
+            # back through world->local nudges them all by rounding, and
+            # that was enough to land a later exact boolean on a degenerate
+            # case: filling the eye sockets wrecked the long coat's LEFT
+            # sleeve carve (6,966 faces -> 353).
+            f'if len(_pairs) >= 2:\n'
+            f'    _moved = set(range(len(_co)))\n'
+            f'for _i in sorted(_moved):\n'
+            f'    _p = _co[_i]\n'
             f'    _p.z = _remap(_p.z)\n'
             f'    _target.data.vertices[_i].co = _Mi.__matmul__(_p)\n'
             # Stored custom normals describe the OLD surface. Left on,

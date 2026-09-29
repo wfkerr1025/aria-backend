@@ -639,3 +639,48 @@ def test_hair_spikes_are_seeded_and_every_piece_is_named_for_the_rig():
     assert "AnimeHairMessy_Hair" in targets
     assert not any("_Spike" in t or "_0" in t for t in targets)      # joined parts are not weighted
     assert {"AnimeBoots_BootR", "AnimeBoots_SoleL", "AnimeBelt_ChainRShort"} <= targets
+
+
+def test_a_decal_shape_keeps_its_outline_and_faces_out_of_the_face():
+    import math
+    outline = [[0.03 * math.cos(2 * math.pi * k / 16), 1.6 + 0.01 * math.sin(2 * math.pi * k / 16)]
+               for k in range(16)]
+    vertices, faces = recipes._decal_mesh({"kind": "shape", "outline": outline, "y": -0.2})
+    rim = vertices[-16:]
+    assert [[round(v[0], 6), round(v[2], 6)] for v in rim] == [[round(a, 6), round(b, 6)] for a, b in outline]
+    # First fan triangle's normal points -Y (out of a face that looks down -Y).
+    a, b, c = (vertices[i] for i in faces[0])
+    u = [b[k] - a[k] for k in range(3)]
+    w = [c[k] - a[k] for k in range(3)]
+    assert u[2] * w[0] - u[0] * w[2] < 0          # the normal's y component
+
+
+def test_face_decals_wrap_onto_the_body_and_garment_carves_are_guarded():
+    steps = recipes.actions("anime_face_jinwoo")
+    wraps = [s["params"] for s in steps if s["action"] == "apply_shrinkwrap"]
+    assert wraps and all(w["method"] == "PROJECT" and w["target"] == "Face_Body" for w in wraps)
+    carves = [s["params"] for s in recipes.garment_actions("anime_long_coat")
+              if s["action"] == "apply_boolean"]
+    assert all(("keep_at_least" in c) == (c["operation"] == "DIFFERENCE") for c in carves)
+
+
+def test_a_body_built_to_cut_a_garment_from_is_not_coloured():
+    steps = recipes.base_actions("anime_hair_messy")
+    assert not any(s["action"] in ("create_material", "assign_material") for s in steps)
+
+
+def test_every_decal_kind_faces_out_of_the_face():
+    import math
+
+    def normal_y(vertices, face):
+        a, b, c = (vertices[i] for i in face[:3])
+        u = [b[k] - a[k] for k in range(3)]
+        w = [c[k] - a[k] for k in range(3)]
+        return u[2] * w[0] - u[0] * w[2]
+
+    ring = [[math.cos(2 * math.pi * k / 8), math.sin(2 * math.pi * k / 8)] for k in range(8)]
+    for item in ({"kind": "shape", "outline": ring}, {"kind": "shape", "outline": ring[::-1]},
+                 {"kind": "circle", "centre": [0, 0], "radius": 1},
+                 {"kind": "stroke", "path": [[0, 0], [1, 0.1], [2, 0]], "width": 0.1}):
+        vertices, faces = recipes._decal_mesh(item)
+        assert all(normal_y(vertices, f) < 0 for f in faces), item["kind"]

@@ -563,6 +563,109 @@ def hair_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]
     return steps
 
 
+def _decal_mesh(item: Dict[str, Any]):
+    """Vertices and faces of one face decal, flat in the x-z plane at y.
+
+    Three kinds, all drawn in front-view world metres:
+      shape   `outline` [[x, z], ...] -- filled with rings out from its
+              centre, so the edge is the outline exactly, not a staircase
+      circle  `centre` [x, z], `radius`
+      stroke  `path` [[x, z], ...] and `width` (one number, or one per
+              point) -- a band along the line: a lash line, a brow
+    Faces point -Y (out of the face), which is the way project-wrapping
+    pushes them onto it.
+    """
+    import math
+
+    y = float(item.get("y", -0.25))
+    kind = str(item.get("kind", "shape")).lower()
+    vertices, faces = [], []
+    if kind == "stroke":
+        path = [[float(a), float(b)] for a, b in item["path"]]
+        widths = item.get("width", 0.002)
+        widths = [float(w) for w in widths] if isinstance(widths, list) else [float(widths)] * len(path)
+        # A finer path, so a curve of a few points bends smoothly.
+        fine, fw = [], []
+        for (p, q), (wp, wq) in zip(zip(path, path[1:]), zip(widths, widths[1:])):
+            for k in range(6):
+                f = k / 6
+                fine.append([p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f])
+                fw.append(wp + (wq - wp) * f)
+        fine.append(path[-1]); fw.append(widths[-1])
+        for i, (pt, w) in enumerate(zip(fine, fw)):
+            a = fine[max(0, i - 1)]; b = fine[min(len(fine) - 1, i + 1)]
+            tx, tz = b[0] - a[0], b[1] - a[1]
+            n = math.hypot(tx, tz) or 1.0
+            nx, nz = -tz / n, tx / n
+            vertices.append([pt[0] + nx * w / 2, y, pt[1] + nz * w / 2])
+            vertices.append([pt[0] - nx * w / 2, y, pt[1] - nz * w / 2])
+        for i in range(len(fine) - 1):
+            a = 2 * i
+            faces.append([a, a + 1, a + 3, a + 2])        # facing -Y
+        return vertices, faces
+    if kind == "circle":
+        cx, cz = (float(v) for v in item["centre"])
+        r = float(item.get("radius", 0.005))
+        outline = [[cx + r * math.cos(2 * math.pi * k / 32), cz + r * math.sin(2 * math.pi * k / 32)]
+                   for k in range(32)]
+    else:
+        outline = [[float(a), float(b)] for a, b in item["outline"]]
+    cx = sum(p[0] for p in outline) / len(outline)
+    cz = sum(p[1] for p in outline) / len(outline)
+    rings = int(item.get("rings", 5))
+    vertices.append([cx, y, cz])
+    count = len(outline)
+    for r in range(1, rings + 1):
+        f = r / rings
+        for px, pz in outline:
+            vertices.append([cx + (px - cx) * f, y, cz + (pz - cz) * f])
+    for k in range(count):
+        k2 = (k + 1) % count
+        faces.append([0, 1 + k2, 1 + k])
+    for r in range(1, rings):
+        base, nxt = 1 + (r - 1) * count, 1 + r * count
+        for k in range(count):
+            k2 = (k + 1) % count
+            faces.append([base + k, base + k2, nxt + k2, nxt + k])
+    # Whichever way the outline was drawn, face -Y.
+    ax, az = outline[0][0] - cx, outline[0][1] - cz
+    bx, bz = outline[1][0] - cx, outline[1][1] - cz
+    # The fan runs centre -> next -> current, which faces -Y when the
+    # outline turns clockwise seen from the front (x right, z up).
+    if ax * bz - az * bx > 0:
+        faces = [list(reversed(f)) for f in faces]
+    return vertices, faces
+
+
+def decal_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Features drawn onto a surface: an anime face's eyes, brows, mouth.
+
+    Anime faces are drawn, not sculpted -- a simple surface and flat,
+    crisp shapes on it -- which is also what a toon shader and its ink
+    outline want. Each decal is made flat in front of the face, then
+    project-wrapped onto `onto` (the body) and lifted `offset` off it;
+    decals that overlap (iris on the white of the eye) take rising
+    offsets so the right one shows. Each is its own mesh in its own
+    colour, so a face can be swapped whole or an eye redrawn alone.
+    """
+    recipe = load(name)
+    head = prefix or prefix_for(name)
+    steps: List[Dict[str, Any]] = []
+    onto = (recipe.get("decal_onto") or (recipe.get("base") or {}).get("as"))
+    for item in recipe.get("decals", []):
+        worn = _name(head, item.get("id"), "Decal")
+        vertices, faces = _decal_mesh(item)
+        steps.append({"action": "create_mesh",
+                      "params": {"name": worn, "vertices": vertices, "faces": faces}})
+        steps.append({"action": "apply_shrinkwrap",
+                      "params": {"object": worn, "target": item.get("onto") or onto,
+                                 "method": "PROJECT", "offset": item.get("offset", 0.0015),
+                                 "apply": True}})
+        steps.append({"action": "smooth_shade", "params": {"object": worn}})
+        steps.extend(_colour_steps(worn, item))
+    return steps
+
+
 def chain_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
     """Hanging chains made of real links, welded into one mesh per chain."""
     recipe = load(name)
@@ -700,8 +803,9 @@ def part_names(name: str, prefix: Optional[str] = None) -> List[str]:
         cap = _name(head, recipe["hair"].get("cap"), "Garment")
         spikes = [f"{cap}_Spike{i:03d}" for i in
                   range(1, len(_hair_spikes(recipe["hair"], _marks_for(recipe), name)) + 1)]
+    decals = [_name(head, item.get("id"), "Decal") for item in recipe.get("decals", [])]
     return ([_name(head, item.get("id")) for item in recipe.get("objects", [])]
-            + links + garments + drapes + spikes)
+            + links + garments + drapes + spikes + decals)
 
 
 def _one_object(item: Dict[str, Any], head: str,
@@ -858,6 +962,7 @@ def actions(name: str, *, prefix: Optional[str] = None,
     steps.extend(fit_actions(name, prefix=head))
     steps.extend(drape_actions(name, prefix=head))
     steps.extend(hair_actions(name, prefix=head))
+    steps.extend(decal_actions(name, prefix=head))
 
     # And now the scaffolding can go. Two kinds of it, and the reason
     # is the same for both: export_fbx writes every mesh in the file,
@@ -1251,7 +1356,11 @@ def base_actions(name: str, prefix: Optional[str] = None,
         maker = str(spec["recipe"])
         # Built under THIS recipe's name, so it cannot collide with the
         # body itself when both are in one scene (build_many).
-        return base_actions(maker, called=called) + proportions_actions(maker, called=called)
+        # Uncoloured: garments cut from it would inherit its skin
+        # material, and a hair cap's welded spikes came out skin-white.
+        built = base_actions(maker, called=called) + proportions_actions(maker, called=called)
+        return [step for step in built
+                if step["action"] not in ("create_material", "assign_material")]
 
     blend = spec.get("blend") or _library_blend(str(spec.get("library", "")))
 
@@ -1326,6 +1435,37 @@ def proportions_actions(name: str, prefix: Optional[str] = None,
                       "params": {"object": called, "height": spec["height"]}})
         steps.append({"action": "apply_transforms", "params": {}})
         steps.append({"action": "origin_to_floor", "params": {"object": called}})
+    # `fill`: reshape parts in the FINAL frame, before the softening --
+    # an eye socket is a pocket smoothing cannot lift; scaled flat
+    # (y 0) onto the face in front of it, it becomes surface to smooth.
+    if spec.get("fill"):
+        filled = []
+        for part in spec["fill"]:
+            where = f"{name} proportions/fill/{part.get('name')}"
+            clean = {key: resolve(part.get(key), marks, where) for key in _BOX_KEYS
+                     if part.get(key) is not None}
+            clean.update({key: part[key] for key in ("name", "soft", "scale") if key in part})
+            pivot = part.get("pivot", "center")
+            clean["pivot"] = _point(pivot, marks, where + " pivot") if isinstance(pivot, list) else pivot
+            filled.append(clean)
+        steps.append({"action": "reshape_body", "params": {"object": called, "parts": filled}})
+
+    # `soften`: smooth regions of the finished body hard -- how a
+    # sculpted face (deep eye sockets, a real nose, lips) becomes the
+    # simple anime surface features are drawn on. Boxes are in the
+    # body's FINAL frame (after the height rescale above).
+    for number, area in enumerate(spec.get("soften", []), 1):
+        where = f"{name} proportions/soften {number}"
+        group = f"ARIA_Soften{number}"
+        box = {key: resolve(area.get(key), marks, where) for key in _BOX_KEYS
+               if area.get(key) is not None}
+        steps.append({"action": "vertex_group_by_region",
+                      "params": {"object": called, "name": group,
+                                 "soft": area.get("soft", 0.015), **box}})
+        steps.append({"action": "relax_surface",
+                      "params": {"object": called, "group": group,
+                                 "factor": area.get("factor", 0.9),
+                                 "iterations": area.get("iterations", 30), "apply": True}})
     if spec.get("smooth", True):
         steps.append({"action": "smooth_shade", "params": {"object": called}})
     return steps
@@ -1628,7 +1768,10 @@ def garment_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, A
             steps.append({"action": "apply_boolean",
                           "params": {"object": worn, "target": cutter,
                                      "operation": "INTERSECT" if cut.get("keep") else "DIFFERENCE",
-                                     "apply": True, "self_intersection": True}})
+                                     "apply": True, "self_intersection": True,
+                                     # A trim keeps a part on purpose; a carve that
+                                     # loses half the garment has failed.
+                                     **({} if cut.get("keep") else {"keep_at_least": 0.5})}})
             steps.append({"action": "delete_object", "params": {"object": cutter}})
 
         if item.get("smooth", True):
