@@ -1099,12 +1099,52 @@ def _drape_mesh(spec: Dict[str, Any], marks: Dict[str, Any], where: str):
             vertices.append([round(rx * math.sin(a), 5),
                              round(centre_y - depth * math.cos(a), 5),
                              round(z, 5)])
+    # A torn hem: `hem` {"teeth": n, "depth": metres, "seed": k} drops the
+    # bottom rows into a ragged row of points, each tooth its own length
+    # (seeded, so the same recipe tears the same way every build).
+    hem = spec.get("hem")
+    if hem:
+        import random
+        chance = random.Random(int(hem.get("seed", 1)))
+        teeth = max(2, int(hem.get("teeth", 9)))
+        depth = float(hem.get("depth", 0.08))
+        peaks = [0.35 + 0.65 * chance.random() for _ in range(teeth + 1)]
+        for c in range(columns + 1):
+            along = c / columns * teeth
+            k = int(along)
+            f = along - k
+            nxt = peaks[min(k + 1, teeth)]
+            # Points at the middle of each tooth, notches between them.
+            drop = depth * (1 - abs(2 * f - 1)) * (peaks[k] * (1 - f) + nxt * f)
+            for back, share in ((0, 1.0), (1, 0.4), (2, 0.15)):
+                r = rows - back
+                if r >= 0:
+                    vertices[r * (columns + 1) + c][2] = round(
+                        vertices[r * (columns + 1) + c][2] - drop * share, 5)
+
     stride = columns + 1
     for r in range(rows):
         for c in range(columns):
             i = r * stride + c
             faces.append([i, i + 1, i + 1 + stride, i + stride])
     return vertices, faces
+
+
+def _colour_steps(worn: str, item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """A flat colour for one piece, when the recipe gives one.
+
+    So a kit piece can be judged against its design in colour -- a
+    black coat, a purple lining, teal cuffs -- instead of all-grey clay.
+    The real look comes from the texture later; this is the stand-in.
+    """
+    colour = item.get("color")
+    if not colour:
+        return []
+    material = f"{worn}_Colour"
+    return [{"action": "create_material",
+             "params": {"name": material, "color": list(colour)[:3],
+                        "roughness": item.get("roughness", 0.8)}},
+            {"action": "assign_material", "params": {"object": worn, "material": material}}]
 
 
 def drape_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1134,6 +1174,7 @@ def drape_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any
         if item.get("unwrap", True):
             steps.append({"action": "smart_uv_project",
                           "params": {"object": worn, "angle_limit": 1.15, "margin": 0.02}})
+        steps.extend(_colour_steps(worn, item))
     return steps
 
 
@@ -1302,5 +1343,7 @@ def garment_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, A
 
         if item.get("smooth", True):
             steps.append({"action": "smooth_shade", "params": {"object": worn}})
+        steps.extend(_colour_steps(worn, item))
+
 
     return steps

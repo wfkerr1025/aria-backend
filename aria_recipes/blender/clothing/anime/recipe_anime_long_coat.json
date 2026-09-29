@@ -1,6 +1,6 @@
 {
   "name": "anime_long_coat",
-  "version": "0.2",
+  "version": "0.3",
   "description": "Jin-Woo's long coat for the anime male body. Two parts: the top (torso and sleeves to the wrist) cut from the body and sitting outside the shirt, with the front carved open in a V; and the tails, a generated drape (flared, open at the front) from the hips to mid-shin, because a cut cannot give cloth that hangs below the hips. Collar, lapels, cuffs and the torn lining come later.",
   "units": "meters",
   "base": {
@@ -20,7 +20,7 @@
           "x_max": 0.2
         },
         {
-          "z_min": "wrist+0.02",
+          "z_min": "wrist-0.03",
           "z_max": "neck-0.05",
           "x_min": "-reach_x",
           "x_max": "reach_x"
@@ -45,7 +45,36 @@
             0.12,
             0.75
           ]
+        },
+        {
+          "at": [
+            0.387,
+            0.018,
+            "wrist-0.086"
+          ],
+          "size": [
+            0.11,
+            0.11,
+            0.11
+          ]
+        },
+        {
+          "at": [
+            -0.387,
+            0.018,
+            "wrist-0.086"
+          ],
+          "size": [
+            0.11,
+            0.11,
+            0.11
+          ]
         }
+      ],
+      "color": [
+        0.06,
+        0.06,
+        0.075
       ]
     },
     {
@@ -93,6 +122,111 @@
             0.33
           ]
         }
+      ],
+      "color": [
+        0.1,
+        0.1,
+        0.12
+      ]
+    },
+    {
+      "id": "cuff_R",
+      "from": "Coat_Body",
+      "regions": [
+        {
+          "z_min": "wrist-0.03",
+          "z_max": "wrist+0.14",
+          "x_min": 0.25
+        }
+      ],
+      "soft": 0.006,
+      "offset": 0.06,
+      "thickness": 0.005,
+      "relax": {
+        "factor": 0.8,
+        "iterations": 16
+      },
+      "cuts": [
+        {
+          "at": [
+            0.387,
+            0.018,
+            "wrist-0.086"
+          ],
+          "size": [
+            0.11,
+            0.11,
+            0.11
+          ]
+        },
+        {
+          "keep": true,
+          "at": [
+            0.387,
+            0.018,
+            "wrist-0.086"
+          ],
+          "size": [
+            0.14,
+            0.14,
+            0.14
+          ]
+        }
+      ],
+      "color": [
+        0.1,
+        0.55,
+        0.55
+      ]
+    },
+    {
+      "id": "cuff_L",
+      "from": "Coat_Body",
+      "regions": [
+        {
+          "z_min": "wrist-0.03",
+          "z_max": "wrist+0.14",
+          "x_max": -0.25
+        }
+      ],
+      "soft": 0.006,
+      "offset": 0.06,
+      "thickness": 0.005,
+      "relax": {
+        "factor": 0.8,
+        "iterations": 16
+      },
+      "cuts": [
+        {
+          "at": [
+            -0.387,
+            0.018,
+            "wrist-0.086"
+          ],
+          "size": [
+            0.11,
+            0.11,
+            0.11
+          ]
+        },
+        {
+          "keep": true,
+          "at": [
+            -0.387,
+            0.018,
+            "wrist-0.086"
+          ],
+          "size": [
+            0.14,
+            0.14,
+            0.14
+          ]
+        }
+      ],
+      "color": [
+        0.1,
+        0.55,
+        0.55
       ]
     }
   ],
@@ -137,7 +271,64 @@
           0.23,
           0.26
         ]
+      ],
+      "color": [
+        0.06,
+        0.06,
+        0.075
       ]
+    },
+    {
+      "id": "lining",
+      "rows": 30,
+      "columns": 56,
+      "thickness": 0.006,
+      "opening": [
+        13,
+        50
+      ],
+      "profile": [
+        [
+          "waist+0.06",
+          0.11699999999999999,
+          0.11699999999999999,
+          0.122
+        ],
+        [
+          "waist",
+          0.144,
+          0.142,
+          0.147
+        ],
+        [
+          "hip",
+          0.192,
+          0.152,
+          0.172
+        ],
+        [
+          "knee+0.1",
+          0.262,
+          0.192,
+          0.222
+        ],
+        [
+          "calf-0.05",
+          0.312,
+          0.222,
+          0.252
+        ]
+      ],
+      "color": [
+        0.33,
+        0.16,
+        0.55
+      ],
+      "hem": {
+        "teeth": 11,
+        "depth": 0.1,
+        "seed": 7
+      }
     },
     {
       "id": "collar",
@@ -174,6 +365,11 @@
           0.13,
           0.14
         ]
+      ],
+      "color": [
+        0.06,
+        0.06,
+        0.075
       ]
     }
   ],

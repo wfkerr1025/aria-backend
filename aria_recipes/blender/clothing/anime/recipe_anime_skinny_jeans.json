@@ -22,7 +22,12 @@
       "relax": {
         "factor": 0.75,
         "iterations": 14
-      }
+      },
+      "color": [
+        0.035,
+        0.035,
+        0.045
+      ]
     }
   ],
   "cleanup": {
