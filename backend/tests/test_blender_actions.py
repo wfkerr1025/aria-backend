@@ -158,6 +158,8 @@ EVERY_ACTION = [
     ("relax_surface", {"object": "Pants", "factor": 0.6, "iterations": 8,
                        "axis": "xyz", "group": "Region_Pants", "apply": True}),
     ("inflate", {"object": "Vest", "distance": 0.013, "apply": True}),
+    ("gradient_material", {"name": "Tails", "axis": "z", "start": 1.1, "end": 0.35,
+                           "colors": [[0.06, 0.06, 0.08], [0.2, 0.08, 0.3]], "roughness": 0.8}),
     ("reshape_body", {"object": "Body",
                       "parts": [{"name": "leg R", "x_min": 0.0, "z_max": 0.7, "soft": 0.05,
                                  "scale": [0.9, 0.9, 1], "pivot": "slice"},

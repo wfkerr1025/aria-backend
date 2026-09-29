@@ -155,7 +155,7 @@ def test_the_export_writes_the_skeleton_at_rest_with_a_rest_take_first():
 
 def test_packed_maps_are_written_beside_the_fbx():
     text = script("export_fbx", objects=["Rig"], path="C:/x.fbx")
-    assert "packed_file" in text and '"_" + _role.lower() + ".png"' in text
+    assert "packed_file" in text and '_role.lower() + ".png"' in text
 
 
 def test_t_pose_refuses_a_rig_that_already_has_clips():

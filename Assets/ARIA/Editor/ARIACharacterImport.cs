@@ -49,11 +49,20 @@ namespace ARIA.Characters
         // false: a prop -- no skeleton, no avatar, no controller.
         public bool rigged = true;
         public TextureSlot[] textures = new TextureSlot[0];
+        // A kit character's painted pieces: each material's own colour map.
+        public MaterialTexture[] material_textures = new MaterialTexture[0];
         // The material those maps belong to; empty means every renderer's.
         public string material = "";
         // "toon": ARIA/Toon -- flat tones and an ink outline, for a character
         // drawn that way. Empty: URP Lit (or Standard).
         public string style = "";
+    }
+
+    [Serializable]
+    public class MaterialTexture
+    {
+        public string material;   // the Blender material's name, as the FBX brings it
+        public string path;       // Assets/...
     }
 
     [Serializable]
@@ -386,7 +395,7 @@ namespace ARIA.Characters
                 // FBX brought becomes an ARIA/Toon material of the same colour,
                 // one per colour, so swapping a piece keeps its look.
                 if (material == null && sidecar.style == "toon")
-                    ToonEveryMaterial(folder, instance, report);
+                    ToonEveryMaterial(folder, instance, report, sidecar);
                 var group = instance.GetComponentInChildren<LODGroup>();
                 if (group != null)
                     report.lods = group.GetLODs().Select((l, i) => "LOD" + i + " " + string.Join("+",
@@ -460,7 +469,8 @@ namespace ARIA.Characters
 
         // Each imported material, redrawn as ARIA/Toon in its own colour.
         // Kept at <folder>/Toon/<material>.mat, so GUIDs survive a re-send.
-        static void ToonEveryMaterial(string folder, GameObject instance, CharacterReport report)
+        static void ToonEveryMaterial(string folder, GameObject instance, CharacterReport report,
+                                      CharacterSidecar sidecar)
         {
             if (UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline == null)
             {
@@ -499,7 +509,15 @@ namespace ARIA.Characters
                             AssetDatabase.CreateAsset(drawn, path);
                         }
                         drawn.shader = toon;
-                        drawn.SetColor("_BaseColor", colour);
+                        // A painted piece (coat tails fading to purple) wears its
+                        // own picture, at full strength; the rest keep their colour.
+                        var painted = (sidecar.material_textures ?? new MaterialTexture[0])
+                            .FirstOrDefault(t => t != null && source != null && t.material == source.name);
+                        var picture = painted != null ? AssetDatabase.LoadAssetAtPath<Texture2D>(painted.path) : null;
+                        if (painted != null && picture == null)
+                            report.warnings.Add("the painted map for " + key + " did not import: " + painted.path);
+                        drawn.SetTexture("_BaseMap", picture);
+                        drawn.SetColor("_BaseColor", picture != null ? Color.white : colour);
                         EditorUtility.SetDirty(drawn);
                         made[key] = drawn;
                     }

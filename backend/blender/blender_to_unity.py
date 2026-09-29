@@ -333,6 +333,26 @@ def send(session, *, project: Optional[Path] = None, rig: Optional[str] = None,
     # from them (an FBX cannot say "colour times AO").
     export_note = next((n for n in exported.get("notes") or [] if n.get("step") == "export_fbx"), {})
     maps = export_note.get("maps") or {}
+    # A character in many pieces, each in its own material (a kit): every
+    # material that was painted gets its own colour map, and the importer
+    # draws each piece toon with its own picture. One shared set of maps
+    # would dress every piece in the first piece's texture.
+    per_material = export_note.get("material_maps") or {}
+    kit = len({m for o in found.get("objects") or [] for m in o.get("materials") or []}) > 1
+    if kit and per_material:
+        copied = []
+        for material, source in per_material.items():
+            if not Path(source).is_file():
+                continue
+            safe = re.sub(r"[^A-Za-z0-9_.-]", "_", material)
+            target = folder / "maps" / f"{safe}_color{Path(source).suffix}"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            copied.append({"material": material,
+                           "path": f"{CHARACTERS if rigged else PROPS}/{name}/maps/{target.name}"})
+        sidecar["material_textures"] = copied
+        sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+        maps = {}
     textures = {}
     for label, source in maps.items():
         role = {"color": "color", "ao": "occlusion", "normal": "normal"}.get(label.lower())

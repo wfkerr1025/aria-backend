@@ -1779,6 +1779,46 @@ def unwrap(params: Dict[str, Any]) -> str:
 # Materials
 # ======================================================
 
+def gradient_material(params: Dict[str, Any]) -> str:
+    """A colour that changes across a piece: black coat tails fading to purple.
+
+    `colors` are [r, g, b] stops spread evenly from `start` to `end`
+    along world `axis` (x, y or z, metres). Painted by position, so it is
+    baked to an image on the UVs before Unity sees it (bake_material
+    treats it as needing a bake); in Blender it shows directly.
+    """
+    stops = [[float(_num(c, 0.5)) for c in (list(stop) + [0.5, 0.5, 0.5])[:3]]
+             for stop in (params.get("colors") or [[0, 0, 0], [1, 1, 1]])]
+    if len(stops) < 2:
+        raise BadValue("a gradient needs at least two colours")
+    axis = {"x": 0, "y": 1, "z": 2}.get(str(params.get("axis") or "z").lower())
+    if axis is None:
+        raise BadValue(f"{params.get('axis')!r} is not an axis -- x, y or z")
+    return (f'_mat = bpy.data.materials.new(name={_text(params.get("name") or "Gradient")})\n'
+            f'_mat["aria_bake"] = True\n'
+            f'_tree = _mat.node_tree\n'
+            f'_bsdf = _tree.nodes.get("Principled BSDF")\n'
+            f'_bsdf.inputs["Roughness"].default_value = {_num(params.get("roughness"), 0.8)}\n'
+            f'_geo = _tree.nodes.new("ShaderNodeNewGeometry")\n'
+            f'_sep = _tree.nodes.new("ShaderNodeSeparateXYZ")\n'
+            f'_tree.links.new(_geo.outputs["Position"], _sep.inputs["Vector"])\n'
+            f'_map = _tree.nodes.new("ShaderNodeMapRange")\n'
+            f'_map.inputs["From Min"].default_value = {_num(params.get("start"), 0.0)}\n'
+            f'_map.inputs["From Max"].default_value = {_num(params.get("end"), 1.0)}\n'
+            f'_tree.links.new(_sep.outputs[{axis}], _map.inputs["Value"])\n'
+            f'_ramp = _tree.nodes.new("ShaderNodeValToRGB")\n'
+            f'_stops = {stops!r}\n'
+            f'_els = _ramp.color_ramp.elements\n'
+            f'while len(_els) < len(_stops):\n'
+            f'    _els.new(0.5)\n'
+            f'for _i, _c in enumerate(_stops):\n'
+            f'    _els[_i].position = _i / (len(_stops) - 1)\n'
+            f'    _els[_i].color = (_c[0], _c[1], _c[2], 1.0)\n'
+            f'_tree.links.new(_map.outputs["Result"], _ramp.inputs["Fac"])\n'
+            f'_tree.links.new(_ramp.outputs["Color"], _bsdf.inputs["Base Color"])\n'
+            f'_note("gradient_material", name=_mat.name, stops=len(_stops))')
+
+
 def create_material(params: Dict[str, Any]) -> str:
     """Built through the node tree, because Principled BSDF is where
     metallic and roughness actually live in 5.0 -- material.metallic
@@ -2247,13 +2287,14 @@ def export_fbx(params: Dict[str, Any]) -> str:
             f'    return None\n'
             f'_maps = {{}}\n'
             f'_maps_material = {{}}\n'
+            f'_per_material = {{}}\n'
             f'for _o in (bpy.context.selected_objects if _use_selection else bpy.context.scene.objects):\n'
             f'    for _m in (getattr(_o.data, "materials", None) or []):\n'
             f'        for _n in (_m.node_tree.nodes if _m and _m.node_tree else []):\n'
             f'            if _n.type != "TEX_IMAGE" or _n.image is None:\n'
             f'                continue\n'
             f'            _role = _x_role(_n)\n'
-            f'            if _role is None or _role in _maps:\n'
+            f'            if _role is None or (_role in _maps and (_role != "Color" or _m.name in _per_material)):\n'
             f'                continue\n'
             f'            _file = bpy.path.abspath(_n.image.filepath) if _n.image.filepath else ""\n'
             f'            if not _file or _n.image.packed_file is not None or not _xos.path.isfile(_file):\n'
@@ -2264,14 +2305,19 @@ def export_fbx(params: Dict[str, Any]) -> str:
             f'                _n.image.pixels.foreach_get(_px)\n'
             f'                _copy = bpy.data.images.new("ARIA_export_map", _w, _h, alpha=True)\n'
             f'                _copy.pixels.foreach_set(_px)\n'
-            f'                _file = _xos.path.splitext(_path)[0] + "_" + _role.lower() + ".png"\n'
+            f'                _file = _xos.path.splitext(_path)[0] + "_" + ("" if not _maps else _m.name + "_") + _role.lower() + ".png"\n'
             f'                _copy.filepath_raw = _file\n'
             f'                _copy.file_format = "PNG"\n'
             f'                _copy.save()\n'
             f'                bpy.data.images.remove(_copy)\n'
-            f'            _maps[_role] = _file\n'
+            f'            if _role == "Color":\n'
+            f'                _per_material.setdefault(_m.name, _file)\n'
+            f'            _maps.setdefault(_role, _file)\n'
             f'            _maps_material.setdefault("name", _m.name)\n'
-            f'_note("export_fbx", path=_path, maps=_maps, material=_maps_material.get("name"))')
+            # Every material's own colour map, for a character in many
+            # pieces (a kit): one set of maps cannot dress all of them.
+            f'_note("export_fbx", path=_path, maps=_maps, material=_maps_material.get("name"), '
+            f'material_maps=_per_material)')
 
 
 def export_glb(params: Dict[str, Any]) -> str:
@@ -3311,6 +3357,8 @@ def _mk_needs_bake(mat):
     object space rather than by the UVs."""
     if mat is None or not mat.node_tree:
         return False
+    if mat.get("aria_bake"):             # painted by position (gradient_material)
+        return True
     for node in mat.node_tree.nodes:
         if node.type in _MK_PROCEDURAL:
             return True
@@ -8419,6 +8467,7 @@ TEMPLATES = {
     "unwrap": unwrap,
     # materials
     "create_material": create_material,
+    "gradient_material": gradient_material,
     "assign_material": assign_material,
     # rigging
     "create_armature": create_armature,

@@ -58,7 +58,7 @@ def test_landmarks_copy_to_the_nearest_vertex_of_the_light_copy():
 
 
 def test_exports_say_which_maps_their_materials_use():
-    assert '_note("export_fbx", path=_path, maps=_maps, material=_maps_material.get("name"))' in script(
+    assert '_note("export_fbx", path=_path, maps=_maps, material=_maps_material.get("name"), material_maps=_per_material)' in script(
         "export_fbx", path="C:/x.fbx")
 
 

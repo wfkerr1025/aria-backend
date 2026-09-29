@@ -652,13 +652,17 @@ def decal_actions(name: str, prefix: Optional[str] = None) -> List[Dict[str, Any
     head = prefix or prefix_for(name)
     steps: List[Dict[str, Any]] = []
     onto = (recipe.get("decal_onto") or (recipe.get("base") or {}).get("as"))
+    # A decal can sit on one of the recipe's own garments (stitching on the
+    # jeans, embroidery on a lapel), named by the garment's id.
+    garments = {g.get("id"): _name(head, g.get("id"), "Garment") for g in recipe.get("garments", [])}
     for item in recipe.get("decals", []):
         worn = _name(head, item.get("id"), "Decal")
+        target = garments.get(item.get("onto"), item.get("onto")) or onto
         vertices, faces = _decal_mesh(item)
         steps.append({"action": "create_mesh",
                       "params": {"name": worn, "vertices": vertices, "faces": faces}})
         steps.append({"action": "apply_shrinkwrap",
-                      "params": {"object": worn, "target": item.get("onto") or onto,
+                      "params": {"object": worn, "target": target,
                                  "method": "PROJECT", "offset": item.get("offset", 0.0015),
                                  "apply": True}})
         steps.append({"action": "smooth_shade", "params": {"object": worn}})
@@ -1567,6 +1571,15 @@ def _colour_steps(worn: str, item: Dict[str, Any]) -> List[Dict[str, Any]]:
     black coat, a purple lining, teal cuffs -- instead of all-grey clay.
     The real look comes from the texture later; this is the stand-in.
     """
+    gradient = item.get("gradient")
+    if gradient:
+        material = f"{worn}_Gradient"
+        return [{"action": "gradient_material",
+                 "params": {"name": material, "axis": gradient.get("axis", "z"),
+                            "start": gradient.get("start"), "end": gradient.get("end"),
+                            "colors": gradient.get("colors"),
+                            "roughness": item.get("roughness", 0.8)}},
+                {"action": "assign_material", "params": {"object": worn, "material": material}}]
     colour = item.get("color")
     if not colour:
         return []
