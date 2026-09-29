@@ -1,7 +1,7 @@
 {
   "name": "anime_shoulder_armour",
-  "version": "0.2",
-  "description": "Jin-Woo's teal shoulder armour, on his left shoulder (+X), for the anime male body: three plates cut from the shoulder at rising distances out from the coat, each trimmed by a keep-sphere that is smaller and further down the arm, so they overlap like scales; a row of spikes along the top, pointing up, back and out. Placed from the measured shoulder (top z 1.46 at x 0.16, rolling to 1.33 at x 0.28).",
+  "version": "0.3",
+  "description": "Jin-Woo's teal shoulder armour, on his left shoulder (+X), for the anime male body: three plates fitted just outside the coat, each trimmed by a sphere centred ON the shoulder surface (top, roll, upper arm), so they read as fitted overlapping plates, not a shell floating off him; spikes set on the plates along the shoulder's own normals, pointing up, back and out. Placed from the slimmed anime body's measured shoulder (top x 0.20 z 1.45 rolling to x 0.29 z 1.30).",
   "units": "meters",
   "base": {
     "recipe": "anime_male_body",
@@ -12,17 +12,17 @@
     {
       "id": "spike_1",
       "type": "cone",
-      "radius": 0.024,
+      "radius": 0.022,
       "radius_top": 0.0,
-      "depth": 0.11,
+      "depth": 0.1,
       "location": [
-        0.18,
-        0.055,
-        1.565
+        0.237,
+        0.065,
+        1.5514
       ],
       "rotation": [
         -28,
-        0.0,
+        20.43,
         0
       ],
       "color": [
@@ -34,17 +34,17 @@
     {
       "id": "spike_2",
       "type": "cone",
-      "radius": 0.024,
+      "radius": 0.022,
       "radius_top": 0.0,
-      "depth": 0.1,
+      "depth": 0.095,
       "location": [
-        0.2501,
-        0.068,
-        1.5454
+        0.3141,
+        0.065,
+        1.4888
       ],
       "rotation": [
         -28,
-        17.53,
+        51.3,
         0
       ],
       "color": [
@@ -56,17 +56,17 @@
     {
       "id": "spike_3",
       "type": "cone",
-      "radius": 0.024,
+      "radius": 0.022,
       "radius_top": 0.0,
-      "depth": 0.09,
+      "depth": 0.085,
       "location": [
-        0.3102,
-        0.082,
-        1.5219
+        0.3668,
+        0.065,
+        1.3855
       ],
       "rotation": [
         -28,
-        33.53,
+        76.99,
         0
       ],
       "color": [
@@ -78,17 +78,17 @@
     {
       "id": "spike_4",
       "type": "cone",
-      "radius": 0.024,
+      "radius": 0.022,
       "radius_top": 0.0,
-      "depth": 0.08,
+      "depth": 0.075,
       "location": [
-        0.3776,
-        0.095,
-        1.4032
+        0.3902,
+        0.065,
+        1.3505
       ],
       "rotation": [
         -28,
-        53.13,
+        63.59,
         0
       ],
       "color": [
@@ -104,14 +104,14 @@
       "from": "Armour_Body",
       "regions": [
         {
-          "x_min": 0.13,
-          "z_min": 1.12,
+          "x_min": 0.15,
+          "z_min": 1.15,
           "z_max": "neck"
         }
       ],
       "soft": 0.004,
-      "offset": 0.078,
-      "thickness": 0.012,
+      "offset": 0.052,
+      "thickness": 0.01,
       "relax": {
         "factor": 0.8,
         "iterations": 20
@@ -120,14 +120,14 @@
         {
           "keep": true,
           "at": [
-            0.215,
-            0.05,
-            1.4
+            0.2739,
+            0.0512,
+            1.4566
           ],
           "size": [
-            0.15,
-            0.14,
-            0.13
+            0.088,
+            0.0968,
+            0.088
           ]
         }
       ],
@@ -142,14 +142,14 @@
       "from": "Armour_Body",
       "regions": [
         {
-          "x_min": 0.165,
-          "z_min": 1.12,
+          "x_min": 0.15,
+          "z_min": 1.15,
           "z_max": "neck"
         }
       ],
       "soft": 0.004,
-      "offset": 0.094,
-      "thickness": 0.012,
+      "offset": 0.062,
+      "thickness": 0.01,
       "relax": {
         "factor": 0.8,
         "iterations": 20
@@ -158,14 +158,14 @@
         {
           "keep": true,
           "at": [
-            0.285,
-            0.05,
-            1.3
+            0.3215,
+            0.0523,
+            1.375
           ],
           "size": [
-            0.1,
-            0.10500000000000001,
-            0.1
+            0.072,
+            0.0792,
+            0.072
           ]
         }
       ],
@@ -180,14 +180,14 @@
       "from": "Armour_Body",
       "regions": [
         {
-          "x_min": 0.165,
-          "z_min": 1.12,
+          "x_min": 0.15,
+          "z_min": 1.15,
           "z_max": "neck"
         }
       ],
       "soft": 0.004,
-      "offset": 0.11,
-      "thickness": 0.012,
+      "offset": 0.072,
+      "thickness": 0.01,
       "relax": {
         "factor": 0.8,
         "iterations": 20
@@ -196,14 +196,14 @@
         {
           "keep": true,
           "at": [
-            0.315,
-            0.055,
-            1.225
+            0.352,
+            0.0377,
+            1.3315
           ],
           "size": [
-            0.08,
-            0.084,
-            0.08
+            0.058,
+            0.06380000000000001,
+            0.058
           ]
         }
       ],

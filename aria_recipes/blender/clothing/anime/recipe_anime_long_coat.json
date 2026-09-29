@@ -27,8 +27,8 @@
         }
       ],
       "soft": 0.006,
-      "offset": 0.045,
-      "thickness": 0.012,
+      "offset": 0.036,
+      "thickness": 0.01,
       "relax": {
         "factor": 0.85,
         "iterations": 24
@@ -90,7 +90,7 @@
         }
       ],
       "soft": 0.006,
-      "offset": 0.062,
+      "offset": 0.053,
       "thickness": 0.008,
       "relax": {
         "factor": 0.85,
@@ -140,7 +140,7 @@
         }
       ],
       "soft": 0.006,
-      "offset": 0.06,
+      "offset": 0.051,
       "thickness": 0.005,
       "relax": {
         "factor": 0.8,
@@ -190,7 +190,7 @@
         }
       ],
       "soft": 0.006,
-      "offset": 0.06,
+      "offset": 0.051,
       "thickness": 0.005,
       "relax": {
         "factor": 0.8,
