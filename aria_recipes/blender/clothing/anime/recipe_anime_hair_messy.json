@@ -1,6 +1,6 @@
 {
   "name": "anime_hair_messy",
-  "version": "0.2",
+  "version": "0.3",
   "description": "Jin-Woo's messy black hair for the anime male body: a close cap cut from the skull (sides, back and top, stopping above the forehead), with generated spikes welded on -- bangs falling forward over the forehead to the brow, tufts on top pointing up and back, pieces over the ears, a shorter spiky nape. Seeded, so the mess is the same every build.",
   "units": "meters",
   "base": {
@@ -30,7 +30,7 @@
         }
       ],
       "soft": 0.006,
-      "offset": 0.02,
+      "offset": 0.032,
       "thickness": 0.01,
       "relax": {
         "factor": 0.7,
@@ -46,9 +46,9 @@
       1.7
     ],
     "radii": [
-      0.108,
       0.118,
-      0.102
+      0.128,
+      0.112
     ],
     "seed": 11,
     "color": [
@@ -60,21 +60,21 @@
       {
         "name": "bangs",
         "azimuth": [
-          -55,
-          55
+          -50,
+          50
         ],
         "elevation": [
-          5,
-          30
+          10,
+          32
         ],
-        "count": 8,
+        "count": 7,
         "length": [
-          0.05,
-          0.075
+          0.07,
+          0.095
         ],
-        "fall": 0.6,
+        "fall": 0.62,
         "forward": 0.35,
-        "radius": 0.0324
+        "radius": 0.042
       },
       {
         "name": "top",
@@ -83,17 +83,17 @@
           150
         ],
         "elevation": [
-          45,
-          72
+          40,
+          74
         ],
-        "count": 9,
+        "count": 10,
         "length": [
-          0.06,
-          0.09
+          0.085,
+          0.12
         ],
-        "fall": 0.4,
-        "back": 0.45,
-        "radius": 0.0365
+        "fall": 0.42,
+        "back": 0.5,
+        "radius": 0.045
       },
       {
         "name": "crown",
@@ -102,53 +102,55 @@
           180
         ],
         "elevation": [
-          75,
+          72,
           88
         ],
-        "count": 2,
+        "count": 4,
         "length": [
-          0.05,
-          0.08
+          0.08,
+          0.11
         ],
-        "fall": 0.3,
-        "back": 0.4,
-        "radius": 0.0351
+        "fall": 0.32,
+        "back": 0.55,
+        "radius": 0.042
       },
       {
         "name": "left",
         "azimuth": [
-          65,
-          115
+          62,
+          118
         ],
         "elevation": [
           -5,
-          20
+          25
         ],
         "count": 4,
         "length": [
-          0.06,
-          0.085
+          0.08,
+          0.11
         ],
-        "fall": 0.75,
-        "radius": 0.0297
+        "fall": 0.5,
+        "back": 0.1,
+        "radius": 0.04
       },
       {
         "name": "right",
         "azimuth": [
-          -115,
-          -65
+          -118,
+          -62
         ],
         "elevation": [
           -5,
-          20
+          25
         ],
         "count": 4,
         "length": [
-          0.06,
-          0.085
+          0.08,
+          0.11
         ],
-        "fall": 0.75,
-        "radius": 0.0297
+        "fall": 0.5,
+        "back": 0.1,
+        "radius": 0.04
       },
       {
         "name": "back",
@@ -157,17 +159,17 @@
           235
         ],
         "elevation": [
-          -15,
-          25
+          -10,
+          30
         ],
-        "count": 9,
+        "count": 8,
         "length": [
-          0.06,
-          0.09
+          0.08,
+          0.11
         ],
-        "fall": 0.7,
-        "back": 0.2,
-        "radius": 0.0324
+        "fall": 0.6,
+        "back": 0.25,
+        "radius": 0.042
       },
       {
         "name": "nape",
@@ -179,14 +181,14 @@
           -45,
           -15
         ],
-        "count": 7,
+        "count": 6,
         "length": [
-          0.05,
-          0.075
+          0.06,
+          0.085
         ],
         "fall": 0.8,
         "back": 0.15,
-        "radius": 0.03
+        "radius": 0.036
       }
     ],
     "flat": 0.45
