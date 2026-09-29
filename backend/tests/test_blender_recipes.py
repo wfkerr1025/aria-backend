@@ -588,3 +588,19 @@ def test_a_garment_can_be_cut_from_a_recipe_body_named_for_itself():
     for step in steps:
         if step["action"] in ("scale_to_height", "origin_to_floor"):
             assert step["params"]["object"] == "Tee_Body"
+
+
+def test_an_outfit_puts_every_piece_on_the_bodys_one_skeleton():
+    """Exchangeable clothes: one rig, every surviving mesh weighted to it."""
+    steps = recipes.outfit_actions("anime_male_body",
+                                   ["anime_tshirt", "anime_long_coat"], clips=["walk"])
+    order = [step["action"] for step in steps]
+    assert order.index("auto_rig") < order.index("transfer_weights")
+    moved = [s["params"] for s in steps if s["action"] == "transfer_weights"]
+    assert {p["source"] for p in moved} == {"AnimeMale"}
+    assert {p["armature"] for p in moved} == {"AnimeMale_Rig"}
+    targets = {p["target"] for p in moved}
+    assert {"AnimeTshirt_Tshirt", "AnimeLongCoat_Coat", "AnimeLongCoat_Tails"} <= targets
+    assert not any("_Cut" in target for target in targets)     # cutters are gone
+    assert steps[-1] == {"action": "add_clip",
+                         "params": {"armature": "AnimeMale_Rig", "clip": "walk"}}

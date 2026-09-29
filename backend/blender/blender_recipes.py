@@ -698,6 +698,47 @@ def build_many(wanted: Iterable[str]) -> List[Dict[str, Any]]:
     return steps
 
 
+def outfit_actions(body: str, pieces: Iterable[str], *, rig: bool = True,
+                   clips: Iterable[str] = ()) -> List[Dict[str, Any]]:
+    """A body dressed in a set of kit pieces, all on ONE skeleton.
+
+    WHY ONE SKELETON. Clothes are only exchangeable if every piece moves
+    with the same bones: in Unity the character is then one rig with a
+    mesh per piece, and changing outfit is switching meshes on and off.
+    So the body is rigged once (its recipe's `armature`), and every mesh
+    a piece made takes the weights of the body surface under it
+    (transfer_weights, at rest) and is parented to that rig -- a sleeve
+    bends exactly as the arm inside it does.
+
+    `clips` adds motions (walk, idle, wave...) to the shared rig, so the
+    whole outfit can be watched moving together.
+    """
+    pieces = list(pieces)
+    steps = build_many([body] + pieces)
+    if not rig:
+        return steps
+
+    spec = load(body)
+    steps.extend(rig_actions(body))
+    body_mesh = (spec.get("base") or {}).get("as") or f"{prefix_for(body)}_Base"
+    armature = (spec.get("armature") or {}).get("name") or f"{prefix_for(body)}_Rig"
+
+    # Only the meshes that survive the build: a neckline cutter is made
+    # and deleted inside it, and has nothing to be weighted.
+    deleted = {step["params"].get("object") for step in steps
+               if step["action"] == "delete_object"}
+    for piece in pieces:
+        for part in part_names(piece):
+            if part in deleted:
+                continue
+            steps.append({"action": "transfer_weights",
+                          "params": {"source": body_mesh, "target": part,
+                                     "armature": armature}})
+    for clip in clips:
+        steps.append({"action": "add_clip", "params": {"armature": armature, "clip": clip}})
+    return steps
+
+
 # ======================================================
 # Rig and motion
 # ======================================================
